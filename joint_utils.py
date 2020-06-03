@@ -62,7 +62,7 @@ def generate_rollouts(model_variables_dict, transform, seq_len,
     e_queue = Queue()
 
     # generate a random number to give as a random seed to each process. 
-    rand_ints = np.random.randint(0, 10000000,5)
+    rand_ints = np.random.randint(0, 1e9,num_workers)
 
     for p_index in range(num_workers):
         Process(target=slave_routine, args=(p_queue, r_queue, e_queue, p_index, 
