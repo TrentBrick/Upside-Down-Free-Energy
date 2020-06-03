@@ -224,6 +224,7 @@ class RolloutGenerator(object):
         if self.return_events: 
             rollout_dict = {k:[] for k in ['obs', 'rew', 'act', 'term']}
         while True:
+            print('iteration of the rollout', i)
             obs = transform(obs).unsqueeze(0).to(self.device)
             action, hidden = self.get_action_and_transition(obs, hidden)
             obs, reward, done, _ = self.env.step(action)
@@ -237,6 +238,7 @@ class RolloutGenerator(object):
 
             cumulative += reward
             if done or i > self.time_limit:
+                print('done with this simulation')
                 if self.return_events:
                     for k,v in rollout_dict.items():
                         rollout_dict[k] = np.array(v)

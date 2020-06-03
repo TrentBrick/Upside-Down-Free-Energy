@@ -89,8 +89,8 @@ def slave_routine(p_queue, r_queue, e_queue, p_index, rand_int):
         device = 'cpu'
 
     # redirect streams
-    sys.stdout = open(join(tmp_dir, str(getpid()) + '.out'), 'a')
-    sys.stderr = open(join(tmp_dir, str(getpid()) + '.err'), 'a')
+    #sys.stdout = open(join(tmp_dir, str(getpid()) + '.out'), 'a')
+    #sys.stderr = open(join(tmp_dir, str(getpid()) + '.err'), 'a')
 
     with torch.no_grad():
         r_gen = RolloutGenerator( device, time_limit, mdir=args.logdir)

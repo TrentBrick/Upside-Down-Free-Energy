@@ -1,4 +1,0 @@
-Loading VAE at epoch 1 with test loss 21.39790286254883
-Loading MDRNN at epoch 6 with test loss 1.093000651559522
-random seed being used by worker 5 for this rollout is: 938492628
-Track generation: 1069..1340 -> 271-tiles track

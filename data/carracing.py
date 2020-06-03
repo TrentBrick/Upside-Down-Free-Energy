@@ -36,7 +36,6 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed): # pylint: disable=
         while True:
             action = a_rollout[t]
             t += 1
-
             s, r, done, _ = env.step(action)
             env.env.viewer.window.dispatch_events() # needed for a bug in the rendering. 
             s_rollout += [s]
