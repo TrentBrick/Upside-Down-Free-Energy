@@ -1,5 +1,6 @@
-""" Various auxiliary utilities """
+
 import math
+import random 
 import time 
 from os.path import join, exists
 import torch
@@ -8,49 +9,7 @@ import numpy as np
 from models import MDRNNCell, VAE, Controller
 import gym
 import gym.envs.box2d
-
-# A bit dirty: manually change size of car racing env
-# BUG: this makes the images very grainy!!!
-#gym.envs.box2d.car_racing.STATE_W, gym.envs.box2d.car_racing.STATE_H = 64, 64
-
-# Hardcoded for now
-ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE =\
-    3, 32, 256, 64, 96
-
-# Same. used for Rollout Generator below. 
-transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
-    transforms.ToTensor()
-])
-
-def sample_continuous_policy(action_space, seq_len, dt):
-    """ Sample a continuous policy.
-
-    Atm, action_space is supposed to be a box environment. The policy is
-    sampled as a brownian motion a_{t+1} = a_t + sqrt(dt) N(0, 1).
-
-    :args action_space: gym action space
-    :args seq_len: number of actions returned
-    :args dt: temporal discretization
-
-    :returns: sequence of seq_len actions
-    """
-    actions = [action_space.sample()]
-    for _ in range(seq_len):
-        daction_dt = np.random.randn(*actions[-1].shape)
-        actions.append(
-            np.clip(actions[-1] + math.sqrt(dt) * daction_dt,
-                    action_space.low, action_space.high))
-    return actions
-
-def save_checkpoint(state, is_best, filename, best_filename):
-    """ Save state in filename. Also save in best_filename if is_best. """
-    start_time = time.time()
-    torch.save(state, filename)
-    if is_best:
-        torch.save(state, best_filename)
-    print('seconds taken to save checkpoint.',(time.time()-start_time) )
+from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
 
 def flatten_parameters(params):
     """ Flattening parameters.
@@ -94,27 +53,25 @@ def load_parameters(params, controller):
     for p, p_0 in zip(controller.parameters(), params):
         p.data.copy_(p_0)
 
-class RolloutGenerator(object):
-    """ Utility to generate rollouts.
+    return controller
 
-    Encapsulate everything that is needed to generate rollouts in the TRUE ENV
-    using a controller with previously trained VAE and MDRNN.
 
-    :attr vae: VAE model loaded from mdir/vae
-    :attr mdrnn: MDRNN model loaded from mdir/mdrnn
-    :attr controller: Controller, either loaded from mdir/ctrl or randomly
-        initialized
-    :attr env: instance of the CarRacing-v0 gym environment
-    :attr device: device used to run VAE, MDRNN and Controller
-    :attr time_limit: rollouts have a maximum of time_limit timesteps
-    """
-    def __init__(self, device, time_limit, mdir=None, return_events=False, give_models=None):
+class Models:
+
+    def __init__(self, time_limit, 
+        mdir=None, return_events=False, give_models=None):
         """ Build vae, rnn, controller and environment. """
 
         self.env = gym.make('CarRacing-v0')
-        self.device = device
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
+
+        self.transform = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
+                transforms.ToTensor()
+            ])
 
         if give_models:
             self.vae = give_models['vae']
@@ -122,17 +79,17 @@ class RolloutGenerator(object):
             if 'controller' in give_models.key():
                 self.controller = give_models['controller']
             else: 
-                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(device)
+                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(self.device)
                 # load controller if it was previously saved
                 ctrl_file = join(mdir, 'ctrl', 'best.tar')
                 if exists(ctrl_file):
-                    ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(device)})
+                    ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(self.device)})
                     print("Loading Controller with reward {}".format(
                         ctrl_state['reward']))
                     self.controller.load_state_dict(ctrl_state['state_dict'])
 
             # need to load in the cell based version!
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(device)
+            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(self.device)
             self.mdrnn.load_state_dict( 
                 {k.strip('_l0'): v for k, v in give_models['mdrnn'].state_dict.items()})
 
@@ -145,7 +102,7 @@ class RolloutGenerator(object):
                 "Either vae or mdrnn is untrained or the file is in the wrong place."
 
             vae_state, rnn_state = [
-                torch.load(fname, map_location={'cuda:0': str(device)})
+                torch.load(fname, map_location={'cuda:0': str(self.device)})
                 for fname in (vae_file, rnn_file)]
 
             #print('about to load in the states')
@@ -154,20 +111,20 @@ class RolloutGenerator(object):
                     "with test loss {}".format(
                         m, s['epoch'], s['precision']))
             #print('loading in vae from: ', vae_file, device)
-            self.vae = VAE(3, LATENT_SIZE).to(device)
+            self.vae = VAE(3, LATENT_SIZE).to(self.device)
             self.vae.load_state_dict(vae_state['state_dict'])
 
             #print('loading in mdrnn')
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(device)
+            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(self.device)
             self.mdrnn.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
 
             #print('loadin in controller.')
-            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(device)
+            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(self.device)
 
             # load controller if it was previously saved
             if exists(ctrl_file):
-                ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(device)})
+                ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(self.device)})
                 print("Loading Controller with reward {}".format(
                     ctrl_state['reward']))
                 self.controller.load_state_dict(ctrl_state['state_dict'])
@@ -197,7 +154,7 @@ class RolloutGenerator(object):
         _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden)
         return action.squeeze().cpu().numpy(), next_hidden
 
-    def rollout(self, params, rand_env_seed, render=False):
+    def rollout(self, rand_env_seed, params=None, render=False, time_limit=None):
         """ Execute a rollout and returns minus cumulative reward.
 
         Load :params: into the controller and execute a single rollout. This
@@ -208,10 +165,17 @@ class RolloutGenerator(object):
         :returns: minus cumulative reward
         # Why is this the minus cumulative reward?!?!!?
         """
+
         # copy params into the controller
         if params is not None:
-            load_parameters(params, self.controller)
+            self.controller = load_parameters(params, self.controller)
 
+        if not time_limit: 
+            time_limit = self.time_limit 
+
+        #random(rand_env_seed)
+        np.random.seed(rand_env_seed)
+        torch.manual_seed(rand_env_seed)
         self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
         obs = self.env.reset()
 
@@ -228,7 +192,7 @@ class RolloutGenerator(object):
             rollout_dict = {k:[] for k in ['obs', 'rew', 'act', 'term']}
         while True:
             #print('iteration of the rollout', i)
-            obs = transform(obs).unsqueeze(0).to(self.device)
+            obs = self.transform(obs).unsqueeze(0).to(self.device)
             action, hidden = self.get_action_and_transition(obs, hidden)
             obs, reward, done, _ = self.env.step(action)
 
@@ -240,30 +204,45 @@ class RolloutGenerator(object):
                 self.env.render()
 
             cumulative += reward
-            if done or i > self.time_limit:
+            if done or i > time_limit:
                 #print('done with this simulation')
                 if self.return_events:
                     for k,v in rollout_dict.items():
                         rollout_dict[k] = np.array(v)
-
-                    return - cumulative, rollout_dict
+                    return cumulative, rollout_dict
                 else: 
-                    return - cumulative
+                    return cumulative, i # ending time and cum reward
             i += 1
 
-if __name__ == "__main__":
-    env = gym.make("CarRacing-v0")
-    env.reset()
-    seq_len=1000
-    dt = 1. / 50
-    actions = [env.action_space.sample()]
-    print(actions)
-    print(*actions)
-    print(*actions[-1])
-    for _ in range(seq_len):
-        # getting rid of the list and then array structure. 
-        # sampling 3 random actions from the last action in the list. 
-        daction_dt = np.random.randn(*actions[-1].shape)
-        actions.append(
-            np.clip(actions[-1] + math.sqrt(dt) * daction_dt,
-                    env.action_space.low, env.action_space.high))
+    def simulate(self, params, train_mode=True, 
+        render_mode=False, num_episode=16, 
+        seed=27, max_len=1000): # run lots of rollouts 
+
+
+        #print('seed recieved for this set of simulations', seed)
+        # update params into the controller
+        self.controller = load_parameters(params, self.controller)
+
+        #random(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+        reward_list = []
+        t_list = []
+
+        if max_len ==-1:
+            max_len = 1200 # making it very long
+
+        with torch.no_grad():
+            for i in range(num_episode):
+                rand_env_seed = np.random.randint(0,1e9,1)[0]
+                rew, t = self.rollout(rand_env_seed, render=render_mode, 
+                            params=None, time_limit=max_len)
+                reward_list.append(rew)
+                t_list.append(t)
+
+        return reward_list, t_list
+
+
+    
+

@@ -1,7 +1,6 @@
 """
 Training a linear controller on latent + recurrent state
 with CMAES.
-
 This is a bit complex. num_workers slave threads are launched
 to process a queue filled with parameters to be evaluated.
 """
@@ -24,21 +23,16 @@ def slave_routine(p_queue, r_queue, e_queue, p_index,
     rand_int, time_limit, logdir, tmp_dir, 
     model_variables_dict, return_events):
     """ Thread routine.
-
     Threads interact with p_queue, the parameters queue, r_queue, the result
     queue and e_queue the end queue. They pull parameters from p_queue, execute
     the corresponding rollout, then place the result in r_queue.
-
     Each parameter has its own unique id. Parameters are pulled as tuples
     (s_id, params) and results are pushed as (s_id, result).  The same
     parameter can appear multiple times in p_queue, displaying the same id
     each time.
-
     As soon as e_queue is non empty, the thread terminate.
-
     When multiple gpus are involved, the assigned gpu is determined by the
     process index p_index (gpu = p_index % n_gpus).
-
     :args p_queue: queue containing couples (s_id, parameters) to evaluate
     :args r_queue: where to place results (s_id, results)
     # NOTE: This seems like a weird way to terminate... 
@@ -127,13 +121,10 @@ def train_controller(args, model_variables_dict=None, return_events=False):
     ################################################################################
     def evaluate(solutions, results, rollouts=100):
         """ Give current controller evaluation.
-
         Evaluation is minus the cumulated reward averaged over rollout runs.
-
         :args solutions: CMA set of solutions
         :args results: corresponding results
         :args rollouts: number of rollouts
-
         :returns: minus averaged cumulated reward
         """
         index_min = np.argmin(results)
@@ -249,4 +240,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     train_controller(args)
-
