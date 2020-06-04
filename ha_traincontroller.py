@@ -56,7 +56,7 @@ def initialize_settings(parameters, sigma_init=0.1, sigma_decay=0.9999):
 
     # TODO: init the controller model. and VAE and MDRNN. 
     model = Models(1000, mdir = 'exp_dir') # time limit
-    num_params = len(flatten_parameters(model.controller.parameters()))
+    num_params = len( flatten_parameters(model.controller.parameters()) )
     print("size of model", num_params)
 
     if optimizer == 'ses':
@@ -175,8 +175,10 @@ def worker(weights, seed, train_mode_int=1, max_len=-1):
     train_mode = (train_mode_int == 1)
     #model.set_model_params(weights) feeding into simulate. 
     # TODO: run the simulation here. need to return the rewards and the end times of each. 
+    sprint('starting worker simulation, seed', seed)
     reward_list, t_list = model.simulate(weights, train_mode=train_mode, render_mode=False, 
         num_episode=num_episode, seed=seed, max_len=max_len)
+    sprint('finished worker simulations, seed', seed)
     if batch_mode == 'min':
         reward = np.min(reward_list)
     else:
@@ -185,7 +187,7 @@ def worker(weights, seed, train_mode_int=1, max_len=-1):
     return reward, t
 
 def slave():
-    # TODO: make the gym environment for each of the slaves
+    # TODO: make the gym environment for each of the slaves. Do I need to though? already inside model.init()..?
     #model.make_env()
     packet = np.empty(SOLUTION_PACKET_SIZE, dtype=np.int32)
     while 1:
@@ -209,8 +211,8 @@ def slave():
 
 def send_packets_to_slaves(packet_list):
     num_worker = comm.Get_size()
-    print('=========================', len(packet_list), num_worker,  num_worker-1)
-    assert len(packet_list) == num_worker #-1
+    #print('=========================', len(packet_list), num_worker,  num_worker-1)
+    assert len(packet_list) == num_worker-1
     for i in range(1, num_worker):
         packet = packet_list[i-1]
         assert(len(packet) == SOLUTION_PACKET_SIZE)
@@ -222,7 +224,7 @@ def receive_packets_from_slaves():
     reward_list_total = np.zeros((population, 2))
 
     check_results = np.ones(population, dtype=np.int)
-    for i in range(1, num_worker):#+1):
+    for i in range(1, num_worker+1):
         comm.Recv(result_packet, source=i)
         results = decode_result_packet(result_packet)
         for result in results:
@@ -235,7 +237,7 @@ def receive_packets_from_slaves():
             check_results[idx] = 0
 
     check_sum = check_results.sum()
-    assert check_sum == 0, check_sum, "the number of packets that have not been recieved. Check results vector:", check_results
+    assert check_sum == 0, check_sum
     return reward_list_total
 
 def evaluate_batch(model_params, max_len=-1):
@@ -285,14 +287,17 @@ def master():
     while True:
         t += 1
 
+        sprint('asking for solutions in master')
         solutions = es.ask()
-
+        sprint('============================= solutions from es.ask', solutions.shape)
+        sprint('getting seeds')
         if antithetic:
             seeds = seeder.next_batch(int(es.popsize/2))
             seeds = seeds+seeds
         else:
             seeds = seeder.next_batch(es.popsize)
 
+        sprint('encoding solution packets')
         packet_list = encode_solution_packets(seeds, solutions, max_len=max_len)
 
         send_packets_to_slaves(packet_list)
@@ -305,6 +310,7 @@ def master():
         avg_reward = int(np.mean(reward_list)*100)/100. # get average time step
         std_reward = int(np.std(reward_list)*100)/100. # get average time step
 
+        sprint('reward list being put into es.tell', len(reward_list), reward_list)
         es.tell(reward_list)
 
         es_solution = es.result()
@@ -313,8 +319,9 @@ def master():
         curr_reward = es_solution[2] # best of the current batch
 
         # TODO: update the model parameters here. Why are they quantized and set here? 
+        sprint('master model controller about to load in')
         model.controller = load_parameters(np.array(model_params).round(4), model.controller)
-
+        sprint('loaded in master model controller')
         r_max = int(np.max(reward_list)*100)/100.
         r_min = int(np.min(reward_list)*100)/100.
 
@@ -425,5 +432,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     
-    if "parent" == mpi_fork(args.num_worker): os.exit() # +1 
+    if "parent" == mpi_fork(args.num_worker+1): os.exit()
     main(args)
