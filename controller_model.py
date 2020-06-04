@@ -231,7 +231,7 @@ class Models:
         t_list = []
 
         if max_len ==-1:
-            max_len = 1200 # making it very long
+            max_len = 1000 # making it very long
 
         with torch.no_grad():
             for i in range(num_episode):

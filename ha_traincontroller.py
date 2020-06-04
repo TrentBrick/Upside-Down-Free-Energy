@@ -139,7 +139,9 @@ def encode_solution_packets(seeds, solutions, train_mode=1, max_len=-1):
         result.append([worker_num, i, seeds[i], train_mode, max_len])
         result.append(np.round(np.array(solutions[i])*PRECISION,0))
     result = np.concatenate(result).astype(np.int32)
+    #print('result in encode solution packets!!! pre split', len(result))
     result = np.split(result, num_worker)
+    #print('result in encode solution packets!!!', len(result))
     return result
 
 def decode_solution_packet(packet):
@@ -207,7 +209,8 @@ def slave():
 
 def send_packets_to_slaves(packet_list):
     num_worker = comm.Get_size()
-    assert len(packet_list) == num_worker-1
+    print('=========================', len(packet_list), num_worker,  num_worker-1)
+    assert len(packet_list) == num_worker #-1
     for i in range(1, num_worker):
         packet = packet_list[i-1]
         assert(len(packet) == SOLUTION_PACKET_SIZE)
@@ -219,7 +222,7 @@ def receive_packets_from_slaves():
     reward_list_total = np.zeros((population, 2))
 
     check_results = np.ones(population, dtype=np.int)
-    for i in range(1, num_worker+1):
+    for i in range(1, num_worker):#+1):
         comm.Recv(result_packet, source=i)
         results = decode_result_packet(result_packet)
         for result in results:
@@ -232,7 +235,7 @@ def receive_packets_from_slaves():
             check_results[idx] = 0
 
     check_sum = check_results.sum()
-    assert check_sum == 0, check_sum
+    assert check_sum == 0, check_sum, "the number of packets that have not been recieved. Check results vector:", check_results
     return reward_list_total
 
 def evaluate_batch(model_params, max_len=-1):
@@ -422,5 +425,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     
-    if "parent" == mpi_fork(args.num_worker+1): os.exit()
+    if "parent" == mpi_fork(args.num_worker): os.exit() # +1 
     main(args)
