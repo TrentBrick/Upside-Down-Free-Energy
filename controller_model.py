@@ -7,8 +7,8 @@ import torch
 from torchvision import transforms
 import numpy as np
 from models import MDRNNCell, VAE, Controller
-import gym
-import gym.envs.box2d
+#import gym
+#import gym.envs.box2d
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
 
 def flatten_parameters(params):
@@ -62,7 +62,7 @@ class Models:
         mdir=None, return_events=False, give_models=None):
         """ Build vae, rnn, controller and environment. """
 
-        self.env = gym.make('CarRacing-v0')
+        #self.env = gym.make('CarRacing-v0')
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
@@ -176,11 +176,12 @@ class Models:
         #random(rand_env_seed)
         np.random.seed(rand_env_seed)
         torch.manual_seed(rand_env_seed)
-        self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
-        obs = self.env.reset()
+        #self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
+        #obs = self.env.reset()
+        obs = np.random.random((3,96,96))
 
         # This first render is required !
-        self.env.render()
+        #self.env.render()
 
         hidden = [
             torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
@@ -194,14 +195,16 @@ class Models:
             #print('iteration of the rollout', i)
             obs = self.transform(obs).unsqueeze(0).to(self.device)
             action, hidden = self.get_action_and_transition(obs, hidden)
-            obs, reward, done, _ = self.env.step(action)
+            obs, reward, done = np.random.random((3,96,96)), np.random.random(1)[0], False
+            #obs, reward, done, _ = self.env.step(action)
 
             if self.return_events: 
                 for key, var in zip(['obs', 'rew', 'act', 'term'], [obs,reward, action, done]):
                     rollout_dict[key].append(var)
 
             if render:
-                self.env.render()
+                pass
+                #self.env.render()
 
             cumulative += reward
             if done or i > time_limit:
