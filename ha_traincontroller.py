@@ -22,8 +22,8 @@ num_worker_trial = 16
 
 population = num_worker * num_worker_trial
 
-gamename = 'invalid_gamename'
-optimizer = 'pepg'
+gamename = 'carracing'
+optimizer = 'cma'
 antithetic = True
 batch_mode = 'mean'
 
@@ -55,7 +55,7 @@ def initialize_settings(parameters, sigma_init=0.1, sigma_decay=0.9999):
     #game = config.games[gamename]
 
     # TODO: init the controller model. and VAE and MDRNN. 
-    model = Models(1000, mdir = 'exp_dir') # time limit
+    model = Models(gamename, 1000, mdir = 'exp_dir') # time limit
     num_params = len( flatten_parameters(model.controller.parameters()) )
     print("size of model", num_params)
 
@@ -188,7 +188,7 @@ def worker(weights, seed, train_mode_int=1, max_len=-1):
 
 def slave():
     # TODO: make the gym environment for each of the slaves. Do I need to though? already inside model.init()..?
-    #model.make_env()
+    model.make_env()
     packet = np.empty(SOLUTION_PACKET_SIZE, dtype=np.int32)
     while 1:
         comm.Recv(packet, source=0)
@@ -273,7 +273,7 @@ def master():
     filename_best = filebase+'.best.json'
 
     # TODO: make enviornment here. Actually do I need to? This master isnt doing anything... 
-    #model.make_env()
+    model.make_env()
 
     t = 0
 

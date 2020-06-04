@@ -1,15 +1,17 @@
-
 import math
 import random 
-import time 
+import time
 from os.path import join, exists
 import torch
 from torchvision import transforms
 import numpy as np
 from models import MDRNNCell, VAE, Controller
 import pickle
-import gym
-import gym.envs.box2d
+
+from ha_env import make_env
+#import gym
+#import gym.envs.box2d
+
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
 
 def flatten_parameters(params):
@@ -59,11 +61,13 @@ def load_parameters(params, controller):
 
 class Models:
 
-    def __init__(self, time_limit, 
+    def __init__(self, env_name, time_limit, 
         mdir=None, return_events=False, give_models=None):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
+        self.env_name = env_name
+
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
@@ -132,6 +136,10 @@ class Models:
                     ctrl_state['reward']))
                 self.controller.load_state_dict(ctrl_state['state_dict'])
 
+    def make_env(self, seed=-1, render_mode=False, full_episode=False):
+        self.render_mode = render_mode
+        self.env = make_env(self.env_name, seed=seed, render_mode=render_mode, full_episode=full_episode)
+
     def get_action_and_transition(self, obs, hidden):
         """ Get action and transition.
 
@@ -169,6 +177,8 @@ class Models:
         # Why is this the minus cumulative reward?!?!!?
         """
 
+        self.env.render('rgb_array')
+
         # copy params into the controller
         if params is not None:
             self.controller = load_parameters(params, self.controller)
@@ -180,8 +190,8 @@ class Models:
         np.random.seed(rand_env_seed)
         torch.manual_seed(rand_env_seed)
         #self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
-        #obs = self.env.reset()
-        obs = self.fixed_ob # np.random.random((3,96,96))
+        obs = self.env.reset()
+        #obs = self.fixed_ob # np.random.random((3,96,96))
 
         # This first render is required !
         #self.env.render()
@@ -198,8 +208,9 @@ class Models:
             #print('iteration of the rollout', i)
             obs = self.transform(obs).unsqueeze(0).to(self.device)
             action, hidden = self.get_action_and_transition(obs, hidden)
-            obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
-            #obs, reward, done, _ = self.env.step(action)
+            
+            #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
+            obs, reward, done, _ = self.env.step(action)
 
             if self.return_events: 
                 for key, var in zip(['obs', 'rew', 'act', 'term'], [obs,reward, action, done]):
@@ -229,6 +240,12 @@ class Models:
         # update params into the controller
         self.controller = load_parameters(params, self.controller)
 
+        recording_mode = False
+        penalize_turning = False
+
+        if train_mode and max_len > 0:
+            max_episode_length = max_len
+
         #random(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -241,6 +258,7 @@ class Models:
 
         with torch.no_grad():
             for i in range(num_episode):
+
                 rand_env_seed = np.random.randint(0,1e9,1)[0]
                 rew, t = self.rollout(rand_env_seed, render=render_mode, 
                             params=None, time_limit=max_len)
