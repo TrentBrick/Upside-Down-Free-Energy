@@ -189,8 +189,9 @@ class Models:
         #random(rand_env_seed)
         np.random.seed(rand_env_seed)
         torch.manual_seed(rand_env_seed)
-        #self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
+        self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
         obs = self.env.reset()
+        #self.env.viewer.window.dispatch_events()
         #obs = self.fixed_ob # np.random.random((3,96,96))
 
         # This first render is required !
@@ -211,6 +212,7 @@ class Models:
             
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
             obs, reward, done, _ = self.env.step(action)
+            #self.env.viewer.window.dispatch_events()
 
             if self.return_events: 
                 for key, var in zip(['obs', 'rew', 'act', 'term'], [obs,reward, action, done]):

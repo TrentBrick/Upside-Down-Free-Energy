@@ -175,10 +175,10 @@ def worker(weights, seed, train_mode_int=1, max_len=-1):
     train_mode = (train_mode_int == 1)
     #model.set_model_params(weights) feeding into simulate. 
     # TODO: run the simulation here. need to return the rewards and the end times of each. 
-    sprint('starting worker simulation, seed', seed)
+    #sprint('starting worker simulation, seed', seed)
     reward_list, t_list = model.simulate(weights, train_mode=train_mode, render_mode=False, 
         num_episode=num_episode, seed=seed, max_len=max_len)
-    sprint('finished worker simulations, seed', seed)
+    #sprint('finished worker simulations, seed', seed)
     if batch_mode == 'min':
         reward = np.min(reward_list)
     else:
@@ -287,17 +287,17 @@ def master():
     while True:
         t += 1
 
-        sprint('asking for solutions in master')
+        #sprint('asking for solutions in master')
         solutions = es.ask()
-        sprint('============================= solutions from es.ask', solutions.shape)
-        sprint('getting seeds')
+        #sprint('============================= solutions from es.ask', solutions.shape)
+        #sprint('getting seeds')
         if antithetic:
             seeds = seeder.next_batch(int(es.popsize/2))
             seeds = seeds+seeds
         else:
             seeds = seeder.next_batch(es.popsize)
 
-        sprint('encoding solution packets')
+        #sprint('encoding solution packets')
         packet_list = encode_solution_packets(seeds, solutions, max_len=max_len)
 
         send_packets_to_slaves(packet_list)
@@ -310,7 +310,7 @@ def master():
         avg_reward = int(np.mean(reward_list)*100)/100. # get average time step
         std_reward = int(np.std(reward_list)*100)/100. # get average time step
 
-        sprint('reward list being put into es.tell', len(reward_list), reward_list)
+        #sprint('reward list being put into es.tell', len(reward_list), reward_list)
         es.tell(reward_list)
 
         es_solution = es.result()
@@ -319,9 +319,9 @@ def master():
         curr_reward = es_solution[2] # best of the current batch
 
         # TODO: update the model parameters here. Why are they quantized and set here? 
-        sprint('master model controller about to load in')
+        #sprint('master model controller about to load in')
         model.controller = load_parameters(np.array(model_params).round(4), model.controller)
-        sprint('loaded in master model controller')
+        #sprint('loaded in master model controller')
         r_max = int(np.max(reward_list)*100)/100.
         r_min = int(np.min(reward_list)*100)/100.
 
