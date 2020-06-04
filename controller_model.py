@@ -7,8 +7,9 @@ import torch
 from torchvision import transforms
 import numpy as np
 from models import MDRNNCell, VAE, Controller
-#import gym
-#import gym.envs.box2d
+import pickle
+import gym
+import gym.envs.box2d
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
 
 def flatten_parameters(params):
@@ -72,6 +73,8 @@ class Models:
                 transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
                 transforms.ToTensor()
             ])
+
+        self.fixed_ob = pickle.load(open('notebooks/image_array.pkl', 'rb'))
 
         if give_models:
             self.vae = give_models['vae']
@@ -178,7 +181,7 @@ class Models:
         torch.manual_seed(rand_env_seed)
         #self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
         #obs = self.env.reset()
-        obs = np.random.random((3,96,96))
+        obs = self.fixed_ob # np.random.random((3,96,96))
 
         # This first render is required !
         #self.env.render()
@@ -195,7 +198,7 @@ class Models:
             #print('iteration of the rollout', i)
             obs = self.transform(obs).unsqueeze(0).to(self.device)
             action, hidden = self.get_action_and_transition(obs, hidden)
-            obs, reward, done = np.random.random((3,96,96)), np.random.random(1)[0], False
+            obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
             #obs, reward, done, _ = self.env.step(action)
 
             if self.return_events: 
