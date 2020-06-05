@@ -245,7 +245,7 @@ class Models:
         recording_mode = False
         penalize_turning = False
 
-        if train_mode and max_len > 0:
+        if train_mode and max_len < 0:
             max_episode_length = max_len
 
         #random(seed)

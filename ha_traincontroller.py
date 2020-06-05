@@ -342,7 +342,7 @@ def master():
         with open(filename_hist, 'wt') as out:
             res = json.dump(history, out, sort_keys=False, indent=0, separators=(',', ':'))
 
-        sprint(gamename, h)
+        sprint('================================',gamename, h)
 
         if (t == 1):
             best_reward_eval = avg_reward
