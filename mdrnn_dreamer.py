@@ -101,6 +101,7 @@ def rollout(render=False):
 
         #print('into mdrnn',action.shape, next_z.shape, next_hidden[0].shape)
 
+        # commented out reward and done. 
         mus, sigmas, logpi, _, _, next_hidden = mdrnn(action, next_z, next_hidden)
 
         # decode current z to see what it looks like. 

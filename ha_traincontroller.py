@@ -270,6 +270,7 @@ def master():
     filename = filebase+'.json'
     filename_log = filebase+'.log.json'
     filename_hist = filebase+'.hist.json'
+    filename_hist_best = filebase+'.hist_best.json'
     filename_best = filebase+'.best.json'
 
     # TODO: make enviornment here. Actually do I need to? This master isnt doing anything... 
@@ -278,6 +279,7 @@ def master():
     t = 0
 
     history = []
+    history_best = []
     eval_log = []
     best_reward_eval = 0
     best_model_params_eval = None
@@ -365,6 +367,14 @@ def master():
                     es.set_mu(best_model_params_eval)
             with open(filename_best, 'wt') as out:
                 res = json.dump([best_model_params_eval, best_reward_eval], out, sort_keys=True, indent=0, separators=(',', ': '))
+
+            # dump history of best
+            curr_time = int(time.time()) - start_time
+            best_record = [t, curr_time, "improvement", improvement, "curr", reward_eval, "prev", prev_best_reward_eval, "best", best_reward_eval]
+            history_best.append(best_record)
+            with open(filename_hist_best, 'wt') as out:
+                res = json.dump(history_best, out, sort_keys=False, indent=0, separators=(',', ':'))
+
             sprint("improvement", t, improvement, "curr", reward_eval, "prev", prev_best_reward_eval, "best", best_reward_eval)
 
 
