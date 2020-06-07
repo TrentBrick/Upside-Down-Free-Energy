@@ -43,12 +43,13 @@ def gmm_loss(next_latents, mus, sigmas, logpi, reduce=True): # pylint: disable=t
         return torch.mean(log_loss, dim=-1) # mean across fs. 
     
 class _MDRNNBase(nn.Module):
-    def __init__(self, latents, actions, hiddens, gaussians):
+    def __init__(self, latents, actions, hiddens, gaussians, conditional):
         super().__init__()
         self.latents = latents
         self.actions = actions
         self.hiddens = hiddens
         self.gaussians = gaussians
+        self.conditional = conditional 
 
         self.gmm_linear = nn.Linear(
             hiddens, (3 * latents * gaussians) + 2 ) # each latent for each gaussian has its own pi, mu and sigma. another 2 for reward and termination. 
@@ -58,15 +59,19 @@ class _MDRNNBase(nn.Module):
 
 class MDRNN(_MDRNNBase):
     """ MDRNN model for multi steps forward """
-    def __init__(self, latents, actions, hiddens, gaussians):
-        super().__init__(latents, actions, hiddens, gaussians)
-        self.rnn = nn.LSTM(latents + actions, hiddens, batch_first=True)
+    def __init__(self, latents, actions, hiddens, gaussians, conditional=True):
+        super().__init__(latents, actions, hiddens, gaussians, conditional)
+        if self.conditional: 
+            self.rnn = nn.LSTM(latents + actions+1, hiddens, batch_first=True)
+        else: 
+            self.rnn = nn.LSTM(latents + actions, hiddens, batch_first=True)
 
-    def forward(self, actions, latents): # pylint: disable=arguments-differ
+    def forward(self, actions, latents, r): # pylint: disable=arguments-differ
         """ MULTI STEPS forward.
 
         :args actions: (BSIZE, SEQ_LEN, ACTION_SIZE) torch tensor
         :args latents: (BSIZE, SEQ_LEN, LATENT_SIZE) torch tensor
+        :args r: (BSIZE, SEQ_LEN, 1) torch tensor, rewards 
 
         :returns: mu_nlat, sig_nlat, pi_nlat, rs, ds, parameters of the GMM
         prediction for the next latent, gaussian prediction of the reward and
@@ -80,7 +85,10 @@ class MDRNN(_MDRNNBase):
         seq_len, bs = actions.size(0), actions.size(1)
 
         #print(actions.shape, latents.shape)
-        ins = torch.cat([actions, latents], dim=-1)
+        if self.conditional: 
+            ins = torch.cat([actions, latents, r], dim=-1)
+        else: 
+            ins = torch.cat([actions, latents], dim=-1)
         outs, _ = self.rnn(ins)
         gmm_outs = self.gmm_linear(outs)
 
@@ -106,16 +114,20 @@ class MDRNN(_MDRNNBase):
 
 class MDRNNCell(_MDRNNBase):
     """ MDRNN model for one step forward """
-    def __init__(self, latents, actions, hiddens, gaussians):
-        super().__init__(latents, actions, hiddens, gaussians)
-        self.rnn = nn.LSTMCell(latents + actions, hiddens)
+    def __init__(self, latents, actions, hiddens, gaussians, conditional=True):
+        super().__init__(latents, actions, hiddens, gaussians, conditional)
+        if self.conditional: 
+            self.rnn = nn.LSTMCell(latents + actions+1, hiddens)
+        else: 
+            self.rnn = nn.LSTMCell(latents + actions, hiddens)
 
-    def forward(self, action, latent, hidden): # pylint: disable=arguments-differ
+    def forward(self, action, latent, hidden, r): # pylint: disable=arguments-differ
         """ ONE STEP forward.
 
         :args actions: (BSIZE, Action SIZE) torch tensor
         :args latents: (BSIZE, Latent SIZE) torch tensor
         :args hidden: (BSIZE, Recurrent hidden SIZE) torch tensor
+        :args r: (BSIZE, 1) torch tensor, rewards 
 
         :returns: mu_nlat, sig_nlat, pi_nlat, r, d, next_hidden, parameters of
         the GMM prediction for the next latent, gaussian prediction of the
@@ -126,7 +138,11 @@ class MDRNNCell(_MDRNNBase):
             - rs: (BSIZE) torch tensor
             - ds: (BSIZE) torch tensor
         """
-        in_al = torch.cat([action, latent], dim=1)
+
+        if self.conditional: 
+            in_al = torch.cat([action, latent, r], dim=1)
+        else: 
+            in_al = torch.cat([action, latent], dim=1)
 
         next_hidden = self.rnn(in_al, hidden)
         out_rnn = next_hidden[0]

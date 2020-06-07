@@ -165,4 +165,4 @@ class RolloutObservationDataset(_RolloutDataset): # pylint: disable=too-few-publ
         return data_length
 
     def _get_data(self, data, seq_index): # gives only a single observation at this point. 
-        return self._transform(data['observations'][seq_index])
+        return self._transform(data['observations'][seq_index]), data['rewards'][seq_index]

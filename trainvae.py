@@ -34,6 +34,7 @@ parser.add_argument('--nosamples', action='store_true',
 args = parser.parse_args()
 cuda = torch.cuda.is_available()
 
+conditional = True
 
 torch.manual_seed(123)
 # Fix numeric divergence due to bug in Cudnn
@@ -68,7 +69,7 @@ test_loader = torch.utils.data.DataLoader(
     dataset_test, batch_size=args.batch_size, shuffle=True, num_workers=16)
 
 
-model = VAE(3, LATENT_SIZE).to(device) # latent size. 
+model = VAE(3, LATENT_SIZE, conditional=conditional).to(device) # latent size. 
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
 earlystopping = EarlyStopping('min', patience=30)
@@ -102,18 +103,18 @@ def train(epoch):
     # # doesnt really matter as it will cycle back through again at a later period.  
     train_loss = 0
     for batch_idx, data in enumerate(train_loader): # go through whole buffer. 
-        data = data.to(device)
+        obs, rewards = [arr.to(device) for arr in data]
         optimizer.zero_grad()
-        recon_batch, mu, logsigma, _ = model(data)
-        loss = loss_function(recon_batch, data, mu, logsigma)
+        recon_batch, mu, logsigma, _ = model(obs)
+        loss = loss_function(recon_batch, obs, mu, logsigma)
         loss.backward()
         train_loss += loss.item()
         optimizer.step()
         if batch_idx % 20 == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
+                epoch, batch_idx * len(obs), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader),
-                loss.item() / len(data)))
+                loss.item() / len(obs)))
             # TODO: this is the length of the buffer, not the epoch (if these become separate.)
 
     print('====> Epoch: {} Average loss: {:.4f}'.format(
@@ -128,15 +129,16 @@ def test():
     test_loss = 0
     with torch.no_grad():
         for data in test_loader:
-            data = data.to(device)
-            recon_batch, mu, logvar, _ = model(data)
-            test_loss += loss_function(recon_batch, data, mu, logvar).item()
+            obs, rewards = [arr.to(device) for arr in data]
+            
+            recon_batch, mu, logvar, _ = model(obs, rewards)
+            test_loss += loss_function(recon_batch, obs, mu, logvar).item()
 
     test_loss /= len(test_loader.dataset)
     print('====> Test set loss: {:.4f}'.format(test_loss))
 
     # returns the last test data batch in order to use this for generating samples!
-    return test_loss, data
+    return test_loss, obs
 
 # check vae dir exists, if not, create it
 vae_dir = join(args.logdir, 'vae')
@@ -165,7 +167,7 @@ cur_best = None
 
 for epoch in range(1, args.epochs + 1):
     train_loss = train(epoch)
-    test_loss, last_test_databatch = test()
+    test_loss, last_test_observations = test()
     scheduler.step(test_loss)
     earlystopping.step(test_loss)
 
@@ -195,11 +197,11 @@ for epoch in range(1, args.epochs + 1):
     if not args.nosamples:
         with torch.no_grad():
             # get test samples
-            recon_batch, _, _, _ = model(last_test_databatch)
+            recon_batch, _, _, _ = model(last_test_observations)
             #sample = torch.randn(IMAGE_RESIZE_DIM, LATENT_SIZE).to(device) # random point in the latent space.  
             # image reduced size by the latent size. 64 x 32. is this a batch of 64 then?? 
             #sample = model.decoder(sample).cpu()
-            to_save = torch.cat([last_test_databatch.cpu(), recon_batch.cpu()], dim=0)
+            to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu()], dim=0)
             print(to_save.shape)
             # .view(args.batch_size*2, 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             save_image(to_save,

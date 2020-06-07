@@ -33,10 +33,13 @@ args = parser.parse_args()
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+assert args.include_reward==True, "check to ensure that the reward prediction is included. Comment this out if dont want it. "
+
 # constants
 BATCH_SIZE = 48
 SEQ_LEN = 256
 epochs = 30
+conditional=True 
 
 # Loading VAE
 vae_file = join(args.logdir, 'vae', 'best.tar')
@@ -60,9 +63,8 @@ logger = {k:[] for k in ['train_loss','test_loss']}
 if not exists(rnn_dir):
     mkdir(rnn_dir)
 
-mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5)
-mdrnn.to(device)
-# TODO: Change to Adam and get the params from Ha paper. 
+mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5, conditional=conditional ).to(device)
+
 optimizer = torch.optim.Adam(mdrnn.parameters(), lr=1e-3)
 scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
 earlystopping = EarlyStopping('min', patience=30)
@@ -157,7 +159,7 @@ def get_loss(latent_obs, action, reward, terminal,
                            for arr in [latent_obs, action,
                                        reward, terminal,
                                        latent_next_obs]]'''
-    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs)
+    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, reward)
     gmm = gmm_loss(latent_next_obs, mus, sigmas, logpi) # by default gives mean over all.
     # scale = LATENT_SIZE
     if include_reward:

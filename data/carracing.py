@@ -8,7 +8,7 @@ import gym
 import numpy as np
 from utils.misc import sample_continuous_policy
 
-def generate_data(rollouts, data_dir, noise_type, rand_seed, trim_controls): # pylint: disable=R0914
+def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls): # pylint: disable=R0914
     """ Generates data """
     assert exists(data_dir), "The data directory does not exist..."
 
@@ -39,7 +39,7 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, trim_controls): # p
             s, r, done, _ = env.step(action)
             env.env.viewer.window.dispatch_events() # needed for a bug in the rendering. 
             
-            if trim_controls:
+            if not dont_trim_controls:
                 s = s[:84]
             
             s_rollout += [s]
@@ -62,10 +62,10 @@ if __name__ == "__main__":
                         help='Noise type used for action sampling.',
                         default='brown')
     parser.add_argument('--rand_seed', type=int, help="Random seed here")
-    parser.add_argument('--trim_controls', action='store_false',
+    parser.add_argument('--dont_trim_controls', action='store_true',
                     help='Best model is not reloaded if specified')
     args = parser.parse_args()
 
-    print('the status of trimming the controls from the image is: ', args.trim_controls)
+    print('the status of trimming the controls from the image is: ', args.dont_trim_controls)
     
-    generate_data(args.rollouts, args.dir, args.policy, args.rand_seed, args.trim_controls)
+    generate_data(args.rollouts, args.dir, args.policy, args.rand_seed, args.dont_trim_controls)
