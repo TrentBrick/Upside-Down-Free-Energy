@@ -4,10 +4,21 @@ import torch.nn as nn
 
 class Controller(nn.Module):
     """ Controller """
-    def __init__(self, latents, recurrents, actions):
+    def __init__(self, latents, recurrents, actions, gamename):
         super().__init__()
+        self.gamename = gamename
         self.fc = nn.Linear(latents + recurrents, actions)
 
     def forward(self, *inputs):
         cat_in = torch.cat(inputs, dim=1)
-        return self.fc(cat_in)
+        out = self.fc(cat_in)
+
+        if self.gamename == 'carracing':
+            # order is direction, speed and brakes.
+            # -1 to 1. then 0 to 1 and 0 to 1. 
+            # following the approach from https://github.com/hardmaru/WorldModelsExperiments/blob/master/carracing/model.py 
+            out = torch.tanh(out)
+            out[0,1] = (out[0,1]+1)/2.0 # this converts tanh to sigmoid
+            out[0,2] = torch.clamp(out[0,2], min=0.0, max=1.0) # this makes it more likely that we dont break. 
+
+            return out

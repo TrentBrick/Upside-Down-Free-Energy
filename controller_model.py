@@ -165,7 +165,7 @@ class Models:
         _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden)
         return action.squeeze().cpu().numpy(), next_hidden
 
-    def rollout(self, rand_env_seed, params=None, render=False, time_limit=None):
+    def rollout(self, rand_env_seed, params=None, render=False, time_limit=None, trim_controls=True):
         """ Execute a rollout and returns minus cumulative reward.
 
         Load :params: into the controller and execute a single rollout. This
@@ -178,6 +178,7 @@ class Models:
         """
 
         self.env.render('rgb_array')
+        self.trim_controls = trim_controls
 
         # copy params into the controller
         if params is not None:
@@ -207,6 +208,11 @@ class Models:
             rollout_dict = {k:[] for k in ['obs', 'rew', 'act', 'term']}
         while True:
             #print('iteration of the rollout', i)
+
+            if self.trim_controls:
+                # need to trim the observation first
+                obs = obs[:84, :, :]
+
             obs = self.transform(obs).unsqueeze(0).to(self.device)
             action, hidden = self.get_action_and_transition(obs, hidden)
             

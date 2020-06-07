@@ -28,6 +28,7 @@ rand_seeds = np.random.randint(0,1000000000,args.threads)
 input_tuple = [(ind, r) for ind, r in enumerate(rand_seeds)]
 
 def _threaded_generation(input_tuple):
+    # NOTE: I was lazy and so the command for whether or not the controls are trimmed is inside carracing.py. 
     i = input_tuple[0]
     rand_seed = input_tuple[1]
     tdir = join(args.rootdir, 'thread_{}'.format(i))

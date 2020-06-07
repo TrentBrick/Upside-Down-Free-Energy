@@ -34,7 +34,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
         if test_agent: 
             # load in controller: 
-            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to('cpu')
+            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing').to('cpu')
             
             with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
                 ctrl_params = json.load(f)
@@ -244,6 +244,8 @@ if __name__ == '__main__':
 
             print(action)
             obs, reward, done, _ = env.step(action)
+            print(obs.shape)
+            print('infooooo:', _)
             monitor.set_data(obs)
 
         else:
