@@ -26,6 +26,7 @@ gamename = 'carracing'
 optimizer = 'cma'
 antithetic = True
 batch_mode = 'mean'
+condition=True 
 
 # seed for reproducibility
 seed_start = 0
@@ -55,7 +56,7 @@ def initialize_settings(parameters, sigma_init=0.1, sigma_decay=0.9999):
     #game = config.games[gamename]
 
     # TODO: init the controller model. and VAE and MDRNN. 
-    model = Models(gamename, 1000, mdir = 'exp_dir') # time limit
+    model = Models(gamename, 1000, mdir = 'exp_dir', condition=condition) # time limit
     num_params = len( flatten_parameters(model.controller.parameters()) )
     print("size of model", num_params)
 

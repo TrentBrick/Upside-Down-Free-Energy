@@ -62,7 +62,7 @@ def load_parameters(params, controller):
 class Models:
 
     def __init__(self, env_name, time_limit, 
-        mdir=None, return_events=False, give_models=None):
+        mdir=None, return_events=False, give_models=None, condition=True):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
@@ -86,7 +86,7 @@ class Models:
             if 'controller' in give_models.key():
                 self.controller = give_models['controller']
             else: 
-                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(self.device)
+                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, condition=condition).to(self.device)
                 # load controller if it was previously saved
                 ctrl_file = join(mdir, 'ctrl', 'best.tar')
                 if exists(ctrl_file):
@@ -140,7 +140,7 @@ class Models:
         self.render_mode = render_mode
         self.env = make_env(self.env_name, seed=seed, render_mode=render_mode, full_episode=full_episode)
 
-    def get_action_and_transition(self, obs, hidden):
+    def get_action_and_transition(self, obs, hidden, reward):
         """ Get action and transition.
 
         Encode obs to latent using the VAE, then obtain estimation for next
@@ -161,7 +161,7 @@ class Models:
 
         assert latent_z.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
 
-        action = self.controller(latent_z, hidden[0])
+        action = self.controller(latent_z, hidden[0], reward)
         _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden)
         return action.squeeze().cpu().numpy(), next_hidden
 
@@ -201,6 +201,7 @@ class Models:
         hidden = [
             torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
             for _ in range(2)]
+        reward = 0
 
         cumulative = 0
         i = 0
@@ -214,7 +215,7 @@ class Models:
                 obs = obs[:84, :, :]
 
             obs = self.transform(obs).unsqueeze(0).to(self.device)
-            action, hidden = self.get_action_and_transition(obs, hidden)
+            action, hidden = self.get_action_and_transition(obs, hidden, reward)
             
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
             obs, reward, done, _ = self.env.step(action)

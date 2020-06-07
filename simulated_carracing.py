@@ -31,10 +31,11 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
     def __init__(self, directory, real_obs=False, test_agent=False):
         self.real_obs = real_obs 
         self.test_agent = test_agent
+        self.condition = True 
 
         if test_agent: 
             # load in controller: 
-            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing').to('cpu')
+            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing', condition=self.condition).to('cpu')
             
             with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
                 ctrl_params = json.load(f)
@@ -81,7 +82,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.monitor = None
         self.figure = None
 
-    def agent_action(self, obs, hidden ):
+    def agent_action(self, obs, hidden, reward ):
 
         # why is none of this batched?? Because can't run lots of environments at a single point in parallel I guess. 
         mu, logsigma = self.vae.encoder(obs)
@@ -89,7 +90,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
         assert latent_z.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
 
-        action = self.controller(latent_z, hidden[0])
+        action = self.controller(latent_z, hidden[0], reward)
         _, _, _, _, _, next_hidden = self._rnn(action, latent_z, hidden)
         return action.squeeze().cpu().numpy(), next_hidden
 
@@ -223,6 +224,7 @@ if __name__ == '__main__':
         hidden = [
             torch.zeros(1, LATENT_RECURRENT_SIZE).to('cpu')
             for _ in range(2)]
+        reward = 0
 
         transform = transforms.Compose([
                 transforms.ToPILImage(),
@@ -240,12 +242,10 @@ if __name__ == '__main__':
             if args.test_agent: 
                 with torch.no_grad():
                     obs_t = transform(obs).unsqueeze(0).to('cpu')
-                    action, hidden = agent_class.agent_action(obs_t, hidden)
+                    action, hidden = agent_class.agent_action(obs_t, hidden, reward)
 
             print(action)
             obs, reward, done, _ = env.step(action)
-            print(obs.shape)
-            print('infooooo:', _)
             monitor.set_data(obs)
 
         else:
