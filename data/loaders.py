@@ -128,9 +128,10 @@ class RolloutSequenceDataset(_RolloutDataset): # pylint: disable=too-few-public-
         obs_data = self._transform(obs_data.astype(np.float32))
         action = data['actions'][seq_index+1:seq_index + self._seq_len + 1]
         action = action.astype(np.float32)
-        reward, terminal = [data[key][seq_index+1:
+        reward, terminal = [data[key][seq_index:
                                       seq_index + self._seq_len + 1].astype(np.float32)
                             for key in ('rewards', 'terminals')]
+        reward = np.expand_dims(reward, 1)
         return obs_data, action, reward, terminal
 
     def _data_per_sequence(self, data_length):
@@ -165,4 +166,4 @@ class RolloutObservationDataset(_RolloutDataset): # pylint: disable=too-few-publ
         return data_length
 
     def _get_data(self, data, seq_index): # gives only a single observation at this point. 
-        return self._transform(data['observations'][seq_index]), data['rewards'][seq_index]
+        return self._transform(data['observations'][seq_index]), np.expand_dims(data['rewards'][seq_index], 1)

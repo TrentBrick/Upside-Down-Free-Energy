@@ -83,6 +83,8 @@ class MDRNN(_MDRNNBase):
             - ds: (BSIZE, SEQ_LEN) torch tensor
         """
         seq_len, bs = actions.size(0), actions.size(1)
+        #r = r.unsqueeze(1)
+        print(actions.shape, latents.shape, r.shape )
 
         #print(actions.shape, latents.shape)
         if self.conditional: 
@@ -138,7 +140,7 @@ class MDRNNCell(_MDRNNBase):
             - rs: (BSIZE) torch tensor
             - ds: (BSIZE) torch tensor
         """
-
+        #r = r.unsqueeze(1)
         if self.conditional: 
             in_al = torch.cat([action, latent, r], dim=1)
         else: 

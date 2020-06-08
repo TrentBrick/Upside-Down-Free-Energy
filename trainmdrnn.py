@@ -87,14 +87,14 @@ transform = transforms.Lambda(
 # note that the buffer sizes are very small. and batch size is even smaller.
 # batch size is smaller because each element is in fact 32 observations!
 train_loader = DataLoader(
-    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
+    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=3),
     batch_size=BATCH_SIZE, num_workers=16, shuffle=True, drop_last=True)
 test_loader = DataLoader(
-    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=10),
+    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=1),
     batch_size=BATCH_SIZE, num_workers=16, drop_last=True)
 
 # TODO: Wasted compute. split into obs and next obs only much later!!
-def to_latent(obs):
+def to_latent(obs, rewards):
     """ Transform observations to latent space.
 
     :args obs: 5D torch tensor (BATCH_SIZE, SEQ_LEN, ACTION_SIZE, SIZE, SIZE)
@@ -105,14 +105,15 @@ def to_latent(obs):
     with torch.no_grad():
         obs = [
             # reshaping the image why wasnt this part of the normal transform? cant use transform as it is applying it to a batch of seq len!!
-            f.upsample(x.view(-1, 3, SIZE, SIZE), size=IMAGE_RESIZE_DIM,
+            # 84 becasue of the trimming!
+            f.upsample(x.view(-1, 3, 84, SIZE), size=IMAGE_RESIZE_DIM, 
                        mode='bilinear', align_corners=True)
             for x in obs] # woah! I didn't know you could give a for loop tuples like this!
 
         # forloop over the batches which are now in a list. 
         latent_obs = []
-        for x in obs:
-            mu, logsigma = vae.encoder(x)
+        for x, r in zip(obs, rewards):
+            mu, logsigma = vae.encoder(x, r)
             latent_obs.append( mu + logsigma.exp() * torch.randn_like(mu) )
 
         #(obs_mu, obs_logsigma) = zip(*[
@@ -131,7 +132,7 @@ def to_latent(obs):
         #print('latent obs', latent_obs.shape)
     return latent_obs
 
-def get_loss(latent_obs, action, reward, terminal,
+def get_loss(latent_obs, action, pres_reward, next_reward, terminal,
              latent_next_obs, include_reward: bool, include_terminal:bool):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 
@@ -159,11 +160,11 @@ def get_loss(latent_obs, action, reward, terminal,
                            for arr in [latent_obs, action,
                                        reward, terminal,
                                        latent_next_obs]]'''
-    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, reward)
+    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, pres_reward)
     gmm = gmm_loss(latent_next_obs, mus, sigmas, logpi) # by default gives mean over all.
     # scale = LATENT_SIZE
     if include_reward:
-        mse = f.mse_loss(rs, reward)
+        mse = f.mse_loss(rs, next_reward.squeeze())
         #scale += 1
     else:
         mse = 0
@@ -198,14 +199,17 @@ def data_pass(epoch, train, include_reward, include_terminal): # pylint: disable
         obs, action, reward, terminal = [arr.to(device) for arr in data]
 
         # transform obs
-        latent_obs = to_latent(obs)
+        latent_obs = to_latent(obs, reward)
 
         #split into previous and next observations:
         latent_next_obs = latent_obs[:,1:,:].clone() #possible BUG: need to ensure these tensors are different to each other. Tensors arent being modified though so should be ok? Test it anyways.
         latent_obs = latent_obs[:,:-1,:]
+
+        next_reward = reward[:, 1:].clone()
+        pres_reward = reward[:, :-1]
         
         if train:
-            losses = get_loss(latent_obs, action, reward,
+            losses = get_loss(latent_obs, action, pres_reward, next_reward,
                               terminal, latent_next_obs, include_reward, include_terminal)
 
             optimizer.zero_grad()

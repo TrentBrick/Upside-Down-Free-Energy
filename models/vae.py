@@ -90,7 +90,8 @@ class VAE(nn.Module):
 
     def forward(self, v, r): # pylint: disable=arguments-differ
         
-        r = r.unsqueeze(1)
+        #r = r.unsqueeze(1)
+        print(v.shape, r.shape)
         mu, logsigma = self.encoder(v, r)
         sigma = logsigma.exp()
         eps = torch.randn_like(sigma)
