@@ -84,7 +84,6 @@ class MDRNN(_MDRNNBase):
         """
         seq_len, bs = actions.size(0), actions.size(1)
         #r = r.unsqueeze(1)
-        print(actions.shape, latents.shape, r.shape )
 
         #print(actions.shape, latents.shape)
         if self.conditional: 

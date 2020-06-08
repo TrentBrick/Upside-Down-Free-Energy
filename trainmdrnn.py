@@ -97,39 +97,28 @@ test_loader = DataLoader(
 def to_latent(obs, rewards):
     """ Transform observations to latent space.
 
-    :args obs: 5D torch tensor (BATCH_SIZE, SEQ_LEN, ACTION_SIZE, SIZE, SIZE)
+    :args obs: 5D torch tensor (BATCH_SIZE, SEQ_LEN, Channel Size, SIZE, SIZE)
     
     :returns: (latent_obs, latent_next_obs)
         - latent_obs: 4D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
     """
     with torch.no_grad():
-        obs = [
+        # obs shape is: [48, 257, 3, 84, 96] currently. this means each batch when we loop over and use
+        # the seq len as the batch is 257 long!
+    
+        latent_obs = []
+        for x, r in zip(obs, rewards): # loop over the batches. 
+
             # reshaping the image why wasnt this part of the normal transform? cant use transform as it is applying it to a batch of seq len!!
             # 84 becasue of the trimming!
-            f.upsample(x.view(-1, 3, 84, SIZE), size=IMAGE_RESIZE_DIM, 
+            x = f.upsample(x.view(-1, 3, 84, SIZE), size=IMAGE_RESIZE_DIM, 
                        mode='bilinear', align_corners=True)
-            for x in obs] # woah! I didn't know you could give a for loop tuples like this!
 
-        # forloop over the batches which are now in a list. 
-        latent_obs = []
-        for x, r in zip(obs, rewards):
             mu, logsigma = vae.encoder(x, r)
-            latent_obs.append( mu + logsigma.exp() * torch.randn_like(mu) )
+            latent_obs.append( mu + (logsigma.exp() * torch.randn_like(mu)) )
 
-        #(obs_mu, obs_logsigma) = zip(*[
-        #    vae(x)[1:] for x in obs]) # ignoring the reconstructed image itself. mu and sigma only. 
-
-        #TODO: have z be returned by the VAE. Then wouldn't have to run this loop.
-        # I guess it is pretty fast though. 
-        #print(len(obs_mu), obs_mu[0].shape)
-        #print(len(obs_logsigma), obs_logsigma[0].shape)
-        #print((obs_mu[0] + obs_logsigma[0].exp() * torch.randn_like(obs_mu[0])).shape)
-        '''latent_obs = [
-            (x_mu + x_logsigma.exp() * torch.randn_like(x_mu))
-            for x_mu, x_logsigma in
-            zip(obs_mu, obs_logsigma)]'''
         latent_obs = torch.stack(latent_obs)
-        #print('latent obs', latent_obs.shape)
+       
     return latent_obs
 
 def get_loss(latent_obs, action, pres_reward, next_reward, terminal,
