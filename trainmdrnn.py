@@ -201,7 +201,7 @@ def data_pass(epoch, train, include_reward, include_terminal): # pylint: disable
         latent_obs = to_latent(obs)
 
         #split into previous and next observations:
-        latent_next_obs = latent_obs[:,1:,:] #possible BUG: need to ensure these tensors are different to each other. Tensors arent being modified though so should be ok? Test it anyways.
+        latent_next_obs = latent_obs[:,1:,:].clone() #possible BUG: need to ensure these tensors are different to each other. Tensors arent being modified though so should be ok? Test it anyways.
         latent_obs = latent_obs[:,:-1,:]
         
         if train:
