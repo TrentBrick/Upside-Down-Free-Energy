@@ -8,7 +8,7 @@ import numpy as np
 from models import MDRNNCell, VAE, Controller
 import pickle
 import gym 
-
+from feef import feef_loss 
 from ha_env import make_env
 #import gym
 #import gym.envs.box2d
@@ -165,6 +165,7 @@ class Models:
         else: 
             action = self.controller(latent_z, hidden[0], reward)
         _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden, reward)
+        
         return action.squeeze().cpu().numpy(), next_hidden
 
     def rollout(self, rand_env_seed, params=None, render=False, time_limit=None, trim_controls=True):
@@ -220,15 +221,16 @@ class Models:
                 # need to trim the observation first
                 obs = obs[:84, :, :]
 
-            if self.return_events: 
-                for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], [obs,reward, action, done]):
-                    rollout_dict[key].append(var)
-
             obs = self.transform(obs).unsqueeze(0).to(self.device)
             reward = torch.Tensor([reward]).to(self.device).unsqueeze(0)
             
             action, hidden = self.get_action_and_transition(obs, hidden, reward)
             
+            if self.return_events: 
+                for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
+                                        [obs,reward, action, done ]):
+                    rollout_dict[key].append(var)
+
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
             obs, reward, done, _ = self.env.step(action)
             if self.use_old_gym:
@@ -243,15 +245,103 @@ class Models:
                 #print('done with this simulation')
                 if self.return_events:
                     for k,v in rollout_dict.items():
-                        rollout_dict[k] = np.array(v)
+                        rollout_dict[k] = torch.Tensor(v, requires_grad=False)
                     return cumulative, rollout_dict, i
                 else: 
                     return cumulative, i # ending time and cum reward
             i += 1
 
+    def p_policy(self, rollout_dict, num_z_samps, num_next_z_samps):
+
+        # rollout_dict values are of the size and shape seq_len, values dimensions. 
+
+        '''#Should have access already
+        #transform then encode the observations and sample latent zs
+        #obs = transform(obs).unsqueeze(0).to(device)
+        # batch, channels, image dim, image dim
+        #mu, logsigma = vae.encoder(obs)'''
+
+        print('this might give OOM and need to break into batch')
+        # TODO: break the sequence length into smaller batches. 
+        
+        total_samples = num_z_samps * num_next_z_samps
+        expected_kld = 0
+
+        mus, logsigmas = self.vae.encoder(rollout_dict['obs'], rollout_dict['rewards'])
+
+        for _ in range(num_z_samps): # vectorize this somehow 
+            latent_z =  mus + logsigmas.exp() * torch.randn_like(mus)
+
+            # predict the next state from this one. 
+            # I already have access to the action from the runs generated. 
+            # TODO: make both of these run with a batch. DONT NEED TO GENERATE OR PASS AROUND HIDDEN AS A RESULT. 
+
+            md_mus, md_sigmas, md_logpi, r, d, next_hidden = self.mdrnn(rollout_dict['actions'], latent_z)
+
+            # sample the next latent variable 
+            next_r = self.reward_predictor(next_hidden)
+            # reward loss 
+            log_reward_surprise = self.reward_prior.log_prob(next_r)
+
+            g_probs = Categorical(probs=torch.exp(logpi).permute(0,2,1))
+            which_g = g_probs.sample()
+            mus_g, sigs_g = torch.gather(mus.squeeze(), 0, which_g), torch.gather(sigmas.squeeze(), 0, which_g)
+            #print(mus_g.shape)
+            for _ in range(num_next_z_samps):
+                next_z = mus_g + sigs_g * torch.randn_like(mus_g)
+                hat_obs = self.vae.decoder(next_z, next_r)
+                # reconstruction loss: 
+                BCE = F.mse_loss(hat_obs, obs, size_average=False)
+
+                per_time_loss = torch.log(BCE) + log_reward_surprise
+
+                # can sum across time with these logs. 
+                expected_loss += torch.sum(per_time_loss, dim=)
+                # multiply all of these probabilities together within a single batch. 
+
+        # average across the rollouts. 
+
+        return expected_loss / total_samples
+
+    def p_tilde(self):
+        # for the actual observations need to compute the prob of seeing it and its reward
+        # the rollout will also contain the reconstruction loss so: 
+
+        # batch is the observations at different time points. 
+        BCE = F.mse_loss(hat_obs, obs, size_average=False)
+        # all of the rewards
+        reward_surprise = self.reward_likelihood(r)
+
+        per_time_loss = torch.log(BCE*reward_surprise)
+
+        # can sum across time with these logs. 
+        expected_loss += torch.sum(per_time_loss, dim=)
+
+        return expected_loss
+
+    def feef_loss(self, data_dict_rollout):
+
+        num_z_samps = 3
+        num_next_z_samps = 3 
+        data_dict_rollout = {k:v.to(self.device) for k, v in data_dict_rollout.items()}
+
+        self.reward_prior = torch.distributions.Normal(1.5,0.5)
+
+
+        # choose the action that minimizes the following reward.
+        # provided with information from a single rollout 
+        # this includes the observation, the actions taken, the VAE mu and sigma, and the next hidden state predictions. 
+        # for p_opi
+        # should see what the difference in variance is between using a single value and taking an expectation over many. 
+        # as calculating a single value would be so much faster. 
+
+            return torch.log( p_policy(data_dict_rollout, num_z_samps, num_next_z_samps) ) - torch.log( p_tilde(data_dict_rollout) )
+
+
+
     def simulate(self, params, train_mode=True, 
         render_mode=False, num_episode=16, 
-        seed=27, max_len=1000): # run lots of rollouts 
+        seed=27, max_len=1000, compute_feef=False): # run lots of rollouts 
 
         # update params into the controller
         self.controller = load_parameters(params, self.controller)
@@ -269,7 +359,10 @@ class Models:
         reward_list = []
         t_list = []
         if self.return_events:
-            data_dict_list = []
+            if compute_feef:
+                feef_losses = []
+            else: 
+                data_dict_list = []
 
         if max_len ==-1:
             max_len = 1000 # making it very long
@@ -281,7 +374,13 @@ class Models:
                 if self.return_events: 
                     rew, data_dict, t = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)
-                    data_dict_list.append(data_dict) # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
+                    # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
+                
+                    if compute_feef: 
+                        feef_losses.append(  self.feef_loss(data_dict)  )
+                    else: 
+                        data_dict_list.append(data_dict)
+
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)
@@ -289,7 +388,10 @@ class Models:
                 t_list.append(t)
 
         if self.return_events: 
-            return reward_list, data_dict_list, t_list
+            if compute_feef:
+                return reward_list, t_list, feef_losses # no need to return the data.
+            else: 
+                return reward_list, t_list, data_dict_list
         else: 
             return reward_list, t_list
 

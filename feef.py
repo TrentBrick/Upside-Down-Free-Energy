@@ -1,23 +1,12 @@
-import torch 
+"""import torch 
 from torch.nn import functional as F
 from torchvision import transforms
 from torchvision.utils import save_image
 
-# choose the action that minimizes the following reward.
-# collect a batch of runs. with different policies. 
-# this includes the observation, the actions taken, the VAE mu and sigma, and the next hidden state predictions. 
-for rollout in set_of_rollouts: 
-    torch.log( p_opi ) - torch.log( p_tilde )
-
-# for p_opi
-
-# should see what the difference in variance is between using a single value and taking an expectation over many. 
-# as calculating a single value would be so much faster. 
-
 num_z_samps = 3
 num_next_z_samps = 3 
 
-def p_opi():
+def p_policy():
 
     '''#Should have access already
     #transform then encode the observations and sample latent zs
@@ -26,9 +15,7 @@ def p_opi():
     #mu, logsigma = vae.encoder(obs)'''
 
     total_samples = num_z_samps * num_next_z_samps
-
-    expected_loss = 
-
+    expected_kld = 0
     for _ in range(num_z_samps): # vectorize this somehow 
         latent_z =  mus + logsigmas.exp() * torch.randn_like(mus)
 
@@ -57,10 +44,6 @@ def p_opi():
 
             # can sum across time with these logs. 
             expected_loss += torch.sum(per_time_loss, dim=)
-
-
-            
-
             # multiply all of these probabilities together within a single batch. 
 
     # average across the rollouts. 
@@ -82,3 +65,20 @@ def p_tilde():
     expected_loss += torch.sum(per_time_loss, dim=)
 
     return expected_loss
+
+def feef_loss(data_dict_rollout):
+
+    # choose the action that minimizes the following reward.
+    # provided with information from a single rollout 
+    # this includes the observation, the actions taken, the VAE mu and sigma, and the next hidden state predictions. 
+    # for p_opi
+    # should see what the difference in variance is between using a single value and taking an expectation over many. 
+    # as calculating a single value would be so much faster. 
+
+        return torch.log( p_policy(data_dict_rollout) ) - torch.log( p_tilde(data_dict_rollout) )
+
+    
+
+
+
+"""

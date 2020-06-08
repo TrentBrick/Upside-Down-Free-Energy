@@ -161,8 +161,9 @@ def run_vae(obs, rewards):
     vae_res_dict = {n:[] for n in vae_output_names}
     for x, r in zip(obs, rewards):
 
-        x = f.upsample(x.view(-1, 3, 84, SIZE), size=IMAGE_RESIZE_DIM, 
-                       mode='bilinear', align_corners=True)
+        # the rollout generator returns observations that have already been resized and VAE transformed
+        #x = f.upsample(x.view(-1, 3, 84, SIZE), size=IMAGE_RESIZE_DIM, 
+        #               mode='bilinear', align_corners=True)
 
         vae_ouputs = vae(x, r)
         for ind, n in vae_output_names:
@@ -180,7 +181,7 @@ def vae_loss_function(recon_x, x, mu, logsigma):
     mu and logsigma: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
     treating time independently here. 
     """
-    recon_x, x, mu, logsigma = 
+    
     # reconstruction loss. 
     BCE = F.mse_loss(recon_x.flatten(end_dim=1), x.flatten(end_dim=1), size_average=False)
 
@@ -328,16 +329,17 @@ time_limit =1000 # for the rollouts generated
 seq_len = 64
 
 # Data Loading. Cant use previous transform directly as it is a seq len sized batch of observations!!
-transform = transforms.Lambda(
-    lambda x: np.transpose(x, (0, 3, 1, 2)) / 255) #why is this necessary?
+#transform = transforms.Lambda(
+#    lambda x: np.transpose(x, (0, 3, 1, 2)) / 255) #why is this necessary?
 
 log_step = 10
 for e in range(epochs):
     # run the current policy with the current VAE and MDRNN
     # does this data need to be on policy? no. TODO: implement memory buffer
 
-    train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), transform, seq_len, 
-        time_limit, args.logdir, num_rolls=16, num_workers=args.num_workers )
+    train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
+            seq_len, 
+            time_limit, args.logdir, num_rolls=16, num_workers=args.num_workers )
  
     train_loader = DataLoader(train_dataset,
         batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
@@ -377,16 +379,7 @@ for e in range(epochs):
 
     # train the controller/policy using the updated VAE and MDRNN
 
-
-    generate_rollouts(flatten_parameters(controller.parameters()), transform, seq_len, 
-        time_limit, args.logdir, num_rolls=16, num_workers=args.num_workers )
-
-
-
-    args. ...
-    train_controller(args, 
-        model_variables_dict=model_variables_dict_NO_CTRL, 
-        return_events=False)
+    best_reward, best_feef, best_params = train_controller()
 
     # best, worst, std, mean, best on eval!
     train_loss_dict['policy_best'] .... 

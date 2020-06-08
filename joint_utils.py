@@ -34,7 +34,8 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
         seq_index = i - self._cum_size[rollout_index] # references the previous file length. so normalizes to within this file's length. 
         
         obs_data = self.data['obs'][rollout_index][seq_index:seq_index + self._seq_len + 1]
-        obs_data = self._transform(obs_data.astype(np.float32))
+        if self._transform:
+            obs_data = self._transform(obs_data.astype(np.float32))
         action = self.data['act'][rollout_index][seq_index+1:seq_index + self._seq_len + 1]
         action = action.astype(np.float32)
         reward, terminal = [self.data[key][rollout_index][seq_index:
@@ -46,8 +47,24 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
     def __len__(self):
         return self._cum_size[-1]
 
-def generate_rollouts(ctrl_params, transform, seq_len, 
-    time_limit, logdir, num_rolls=2, num_workers=16): # this makes 32 pieces of data.
+def combine_worker_rollouts(inp, dim=2):
+    """Combine data across the workers and their rollouts (making each rollout a separate batch)
+    I currently only care about the data_dict_list. This is a list of each rollout: 
+    each one has the dictionary keys: 'obs', 'rewards', 'actions', 'terminal'"""
+    first_iter = True
+    for worker_rollouts in inp: 
+        for rollout_data_dict in worker_rollouts[dim]:
+            if first_iter:
+                combo_dict = rollout_data_dict
+                first_iter = False
+            else: 
+                combo_dict = {k:v.append(rollout_data_dict[k]) for k, v in combo_dict.items()}
+    
+    #combo_dict = {k:torch.stack(v) for k, v in combo_dict.items()}
+    return combo_dict
+
+def generate_rollouts(ctrl_params, seq_len, 
+    time_limit, logdir, num_rolls=2, num_workers=16, transform=None): # this makes 32 pieces of data.
 
     # 10% of the rollouts to use for test data. 
     ninety_perc = ten_perc - np.floor(num_workers*0.1)
@@ -57,36 +74,18 @@ def generate_rollouts(ctrl_params, transform, seq_len,
 
     worker_data = []
     for i in range(num_workers):
-        worker_data.append( (ctrl_params, rand_ints[i], num_rolls, time_limit, logdir) )
+        worker_data.append( (ctrl_params, rand_ints[i], num_rolls, time_limit, logdir, False ) ) # compute FEEF.
 
     with Pool(processes=num_workers) as pool:
         res = pool.map(worker, worker_data) 
     # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
     print('done with pool')
-
-    # combine data across the workers and their rollouts (making each rollout a separate batch)
-    # I currently only care about the data_dict_list. This is a list of each rollout: 
-    # each one has the dictionary keys: 'obs', 'rewards', 'actions', 'terminal'
     
-    def combine_worker_rollouts(input):
-    
-        first_iter = True
-        for worker_rollouts in input: 
-            for rollout_data_dict in worker_rollouts[1]:
-                if first_iter:
-                    combo_dict = rollout_data_dict
-                    first_iter = False
-                else: 
-                    combo_dict = {k:v.append(rollout_data_dict[k]) for k, v in combo_dict.items()}
-        
-        #combo_dict = {k:torch.stack(v) for k, v in combo_dict.items()}
-        return combo_dict
-
-    return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc]) , seq_len),  \
-                GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:]), seq_len)
+    return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], dim=2) , seq_len),  \
+                GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], dim=2), seq_len)
 
 def worker(inp): # run lots of rollouts 
-    ctrl_params, seed, num_episodes, max_len, logdir = inp
+    ctrl_params, seed, num_episodes, max_len, logdir, compute_feef = inp
     print('worker has started')
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
@@ -95,7 +94,9 @@ def worker(inp): # run lots of rollouts
     model.make_env(seed)
 
     return model.simulate(ctrl_params, train_mode=True, render_mode=False, 
-        num_episode=num_episodes, seed=seed, max_len=max_len)
+            num_episode=num_episodes, seed=seed, max_len=max_len, compute_feef=compute_feef)
+    
+
 
 def sprint(*args):
     print(*args) # if python3, can do print(*args)
@@ -142,7 +143,6 @@ def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per
             popsize=population_size)
 
     t = 0
-
     history = []
     history_best = []
     eval_log = []
@@ -173,26 +173,44 @@ def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per
         # each worker can try different sets of parameters. But for now I am not doing this. 
         worker_data = []
         for i in range(population_size):
-            worker_data.append( (solutions[i], rand_ints[i], num_episodes, max_len, logdir) )
+            worker_data.append( (solutions[i], rand_ints[i], num_episodes, max_len, logdir, True) ) # compute_feef=True
 
         with Pool(processes=num_workers) as pool:
             res = pool.map(worker, worker_data)
 
-        # reward_list, data_dict_list, t_list
+        reward_list, times_taken, feef_losses = [], [], []
+        for worker_rollouts in res:
+            for ind, listt in enumerate([reward_list, times_taken, feef_losses]):
+                listt.append( np.mean(worker_rollouts[ind] )
+
+        for listt in [reward_list, times_taken, feef_losses]:
+            listt = np.asarray(listt)
+
         print('done with pool')
         ###########################
 
+        mean_time_step = int(np.mean(times_taken)*100)/100. # get average time step
+        max_time_step = int(np.max(times_taken])*100)/100.
+        r_max = int(np.max(reward_list)*100)/100.
+        r_min = int(np.min(reward_list)*100)/100.
+        avg_reward = int(np.mean(reward_list)*100)/100. 
+        std_reward = int(np.std(reward_list)*100)/100. 
+        # TODO: implement the same rounding as above? 
+        fem_max = np.max(feef_losses)
+        fem_min = np.min(feef_losses)
+        avg_fem = np.mean(feef_losses)
+        std_fem = np.std(feef_losses)
 
-        reward_list_total = 
+        curr_time = int(time.time()) - start_time
 
-        reward_list = reward_list_total[:, 0] # get rewards
+        h = (t, curr_time, avg_reward, r_min, r_max, 
+                std_reward, int(es.rms_stdev()*100000)/100000., 
+                mean_time_step+1., int(max_time_step)+1., fem_min, fem_max, 
+                avg_fem, std_fem  )
 
-        mean_time_step = int(np.mean(reward_list_total[:, 1])*100)/100. # get average time step
-        max_time_step = int(np.max(reward_list_total[:, 1])*100)/100. # get average time step
-        avg_reward = int(np.mean(reward_list)*100)/100. # get average time step
-        std_reward = int(np.std(reward_list)*100)/100. # get average time step
+        history.append(h)
 
-        es.tell(reward_list)
+        es.tell(feef_losses)
 
         es_solution = es.result()
         model_params = es_solution[0] # best historical solution
@@ -201,19 +219,11 @@ def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per
 
         # NOTE: update the model parameters here. Why are they quantized and set here? 
         #model.controller = load_parameters(np.array(model_params).round(4), model.controller)
-        r_max = int(np.max(reward_list)*100)/100.
-        r_min = int(np.min(reward_list)*100)/100.
-
-        curr_time = int(time.time()) - start_time
-
-        h = (t, curr_time, avg_reward, r_min, r_max, std_reward, int(es.rms_stdev()*100000)/100000., mean_time_step+1., int(max_time_step)+1)
-
+        
         if cap_time_mode:
             max_len = 2*int(mean_time_step+1.0)
         else:
             max_len = -1
-
-        history.append(h)
 
         with open(filename, 'wt') as out:
             res = json.dump([np.array(es.current_param()).round(4).tolist()], out, sort_keys=True, indent=2, separators=(',', ': '))
@@ -243,7 +253,8 @@ def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per
                     sprint("reset to previous best params, where best_reward_eval =", best_reward_eval)
                     es.set_mu(best_model_params_eval)
             with open(filename_best, 'wt') as out:
-                res = json.dump([best_model_params_eval, best_reward_eval], out, sort_keys=True, indent=0, separators=(',', ': '))
+                # TODO: save out the FEM score that came with this
+                res = json.dump([best_model_params_eval, best_reward_eval, best_fem_eval], out, sort_keys=True, indent=0, separators=(',', ': '))
 
             # dump history of best
             curr_time = int(time.time()) - start_time
@@ -253,7 +264,6 @@ def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per
                 res = json.dump(history_best, out, sort_keys=False, indent=0, separators=(',', ':'))
 
             sprint("improvement", t, improvement, "curr", reward_eval, "prev", prev_best_reward_eval, "best", best_reward_eval)
-
 
 
 if __name__ == '__main__':
