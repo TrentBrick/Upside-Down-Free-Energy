@@ -55,7 +55,7 @@ class Encoder(nn.Module): # pylint: disable=too-many-instance-attributes
 
         if self.conditional:
             self.r_cond1 = nn.Linear((2*2*256)+1, 256)
-            self.r_cond2 = nn.Linear((256)+1, 128)
+            self.r_cond2 = nn.Linear(256, 128)
 
             self.fc_mu = nn.Linear(128, latent_size)
             self.fc_logsigma = nn.Linear(128, latent_size)
@@ -89,10 +89,12 @@ class VAE(nn.Module):
         self.decoder = Decoder(img_channels, latent_size, conditional)
 
     def forward(self, v, r): # pylint: disable=arguments-differ
+        
+        r = r.unsqueeze(1)
         mu, logsigma = self.encoder(v, r)
         sigma = logsigma.exp()
         eps = torch.randn_like(sigma)
         s = eps.mul(sigma).add_(mu)
 
         recon_x = self.decoder(s, r)
-        return recon_x, mu, logsigma ,z
+        return recon_x, mu, logsigma, s

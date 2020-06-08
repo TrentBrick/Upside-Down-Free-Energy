@@ -105,7 +105,7 @@ def train(epoch):
     for batch_idx, data in enumerate(train_loader): # go through whole buffer. 
         obs, rewards = [arr.to(device) for arr in data]
         optimizer.zero_grad()
-        recon_batch, mu, logsigma, _ = model(obs)
+        recon_batch, mu, logsigma, _ = model(obs, rewards)
         loss = loss_function(recon_batch, obs, mu, logsigma)
         loss.backward()
         train_loss += loss.item()
@@ -138,7 +138,7 @@ def test():
     print('====> Test set loss: {:.4f}'.format(test_loss))
 
     # returns the last test data batch in order to use this for generating samples!
-    return test_loss, obs
+    return test_loss, obs, rewards
 
 # check vae dir exists, if not, create it
 vae_dir = join(args.logdir, 'vae')
@@ -167,7 +167,7 @@ cur_best = None
 
 for epoch in range(1, args.epochs + 1):
     train_loss = train(epoch)
-    test_loss, last_test_observations = test()
+    test_loss, last_test_observations, last_test_rewards = test()
     scheduler.step(test_loss)
     earlystopping.step(test_loss)
 
@@ -197,7 +197,7 @@ for epoch in range(1, args.epochs + 1):
     if not args.nosamples:
         with torch.no_grad():
             # get test samples
-            recon_batch, _, _, _ = model(last_test_observations)
+            recon_batch, _, _, _ = model(last_test_observations, last_test_rewards)
             #sample = torch.randn(IMAGE_RESIZE_DIM, LATENT_SIZE).to(device) # random point in the latent space.  
             # image reduced size by the latent size. 64 x 32. is this a batch of 64 then?? 
             #sample = model.decoder(sample).cpu()
