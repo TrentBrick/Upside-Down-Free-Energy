@@ -279,9 +279,9 @@ class Models:
 
                 rand_env_seed = np.random.randint(0,1e9,1)[0]
                 if self.return_events: 
-                    rew, data, t = self.rollout(rand_env_seed, render=render_mode, 
+                    rew, data_dict, t = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)
-                    data_dict_list.append(data)
+                    data_dict_list.append(data_dict) # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)

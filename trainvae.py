@@ -162,7 +162,6 @@ if not args.noreload and exists(reload_file):
     scheduler.load_state_dict(state['scheduler'])
     earlystopping.load_state_dict(state['earlystopping'])
 
-
 cur_best = None
 
 for epoch in range(1, args.epochs + 1):

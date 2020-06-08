@@ -195,10 +195,9 @@ def vae_loss_function(recon_x, x, mu, logsigma):
         KLD = torch.max(KLD, kl_tolerance_scaled)
     return dict(loss=BCE + KLD, recon=BCE, kld=KLD)
 
-def mdrnn_loss_function(latent_obs, action, reward, terminal,
-             latent_next_obs):
-    # TODO: I thought for the car racer we werent predicting terminal states 
-    # and also in general that we werent predicting the reward of the next state. 
+def mdrnn_loss_function(latent_obs, latent_next_obs, action, 
+                            pres_reward, next_reward,
+                            terminal):
     """ Compute losses.
 
     The loss that is computed is:
@@ -223,11 +222,11 @@ def mdrnn_loss_function(latent_obs, action, reward, terminal,
                            for arr in [latent_obs, action,
                                        reward, terminal,
                                        latent_next_obs]]'''
-    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs)
+    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, pres_reward)
     gmm = gmm_loss(latent_next_obs, mus, sigmas, logpi) # by default gives mean over all.
     # scale = LATENT_SIZE
     if args.include_reward:
-        mse = f.mse_loss(rs, reward)
+        mse = f.mse_loss(rs, next_reward.squeeze())
         #scale += 1
     else:
         mse = 0
@@ -252,34 +251,35 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
         for model_var in [vae, mdrnn]:
             model_var.eval()
 
-    if epoch!=0: # first epoch. buffer init already loads one in. having to wait for reload at start slows debugging. 
-        loader.dataset.load_next_buffer()
-
-    def forward_and_loss():
-        # transform obs
-        vae_res_dict = run_vae(obs)
-        vae_loss = vae_loss_function(vae_res_dict['recon'], obs, vae_res_dict['mu'], vae_res_dict['logsigma'])
-
-        #split into previous and next observations:
-        latent_next_obs = vae_res_dict['z'][:,1:,:] #possible BUG: need to ensure these tensors are different to each other. Tensors arent being modified though so should be ok? Test it anyways.
-        latent_obs = vae_res_dict['z'][:,:-1,:]
-
-        mdrnn_loss = mdrnn_loss_function(latent_obs, action, reward,
-                            terminal, latent_next_obs)
-
-        return vae_loss, mdrnn_loss
-
     pbar = tqdm(total=len(loader.dataset), desc="Epoch {}".format(epoch))
 
     cumloss_dict = {n:0 for n in ['loss', 'loss_vae', 'loss_mdrnn','kld', 'recon', 'gmm', 'bce', 'mse']}
+
+    def forward_and_loss():
+        # transform obs
+        vae_res_dict = run_vae(obs, reward)
+        vae_loss_dict = vae_loss_function(vae_res_dict['recon'], obs, vae_res_dict['mu'], vae_res_dict['logsigma'])
+
+        #split into previous and next observations:
+        latent_next_obs = vae_res_dict['s'][:,1:,:].clone() #possible BUG: need to ensure these tensors are different to each other. Tensors arent being modified though so should be ok? Test it anyways.
+        latent_obs = vae_res_dict['s'][:,:-1,:]
+
+        next_reward = reward[:, 1:].clone()
+        pres_reward = reward[:, :-1]
+
+        mdrnn_loss_dict = mdrnn_loss_function(latent_obs, latent_next_obs, action, 
+                            pres_reward, next_reward,
+                            terminal )
+
+        return vae_loss_dict, mdrnn_loss_dict
 
     for i, data in enumerate(loader):
         obs, action, reward, terminal = [arr.to(device) for arr in data]
 
         if train:
 
-            vae_loss, mdrnn_loss = forward_and_loss()
-            total_loss = vae_loss['loss'] + mdrnn_loss['loss']
+            vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
+            total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
             # taking grad step after every batch. 
             optimizer.zero_grad()
@@ -288,37 +288,36 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
             optimizer.step()
         else:
             with torch.no_grad():
-                vae_loss, mdrnn_loss = forward_and_loss()
-                total_loss = vae_loss['loss'] + mdrnn_loss['loss']
+                vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
+                #total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
         # add to cumulative losses
         for k in cumloss_dict.keys():
-            for loss_dict in [vae_loss, mdrnn_loss]:
+            for loss_dict in [vae_loss_dict, mdrnn_loss_dict]:
                 if k in loss_dict.keys():
                     cumloss_dict[k] += loss_dict[k].item() if hasattr(loss_dict[k], 'item') else \
-                        loss_dict[k]
+                                            loss_dict[k]
         # separate vae and mdrnn losses: 
-        cumloss_dict['loss_vae'] += vae_loss['loss'].item()
-        cumloss_dict['loss_mdrnn'] += mdrnn_loss['loss'].item()
+        cumloss_dict['loss_vae'] += vae_loss_dict['loss'].item()
+        cumloss_dict['loss_mdrnn'] += mdrnn_loss_dict['loss'].item()
 
         # TODO: make this much more modular. 
         postfix_str = ""
         for k,v in cumloss_dict.items():
             v = v / (i + 1)
             postfix_str+= k+'='+str(round(v,4))=', '
-
         pbar.set_postfix_str(postfix_str)
         pbar.update(BATCH_SIZE)
     pbar.close()
 
-    for k in cumloss_dict.keys():
-        # puts it on a per seq len chunk level.
-        cumloss_dict[k] = (cumloss_dict[k]*BATCH_SIZE) / len(loader.dataset)
+    # puts losses on a per element level.
+    cumloss_dict = {k: (v*BATCH_SIZE) / len(loader.dataset) for k, v in cumloss_dict.items()}
 
     if train: 
         return cumloss_dict 
     else: 
-        return cumloss_dict, obs
+        return cumloss_dict, obs, reward 
+        # return the last observation and reward to generate the VAE examples. 
 
 train = partial(data_pass, train=True)
 test = partial(data_pass, train=False)
@@ -341,8 +340,7 @@ for e in range(epochs):
 
     train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), transform, seq_len, 
         time_limit, args.logdir, num_rolls=16, num_workers=args.num_workers )
-
-    # NOTE: unclear if these are necessesary. 
+ 
     train_loader = DataLoader(train_dataset,
         batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
     test_loader = DataLoader(test_dataset,
@@ -350,7 +348,7 @@ for e in range(epochs):
     
     # train VAE and MDRNN. uses partial(data_pass)
     train_loss_dict = train(e, train_loader)
-    test_loss_dict, last_test_obs = test(e, test_loader)
+    test_loss_dict, last_test_obs, last_test_rewards = test(e, test_loader)
     scheduler.step(test_loss_dict['loss'])
 
     # checkpointing the model: 
@@ -371,10 +369,12 @@ for e in range(epochs):
     # generating VAE samples
     if not args.nosamples:
         with torch.no_grad():
-            recon_batch, _, _, _ = vae(last_test_obs)
+            recon_batch, _, _, _ = vae(last_test_obs, last_test_rewards)
             to_save = torch.cat([last_test_obs.cpu(), recon_batch.cpu()], dim=0)
             save_image(to_save,
                        join(samples_dir, 'sample_' + str(epoch) + '.png'))
+
+    # TODO: generate MDRNN examples. 
 
     # train the controller/policy using the updated VAE and MDRNN
     args. ...
