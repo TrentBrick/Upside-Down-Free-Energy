@@ -135,10 +135,7 @@ class RolloutSequenceDataset(_RolloutDataset): # pylint: disable=too-few-public-
         return obs_data, action, reward, terminal
 
     def _data_per_sequence(self, data_length):
-        return data_length - self._seq_len # reduces by seq len so that...
-        # so that it pulls a new file if it would otherwise hit the end. Means get full batches every time. 
-        #TODO: a bug is if the sequence length is longer than the particular rollout length!
-        # this would make the cumulative rewards go backwards/get smaller over time!!! 
+        return data_length - self._seq_len 
 
 class RolloutObservationDataset(_RolloutDataset): # pylint: disable=too-few-public-methods
     """ Encapsulates rollouts.

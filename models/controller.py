@@ -4,10 +4,10 @@ import torch.nn as nn
 
 class Controller(nn.Module):
     """ Controller """
-    def __init__(self, latents, recurrents, actions, gamename, condition=True):
+    def __init__(self, latents, recurrents, actions, gamename, conditional=True):
         super().__init__()
         self.gamename = gamename
-        self.condition = condition 
+        self.condition = conditional
         if condition: 
             self.fc = nn.Linear(latents + recurrents+1, actions)
         else: 

@@ -2,12 +2,13 @@
 import numpy as np
 from os.path import join, exists
 from os import mkdir, unlink, listdir, getpid
-from multiprocessing import Queue, Process, cpu_count
+from multiprocessing import Pool 
 from bisect import bisect
 import torch
 import torch.utils.data
+from torchvision import transforms
+import gym 
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
-from traincontroller import slave_routine
 
 class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-public-methods
     def __init__(self, transform, data, seq_len): 
@@ -32,57 +33,60 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
         obs_data = self._transform(obs_data.astype(np.float32))
         action = data['act'][rollout_index][seq_index+1:seq_index + self._seq_len + 1]
         action = action.astype(np.float32)
-        reward, terminal = [data[key][rollout_index][seq_index+1:
+        reward, terminal = [data[key][rollout_index][seq_index:
                                       seq_index + self._seq_len + 1].astype(np.float32)
                             for key in ('rew', 'term')]
+        reward = np.expand_dims(reward, 1)
         return obs_data, action, reward, terminal
         
     def __len__(self):
         return self._cum_size[-1]
 
-def generate_rollouts(model_variables_dict, transform, seq_len, 
+def generate_rollouts(ctrl_params, transform, seq_len, 
     time_limit, logdir, num_rolls=16, num_workers=16):
-
-    # create tmp dir if non existent and clean it if existent
-    tmp_dir = join(logdir, 'tmp')
-    if not exists(tmp_dir):
-        mkdir(tmp_dir)
-    else:
-        for fname in listdir(tmp_dir):
-            unlink(join(tmp_dir, fname))
-
-    assert num_workers <= cpu_count()
 
     # 10% of the rollouts to use for test data. 
     ten_perc = np.floor(num_rolls*0.1)
 
-    # start processes for generating rollouts of the current policy. 
-    p_queue = Queue()
-    r_queue = Queue()
-    e_queue = Queue()
+    # generate a random number to give as a random seed to each pool worker. 
+    rand_ints = np.random.randint(0, 1e9, num_workers)
 
-    # generate a random number to give as a random seed to each process. 
-    rand_ints = np.random.randint(0, 1e9,num_workers)
+    worker_data = []
+    for i in range(num_workers):
+        worker_data.append( (ctrl_params, rand_ints[i], num_rolls, time_limit, logdir) )
 
-    for p_index in range(num_workers):
-        Process(target=slave_routine, args=(p_queue, r_queue, e_queue, p_index, 
-            rand_ints[p_index], time_limit, logdir, tmp_dir, model_variables_dict, return_events=True)).start()
+    with Pool(processes=num_workers) as pool:
 
-    r_list = [0] * pop_size  # cum rewards list
-    data_dict = {k:[] for k in ['obs', 'rew', 'act', 'term']}
-    for _ in range(num_rolls):
-        while r_queue.empty():
-            sleep(.1)
-        r_s_id, cum_rew, rollout_data_dict = r_queue.get() # data is currently all in numpy arrays in dictionary
-        r_list[r_s_id] += cum_rew / n_samples
+        res = pool.imap_unordered(run_simulations, worker_data)
 
-        for k, v in rollout_data_dict.items():
-            data_dict[k].append(v) # list of full rollouts inside each. 
+    # reward_list, data_dict_list, t_list
+    print(len(res), len(res[0]))
 
-    e_queue.put('EOP')
+    return GeneratedDataset(transform, data[:ten_perc], seq_len),  \
+                GeneratedDataset(transform, data[ten_perc:], seq_len)
 
-    return GeneratedDataset(transform, data[:ten_perc], seq_len), GeneratedDataset(transform, data[ten_perc:], seq_len)
+def worker(ctrl_params, seed, num_episodes, max_len, logdir): # run lots of rollouts 
 
-        
+    from controller_model import Models, load_parameters, flatten_parameters
+    gamename = 'carracing'
+    model = Models(gamename, 1000, mdir = logdir, conditional=True, 
+            return_events=True, use_old_gym=False)
 
-            
+    return model.simulate(ctrl_params, train_mode=True, render_mode=False, 
+        num_episode=num_episodes, seed=seed, max_len=max_len)
+
+if __name__ == '__main__':
+
+    import json 
+
+    with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
+        ctrl_params = json.load(f)
+
+    transform = transforms.Lambda(
+        lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
+
+    generate_rollouts(ctrl_params, transform, 30, 1000, 'exp_dir', num_rolls = 4, num_workers = 2 )
+
+
+
+

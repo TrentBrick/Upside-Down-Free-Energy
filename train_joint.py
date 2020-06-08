@@ -11,10 +11,10 @@ import numpy as np
 import json
 from tqdm import tqdm
 from joint_utils import generate_rollouts
+#from controller_model import flatten_parameters
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
 from utils.learning import EarlyStopping
-## WARNING : THIS SHOULD BE REPLACED WITH PYTORCH 0.5
 from utils.learning import ReduceLROnPlateau
 import sys
 from data.loaders import RolloutSequenceDataset
@@ -22,11 +22,9 @@ from models.vae import VAE
 from models.mdrnn import MDRNN, gmm_loss
 from models import Controller
 import cma
-from torch.multiprocessing import Process, Queue
+#from torch.multiprocessing import Process, Queue
 from time import sleep
-
-print('add ,z to the VAE code!!! right at the bottom. and do VAE surgery. Update code for MDRNN and train controller')
-break
+from multiprocessing import cpu_count
 
 parser = argparse.ArgumentParser("Joint training")
 parser.add_argument('--logdir', type=str,
@@ -44,16 +42,18 @@ parser.add_argument('--target-return', type=float, help='Stops once the return '
                     'gets above target_return')
 parser.add_argument('--display', action='store_true', help="Use progress bars if "
                     "specified.")
-parser.add_argument('--max-workers', type=int, help='Maximum number of workers.',
+parser.add_argument('--num-workers', type=int, help='Maximum number of workers.',
                     default=64)
 args = parser.parse_args()
 
 # Max number of workers. M
 
+assert args.num_workers <= cpu_count(), "Providing too many workers!" 
+
 # multiprocessing variables
 n_samples = args.n_samples
 pop_size = args.pop_size
-num_workers = min(args.max_workers, n_samples * pop_size)
+conditional =True
 
 #parser.add_argument('--include_terminal', action='store_true',
 #                    help="Add a terminal modelisation term to the loss.")
@@ -74,18 +74,17 @@ joint_dir = join(args.logdir, 'joint')
 filenames_dict = {m+'_'+bc:join(joint_dir, m+'_'+bc+'.tar') for bc in ['best', 'checkpoint'] \
                                                  for m in model_types}
 
-logger_filename = join(joint_dir, 'logger.json')
-#logger = {k:[] for k in ['train_losses','test_losses']} # more efficient append write out now. 
 samples_dir = join(joint_dir, 'samples')
-
 for dirr in [joint_dir, samples_dir]:
     if not exists(dirr):
         mkdir(dirr)
-    
+
+logger_filename = join(joint_dir, 'logger.txt')
+
 # load models
-vae = VAE(3, LATENT_SIZE).to(device)
-mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(device)
-controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(device)
+vae = VAE(3, LATENT_SIZE, conditional).to(device)
+mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5,conditional).to(device)
+controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional).to(device)
 
 # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
 optimizer = torch.optim.Adam([[vae.parameters()]+[mdrnn.parameters()]], lr=1e-3)
@@ -95,9 +94,11 @@ earlystopping = EarlyStopping('min', patience=30) # NOTE: this needs to be esp h
 model_variables_dict = dict(controller=controller, vae=vae, mdrnn=mdrnn)
 model_variables_dict_NO_CTRL = dict(vae=vae, mdrnn=mdrnn) # used for when the controller is trained and these models are provided. 
 # Loading in trained models: 
+
 cur_best=None
+ctrl_cur_best = -100000
 if not args.no_reload:
-    for name, model_var in model_variables_dict.items():
+    for name, model_var in model_variables_dict_NO_CTRL.items():
     # Loading from previous joint training or from all separate training
     # TODO: enable some to come from pretraining and others to be fresh. 
         if args.reload_from_joint:
@@ -106,13 +107,10 @@ if not args.no_reload:
             load_file = join(args.logdir, name, 'best.tar')
         assert exists(load_file), "No trained model in the logdir:: "+load_file
         state = torch.load(load_file, map_location={'cuda:0': str(device)})
-        if name != 'ctrl':
-            print("Loading model_type {} at epoch {} "
-                "with test error {}".format(name,
-                    state['epoch'], state['precision']))
-        elif name == 'ctrl':
-            print("Previous best was {}...".format(-cur_best))
-            cur_best = - state['reward']
+        #if name != 'ctrl':
+        print("Loading model_type {} at epoch {} "
+            "with test error {}".format(name,
+                state['epoch'], state['precision']))
 
         model_var.load_state_dict(state['state_dict'])
 
@@ -124,22 +122,32 @@ if not args.no_reload:
             scheduler.load_state_dict(state['scheduler'])
             earlystopping.load_state_dict(state['earlystopping'])
 
+    # load in the controller 
+    with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
+        ctrl_params = json.load(f)
+    print("Loading in the best controller model, its average eval score was:", ctrl_params[1])
+    controller = load_parameters(ctrl_params[0], self.controller)
+    ctrl_cur_best = ctrl_params[1]
+
+# never need gradients with controller for evo methods. 
+controller.eval()
+
 # Data Loading. Cant use previous transform directly as it is a seq len sized batch of observations!!
 transform = transforms.Lambda(
-    lambda x: np.transpose(x, (0, 3, 1, 2)) / 255) #why is this necessary?
+    lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
 
 # note that the buffer sizes are very small. and batch size is even smaller.
 # batch size is smaller because each element is in fact 32 observations!
 '''train_loader = DataLoader(
     RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
-    batch_size=BATCH_SIZE, num_workers=16, shuffle=True, drop_last=True)
+    batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
 test_loader = DataLoader(
     RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=10),
-    batch_size=BATCH_SIZE, num_workers=16, drop_last=True)'''
+    batch_size=BATCH_SIZE, num_workers=args.num_workers, drop_last=True)'''
 
-vae_output_names = ['recon', 'mu', 'logsigma', 'z']
+vae_output_names = ['recon_obs', 'mu', 'logsigma', 's']
 
-def run_vae(obs):
+def run_vae(obs, rewards):
     # TODO: update this documentation. 
     """ Transform observations to latent space.
 
@@ -148,17 +156,15 @@ def run_vae(obs):
     :returns: (latent_obs, latent_next_obs)
         - latent_obs: 4D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
     """
-    
-    obs = [
-        # reshaping the image why wasnt this part of the normal transform? cant use transform as it is applying it to a batch of seq len!!
-        f.upsample(x.view(-1, 3, SIZE, SIZE), size=IMAGE_RESIZE_DIM,
-                    mode='bilinear', align_corners=True)
-        for x in obs]
 
     # TODO: make this more pythonic and efficient. shouldnt have to loop over the VAE outputs. 
     vae_res_dict = {n:[] for n in vae_output_names}
-    for x in obs:
-        vae_ouputs = vae(x)
+    for x, r in zip(obs, rewards):
+
+        x = f.upsample(x.view(-1, 3, 84, SIZE), size=IMAGE_RESIZE_DIM, 
+                       mode='bilinear', align_corners=True)
+
+        vae_ouputs = vae(x, r)
         for ind, n in vae_output_names:
             vae_res_dict[n].append(vae_ouputs[ind])
 
@@ -239,11 +245,11 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
     """ One pass through the data """
     
     if train:
-        for model_var in model_variables:
+        for model_var in [vae, mdrnn]:
             model_var.train()
         
     else:
-        for model_var in model_variables:
+        for model_var in [vae, mdrnn]:
             model_var.eval()
 
     if epoch!=0: # first epoch. buffer init already loads one in. having to wait for reload at start slows debugging. 
@@ -333,13 +339,14 @@ for e in range(epochs):
     # run the current policy with the current VAE and MDRNN
     # does this data need to be on policy? no. TODO: implement memory buffer
 
-    train_dataset, test_dataset = generate_rollouts(model_variables_dict, transform, seq_len, 
-        time_limit, args.logdir, num_rolls=16, num_workers=16 )
+    train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), transform, seq_len, 
+        time_limit, args.logdir, num_rolls=16, num_workers=args.num_workers )
 
+    # NOTE: unclear if these are necessesary. 
     train_loader = DataLoader(train_dataset,
-        batch_size=BATCH_SIZE, num_workers=16, shuffle=True, drop_last=True)
+        batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
     test_loader = DataLoader(test_dataset,
-        batch_size=BATCH_SIZE, num_workers=16, drop_last=True)
+        batch_size=BATCH_SIZE, num_workers=args.num_workers, drop_last=True)
     
     # train VAE and MDRNN. uses partial(data_pass)
     train_loss_dict = train(e, train_loader)

@@ -87,10 +87,10 @@ transform = transforms.Lambda(
 # note that the buffer sizes are very small. and batch size is even smaller.
 # batch size is smaller because each element is in fact 32 observations!
 train_loader = DataLoader(
-    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=3),
+    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
     batch_size=BATCH_SIZE, num_workers=16, shuffle=True, drop_last=True)
 test_loader = DataLoader(
-    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=1),
+    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=10),
     batch_size=BATCH_SIZE, num_workers=16, drop_last=True)
 
 # TODO: Wasted compute. split into obs and next obs only much later!!
@@ -208,8 +208,8 @@ def data_pass(epoch, train, include_reward, include_terminal): # pylint: disable
             optimizer.step()
         else:
             with torch.no_grad():
-                losses = get_loss(latent_obs, action, reward,
-                                  terminal, latent_next_obs, include_reward)
+                losses = get_loss(latent_obs, action, pres_reward, next_reward,
+                                  terminal, latent_next_obs, include_reward, include_terminal)
 
         cum_loss += losses['loss'].item()
         cum_gmm += losses['gmm'].item()

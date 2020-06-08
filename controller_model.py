@@ -61,12 +61,13 @@ def load_parameters(params, controller):
 
 class Models:
 
-    def __init__(self, env_name, time_limit, 
-        mdir=None, return_events=False, give_models=None, condition=True):
+    def __init__(self, env_name, time_limit, use_old_gym=True, 
+        mdir=None, return_events=False, give_models=None, conditional=True):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
         self.env_name = env_name
+        self.use_old_gym = use_old_gym
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
@@ -86,7 +87,7 @@ class Models:
             if 'controller' in give_models.key():
                 self.controller = give_models['controller']
             else: 
-                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, condition=condition).to(self.device)
+                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=conditional).to(self.device)
                 # load controller if it was previously saved
                 ctrl_file = join(mdir, 'ctrl', 'best.tar')
                 if exists(ctrl_file):
@@ -138,8 +139,10 @@ class Models:
 
     def make_env(self, seed=-1, render_mode=False, full_episode=False):
         self.render_mode = render_mode
-        self.env = make_env(self.env_name, seed=seed, render_mode=render_mode, full_episode=full_episode)
-
+        if self.use_old_gym:
+            self.env = make_env(self.env_name, seed=seed, render_mode=render_mode, full_episode=full_episode)
+        else: 
+            self.env = gym.make("CarRacing-v0")
     def get_action_and_transition(self, obs, hidden, reward):
         """ Get action and transition.
 
@@ -156,13 +159,13 @@ class Models:
         """
 
         # why is none of this batched?? Because can't run lots of environments at a single point in parallel I guess. 
-        mu, logsigma = self.vae.encoder(obs)
+        mu, logsigma = self.vae.encoder(obs, reward)
         latent_z =  mu + logsigma.exp() * torch.randn_like(mu) 
 
         assert latent_z.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
 
         action = self.controller(latent_z, hidden[0], reward)
-        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden)
+        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden, reward)
         return action.squeeze().cpu().numpy(), next_hidden
 
     def rollout(self, rand_env_seed, params=None, render=False, time_limit=None, trim_controls=True):
@@ -177,7 +180,8 @@ class Models:
         # Why is this the minus cumulative reward?!?!!?
         """
 
-        self.env.render('rgb_array')
+        if self.use_old_gym:
+            self.env.render('rgb_array')
         self.trim_controls = trim_controls
 
         # copy params into the controller
@@ -192,21 +196,24 @@ class Models:
         torch.manual_seed(rand_env_seed)
         self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
         obs = self.env.reset()
-        #self.env.viewer.window.dispatch_events()
-        #obs = self.fixed_ob # np.random.random((3,96,96))
+        if self.use_old_gym:
+            self.env.viewer.window.dispatch_events()
 
-        # This first render is required !
-        #self.env.render()
+        if not self.use_old_gym:
+            # This first render is required !
+            self.env.render()
 
         hidden = [
             torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
             for _ in range(2)]
         reward = 0
+        done = 0
+        action = np.array([0.,0.,0.])
 
         cumulative = 0
         i = 0
         if self.return_events: 
-            rollout_dict = {k:[] for k in ['obs', 'rew', 'act', 'term']}
+            rollout_dict = {k:[] for k in ['obs', 'rewards', 'actions', 'terminal']}
         while True:
             #print('iteration of the rollout', i)
 
@@ -214,16 +221,18 @@ class Models:
                 # need to trim the observation first
                 obs = obs[:84, :, :]
 
+            if self.return_events: 
+                for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], [obs,reward, action, done]):
+                    rollout_dict[key].append(var)
+
             obs = self.transform(obs).unsqueeze(0).to(self.device)
+            reward = reward.to(self.device).unsqueeze(0)
             action, hidden = self.get_action_and_transition(obs, hidden, reward)
             
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
             obs, reward, done, _ = self.env.step(action)
-            #self.env.viewer.window.dispatch_events()
-
-            if self.return_events: 
-                for key, var in zip(['obs', 'rew', 'act', 'term'], [obs,reward, action, done]):
-                    rollout_dict[key].append(var)
+            if self.use_old_gym:
+                self.env.viewer.window.dispatch_events()
 
             if render:
                 pass
@@ -235,7 +244,7 @@ class Models:
                 if self.return_events:
                     for k,v in rollout_dict.items():
                         rollout_dict[k] = np.array(v)
-                    return cumulative, rollout_dict
+                    return cumulative, rollout_dict, i
                 else: 
                     return cumulative, i # ending time and cum reward
             i += 1
@@ -244,8 +253,6 @@ class Models:
         render_mode=False, num_episode=16, 
         seed=27, max_len=1000): # run lots of rollouts 
 
-
-        #print('seed recieved for this set of simulations', seed)
         # update params into the controller
         self.controller = load_parameters(params, self.controller)
 
@@ -261,6 +268,8 @@ class Models:
 
         reward_list = []
         t_list = []
+        if self.return_events:
+            data_dict_list = []
 
         if max_len ==-1:
             max_len = 1000 # making it very long
@@ -269,12 +278,20 @@ class Models:
             for i in range(num_episode):
 
                 rand_env_seed = np.random.randint(0,1e9,1)[0]
-                rew, t = self.rollout(rand_env_seed, render=render_mode, 
-                            params=None, time_limit=max_len)
+                if self.return_events: 
+                    rew, data, t = self.rollout(rand_env_seed, render=render_mode, 
+                                params=None, time_limit=max_len)
+                    data_dict_list.append(data)
+                else: 
+                    rew, t = self.rollout(rand_env_seed, render=render_mode, 
+                                params=None, time_limit=max_len)
                 reward_list.append(rew)
                 t_list.append(t)
 
-        return reward_list, t_list
+        if self.return_events: 
+            return reward_list, data_dict_list, t_list
+        else: 
+            return reward_list, t_list
 
 
     
