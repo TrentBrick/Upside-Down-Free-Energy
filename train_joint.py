@@ -11,7 +11,7 @@ import numpy as np
 import json
 from tqdm import tqdm
 from joint_utils import generate_rollouts
-#from controller_model import flatten_parameters
+from controller_model import flatten_parameters
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
 from utils.learning import EarlyStopping

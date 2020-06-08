@@ -4,14 +4,14 @@ import torch.nn as nn
 
 class Controller(nn.Module):
     """ Controller """
-    def __init__(self, latents, recurrents, actions, gamename, conditional=True):
+    def __init__(self, latents, recurrents, actions, gamename='carracing', conditional=True):
         super().__init__()
         self.gamename = gamename
-        self.condition = conditional
-        if condition: 
-            self.fc = nn.Linear(latents + recurrents+1, actions)
-        else: 
-            self.fc = nn.Linear(latents + recurrents, actions)
+        self.conditional = conditional
+        num_inputs = latents + recurrents
+        if conditional: 
+            num_inputs += 1 # for the reward
+        self.fc = nn.Linear(num_inputs, actions)
 
     def forward(self, *inputs):
         cat_in = torch.cat(inputs, dim=1)

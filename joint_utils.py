@@ -56,21 +56,24 @@ def generate_rollouts(ctrl_params, transform, seq_len,
         worker_data.append( (ctrl_params, rand_ints[i], num_rolls, time_limit, logdir) )
 
     with Pool(processes=num_workers) as pool:
-
-        res = pool.imap_unordered(run_simulations, worker_data)
+        res = pool.map(worker, worker_data)
 
     # reward_list, data_dict_list, t_list
-    print(len(res), len(res[0]))
+    print('done with pool')
+    #print(len(res), len(res[0]))
 
     return GeneratedDataset(transform, data[:ten_perc], seq_len),  \
                 GeneratedDataset(transform, data[ten_perc:], seq_len)
 
-def worker(ctrl_params, seed, num_episodes, max_len, logdir): # run lots of rollouts 
-
+def worker(inp): # run lots of rollouts 
+    ctrl_params, seed, num_episodes, max_len, logdir = inp
+    print('worker has started')
     from controller_model import Models, load_parameters, flatten_parameters
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
             return_events=True, use_old_gym=False)
+
+    model.make_env(seed)
 
     return model.simulate(ctrl_params, train_mode=True, render_mode=False, 
         num_episode=num_episodes, seed=seed, max_len=max_len)
@@ -85,7 +88,10 @@ if __name__ == '__main__':
     transform = transforms.Lambda(
         lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
 
-    generate_rollouts(ctrl_params, transform, 30, 1000, 'exp_dir', num_rolls = 4, num_workers = 2 )
+    print(len(ctrl_params[0]))
+
+    generate_rollouts(ctrl_params[0], transform, 30, 1000, 
+        'exp_dir', num_rolls = 4, num_workers = 1 )
 
 
 

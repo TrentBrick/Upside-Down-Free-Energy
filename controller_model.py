@@ -7,6 +7,7 @@ from torchvision import transforms
 import numpy as np
 from models import MDRNNCell, VAE, Controller
 import pickle
+import gym 
 
 from ha_env import make_env
 #import gym
@@ -58,6 +59,7 @@ def load_parameters(params, controller):
 
     return controller
 
+testing_old_controller = True 
 
 class Models:
 
@@ -86,16 +88,6 @@ class Models:
 
             if 'controller' in give_models.key():
                 self.controller = give_models['controller']
-            else: 
-                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=conditional).to(self.device)
-                # load controller if it was previously saved
-                ctrl_file = join(mdir, 'ctrl', 'best.tar')
-                if exists(ctrl_file):
-                    ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(self.device)})
-                    print("Loading Controller with reward {}".format(
-                        ctrl_state['reward']))
-                    self.controller.load_state_dict(ctrl_state['state_dict'])
-
             # need to load in the cell based version!
             self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(self.device)
             self.mdrnn.load_state_dict( 
@@ -128,7 +120,10 @@ class Models:
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
 
             #print('loadin in controller.')
-            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(self.device)
+            if testing_old_controller: 
+                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=False).to(self.device)
+            else: 
+                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=conditional).to(self.device)
 
             # load controller if it was previously saved
             if exists(ctrl_file):
@@ -143,6 +138,7 @@ class Models:
             self.env = make_env(self.env_name, seed=seed, render_mode=render_mode, full_episode=full_episode)
         else: 
             self.env = gym.make("CarRacing-v0")
+            self.env.seed(int(seed))
     def get_action_and_transition(self, obs, hidden, reward):
         """ Get action and transition.
 
@@ -164,7 +160,10 @@ class Models:
 
         assert latent_z.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
 
-        action = self.controller(latent_z, hidden[0], reward)
+        if testing_old_controller: 
+            action = self.controller(latent_z, hidden[0])
+        else: 
+            action = self.controller(latent_z, hidden[0], reward)
         _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden, reward)
         return action.squeeze().cpu().numpy(), next_hidden
 
@@ -226,7 +225,8 @@ class Models:
                     rollout_dict[key].append(var)
 
             obs = self.transform(obs).unsqueeze(0).to(self.device)
-            reward = reward.to(self.device).unsqueeze(0)
+            reward = torch.Tensor([reward]).to(self.device).unsqueeze(0)
+            
             action, hidden = self.get_action_and_transition(obs, hidden, reward)
             
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
