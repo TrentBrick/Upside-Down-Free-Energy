@@ -41,7 +41,8 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
         reward, terminal = [self.data[key][rollout_index][seq_index:
                                       seq_index + self._seq_len + 1].astype(np.float32)
                             for key in ('rew', 'term')]
-        reward = np.expand_dims(reward, 1)
+        # this transform is already being done and saved. 
+        #reward = np.expand_dims(reward, 1)
         return obs_data, action, reward, terminal
         
     def __len__(self):

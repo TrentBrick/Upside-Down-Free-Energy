@@ -12,8 +12,10 @@ from feef import feef_loss
 from ha_env import make_env
 #import gym
 #import gym.envs.box2d
-
+from torch.distributions.normal import Normal
+from torch.distributions.categorical import Categorical
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
+from trainvae import loss_function as original_vae_loss_function
 
 def flatten_parameters(params):
     """ Flattening parameters.
@@ -156,15 +158,15 @@ class Models:
 
         # why is none of this batched?? Because can't run lots of environments at a single point in parallel I guess. 
         mu, logsigma = self.vae.encoder(obs, reward)
-        latent_z =  mu + logsigma.exp() * torch.randn_like(mu) 
+        latent_s =  mu + logsigma.exp() * torch.randn_like(mu) 
 
-        assert latent_z.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
+        assert latent_s.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
 
         if testing_old_controller: 
-            action = self.controller(latent_z, hidden[0])
+            action = self.controller(latent_s, hidden[0])
         else: 
-            action = self.controller(latent_z, hidden[0], reward)
-        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden, reward)
+            action = self.controller(latent_s, hidden[0], reward)
+        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
         
         return action.squeeze().cpu().numpy(), next_hidden
 
@@ -251,7 +253,19 @@ class Models:
                     return cumulative, i # ending time and cum reward
             i += 1
 
-    def p_policy(self, rollout_dict, num_z_samps, num_next_z_samps):
+    def elbo_calculation(self, recon_obs, obs, mu, logsigma):
+
+        # vae loss function but also computes the normalizing constant. 
+        # and things are all positive not negative because we arent doing minimization here. 
+        # NOTE: I dont have free bits in here and dont think that I should. this enables a looser bound but doesnt affect the probability calculation. 
+        
+        log_p_obs_given_s = Normal(torch.flatten(recon_obs), 1.0)).log_prob(torch.flatten(obs))
+        
+        KLD = -0.5 * torch.sum(1 + 2 * logsigma - mu.pow(2) - (2 * logsigma).exp())
+        
+        return log_p_obs_given_s - KLD
+
+    def p_policy(self, rollout_dict, num_s_samps, num_next_s_samps):
 
         # rollout_dict values are of the size and shape seq_len, values dimensions. 
 
@@ -264,22 +278,21 @@ class Models:
         print('this might give OOM and need to break into batch')
         # TODO: break the sequence length into smaller batches. 
         
-        total_samples = num_z_samps * num_next_z_samps
+        total_samples = num_s_samps * num_next_s_samps
         expected_kld = 0
 
         mus, logsigmas = self.vae.encoder(rollout_dict['obs'], rollout_dict['rewards'])
 
-        for _ in range(num_z_samps): # vectorize this somehow 
-            latent_z =  mus + logsigmas.exp() * torch.randn_like(mus)
+        for _ in range(num_s_samps): # vectorize this somehow 
+            latent_s =  mus + logsigmas.exp() * torch.randn_like(mus)
 
             # predict the next state from this one. 
             # I already have access to the action from the runs generated. 
             # TODO: make both of these run with a batch. DONT NEED TO GENERATE OR PASS AROUND HIDDEN AS A RESULT. 
 
-            md_mus, md_sigmas, md_logpi, r, d, next_hidden = self.mdrnn(rollout_dict['actions'], latent_z)
+            md_mus, md_sigmas, md_logpi, next_r, d, next_hidden = self.mdrnn(rollout_dict['actions'], 
+                                                                        latent_s, rollout_dict['rewards'])
 
-            # sample the next latent variable 
-            next_r = self.reward_predictor(next_hidden)
             # reward loss 
             log_reward_surprise = self.reward_prior.log_prob(next_r)
 
@@ -287,46 +300,47 @@ class Models:
             which_g = g_probs.sample()
             mus_g, sigs_g = torch.gather(mus.squeeze(), 0, which_g), torch.gather(sigmas.squeeze(), 0, which_g)
             #print(mus_g.shape)
-            for _ in range(num_next_z_samps):
-                next_z = mus_g + sigs_g * torch.randn_like(mus_g)
-                hat_obs = self.vae.decoder(next_z, next_r)
-                # reconstruction loss: 
-                BCE = F.mse_loss(hat_obs, obs, size_average=False)
-
+            for _ in range(num_next_s_samps): # this performs the same function as the ELBO sampling. 
+                next_s = mus_g + sigs_g * torch.randn_like(mus_g)
+                recon_obs = self.vae.decoder(next_s, next_r)
+                # ELBO: 
+                log_p_obs = elbo_calculation(recon_obs, rollout_dict['obs'], mus_g, torch.log(sigs_g), kl_tolerance=False)
                 per_time_loss = torch.log(BCE) + log_reward_surprise
-
+                print(per_time_loss.shape)
                 # can sum across time with these logs. 
-                expected_loss += torch.sum(per_time_loss, dim=)
+                expected_loss += torch.sum(per_time_loss, dim=0)
                 # multiply all of these probabilities together within a single batch. 
 
-        # average across the rollouts. 
+        # average across the all of the sample rollouts. 
+        return expected_loss / total_samples, mus, logsigmas # use these for the tilde computation
 
-        return expected_loss / total_samples
-
-    def p_tilde(self):
+    def p_tilde(self, rollout_dict, elbo_samps,  mus, logsigmas):
         # for the actual observations need to compute the prob of seeing it and its reward
         # the rollout will also contain the reconstruction loss so: 
 
-        # batch is the observations at different time points. 
-        BCE = F.mse_loss(hat_obs, obs, size_average=False)
-        # all of the rewards
-        reward_surprise = self.reward_likelihood(r)
+        # compute the ELBO: 
+        log_p_obs = 0
+        for _ in range(elbo_samps):
+            latent_s =  mus + logsigmas.exp() * torch.randn_like(mus)
+            recon_obs = self.vae.decoder(latent_s, rollout_dict['rewards'])
+            # NOTE: should I have the free bits in here or not??? 
+            # negative to make it approximate ln(p(x)). At least be proportional to this. Ignoring normalizing constants. 
+            log_p_obs += elbo_calculation( recon_obs, rollout_dict['obs'], mus, logsigmas, kl_tolerance=False)
 
-        per_time_loss = torch.log(BCE*reward_surprise)
+        # note that elbos are already in log. 
+        log_p_obs /= elbo_samps # average here. 
+
+        # all of the rewards
+        log_reward_surprise = self.reward_prior.log_prob(rollout_dict['rewards'])
+
+        per_time_loss = log_p_obs+reward_surprise
 
         # can sum across time with these logs. 
-        expected_loss += torch.sum(per_time_loss, dim=)
+        expected_loss += torch.sum(per_time_loss, dim=0)
 
         return expected_loss
 
     def feef_loss(self, data_dict_rollout):
-
-        num_z_samps = 3
-        num_next_z_samps = 3 
-        data_dict_rollout = {k:v.to(self.device) for k, v in data_dict_rollout.items()}
-
-        self.reward_prior = torch.distributions.Normal(1.5,0.5)
-
 
         # choose the action that minimizes the following reward.
         # provided with information from a single rollout 
@@ -335,9 +349,18 @@ class Models:
         # should see what the difference in variance is between using a single value and taking an expectation over many. 
         # as calculating a single value would be so much faster. 
 
-            return torch.log( p_policy(data_dict_rollout, num_z_samps, num_next_z_samps) ) - torch.log( p_tilde(data_dict_rollout) )
+        num_s_samps = 3
+        num_next_s_samps = 3 
+        elbo_samps_tilde = 5
+        data_dict_rollout = {k:v.to(self.device) for k, v in data_dict_rollout.items()}
 
+        self.reward_prior = Normal(1.5,0.5)
 
+        with torch.no_grad():
+            log_policy_loss, mus, logsigmas = self.p_policy(data_dict_rollout, num_s_samps, num_next_s_samps)
+            log_tilde_loss =  torch.log( self.p_tilde(data_dict_rollout, elbo_samps_tilde, mus, logsigmas ) )
+
+        return log_policy_loss - log_tilde_loss
 
     def simulate(self, params, train_mode=True, 
         render_mode=False, num_episode=16, 
@@ -380,7 +403,6 @@ class Models:
                         feef_losses.append(  self.feef_loss(data_dict)  )
                     else: 
                         data_dict_list.append(data_dict)
-
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)

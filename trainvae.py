@@ -80,7 +80,7 @@ kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
 logger = {k:[] for k in ['train_loss','test_loss']}
 
 # Reconstruction + KL divergence losses summed over all elements and batch
-def loss_function(recon_x, x, mu, logsigma):
+def loss_function(recon_x, x, mu, logsigma, kl_tolerance=True):
     """ VAE loss function """
     BCE = F.mse_loss(recon_x, x, size_average=False)
 
