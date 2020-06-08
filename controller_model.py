@@ -59,7 +59,7 @@ def load_parameters(params, controller):
 
     return controller
 
-testing_old_controller = True 
+testing_old_controller = False
 
 class Models:
 

@@ -323,9 +323,7 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
 train = partial(data_pass, train=True)
 test = partial(data_pass, train=False)
 
-
 ##############################################
-
 
 time_limit =1000 # for the rollouts generated
 seq_len = 64
@@ -354,6 +352,7 @@ for e in range(epochs):
     scheduler.step(test_loss_dict['loss'])
 
     # checkpointing the model: 
+    # needs to be here so that the policy learning workers below can load in the new parameters.
     is_best = not cur_best or test_loss_dict['loss'] < cur_best
     if is_best:
         cur_best = test_loss_dict['loss']
@@ -377,6 +376,13 @@ for e in range(epochs):
                        join(samples_dir, 'sample_' + str(epoch) + '.png'))
 
     # train the controller/policy using the updated VAE and MDRNN
+
+
+    generate_rollouts(flatten_parameters(controller.parameters()), transform, seq_len, 
+        time_limit, args.logdir, num_rolls=16, num_workers=args.num_workers )
+
+
+
     args. ...
     train_controller(args, 
         model_variables_dict=model_variables_dict_NO_CTRL, 
@@ -384,10 +390,6 @@ for e in range(epochs):
 
     # best, worst, std, mean, best on eval!
     train_loss_dict['policy_best'] .... 
-
-    # appending loss these dictionaries
-    #logger['train_losses'].append(train_loss_dict)
-    #logger['test_losses'].append(test_loss_dict)
 
     log_string = ""
     for loss_dict in [train_loss_dict, test_loss_dict]:
@@ -400,13 +402,11 @@ for e in range(epochs):
         if epoch==0: # header at the top
             header_string = ""
             for loss_dict in [train_loss_dict, test_loss_dict]:
-                for k, v in loss_dict.items():
+                for k in loss_dict.keys():
                     header_string+=k+' '
-                    log_string += v+' '
             header_string+= '\n'
             file.write(header_string)
         file.write(log_string)
-
     
     earlystopping.step(test_loss_dict['loss']+controllerlossor neg reward?)
 
