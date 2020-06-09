@@ -9,7 +9,7 @@ from torch import optim
 from torch.nn import functional as F
 from torchvision import transforms
 from torchvision.utils import save_image
-
+from torch.distributions.normal import Normal
 from models.vae import VAE
 
 from utils.misc import save_checkpoint
@@ -69,8 +69,8 @@ test_loader = torch.utils.data.DataLoader(
     dataset_test, batch_size=args.batch_size, shuffle=True, num_workers=16)
 
 
-model = VAE(3, LATENT_SIZE, conditional=conditional).to(device) # latent size. 
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+vae = VAE(3, LATENT_SIZE, conditional=conditional).to(device) # latent size. 
+optimizer = optim.Adam(vae.parameters(), lr=0.001)
 scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
 earlystopping = EarlyStopping('min', patience=30)
 
@@ -80,24 +80,34 @@ kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
 logger = {k:[] for k in ['train_loss','test_loss']}
 
 # Reconstruction + KL divergence losses summed over all elements and batch
-def loss_function(recon_x, x, mu, logsigma, kl_tolerance=True):
+def loss_function(real_obs, enc_mu, enc_logsigma, dec_mu, dec_logsigma, kl_tolerance=True):
     """ VAE loss function """
-    BCE = F.mse_loss(recon_x, x, size_average=False)
+    
+    #BCE = F.mse_loss(recon_x, x, size_average=False)
+    real_obs = real_obs.view(real_obs.size(0), -1) # flattening all but the batch. 
+    log_P_OBS_GIVEN_S = Normal(dec_mu, dec_logsigma.exp()).log_prob(real_obs)
+    print('log p', log_P_OBS_GIVEN_S.shape)
+    log_P_OBS_GIVEN_S = log_P_OBS_GIVEN_S.sum(dim=-1) #multiply the probabilities within the batch. 
 
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-    KLD = -0.5 * torch.sum(1 + 2 * logsigma - mu.pow(2) - (2 * logsigma).exp())
+    # t
+    KLD = -0.5 * torch.sum(1 + 2 * enc_logsigma - enc_mu.pow(2) - (2 * enc_logsigma).exp(), dim=-1)
+    print('kld want to keep batches separate for now', KLD.shape)
     if kl_tolerance:
-        assert mu.shape[-1] == LATENT_SIZE, "early debug statement for VAE free bits to work"
+        assert enc_mu.shape[-1] == LATENT_SIZE, "early debug statement for VAE free bits to work"
         KLD = torch.max(KLD, kl_tolerance_scaled)
-    return BCE + KLD
+    print('kld POST FREE BITS. want to keep batches separate for now', KLD.shape)
+    batch_loss = log_P_OBS_GIVEN_S - KLD
+    return - torch.mean(batch_loss) # take expectation across them. 
+    # minus sign because we are doing minimization
 
 def train(epoch):
     """ One training epoch. This is the length of the data buffer. """
     # TODO: make one epoch be through all of the data. not just one buffer. 
-    model.train()
+    vae.train()
     dataset_train.load_next_buffer() # load the underlying dataset new buffer. 
     # TODO: DOESNT THIS IGNORE THE VERY FIRST BUFFER?? OR WOULD THAT ONLY BE IF LENGTH WAS CALLED FIRST?
     # # doesnt really matter as it will cycle back through again at a later period.  
@@ -105,8 +115,8 @@ def train(epoch):
     for batch_idx, data in enumerate(train_loader): # go through whole buffer. 
         obs, rewards = [arr.to(device) for arr in data]
         optimizer.zero_grad()
-        recon_batch, mu, logsigma, _ = model(obs, rewards)
-        loss = loss_function(recon_batch, obs, mu, logsigma)
+        encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(obs, rewards)
+        loss = loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma)
         loss.backward()
         train_loss += loss.item()
         optimizer.step()
@@ -124,15 +134,15 @@ def train(epoch):
 
 def test():
     """ One test epoch """
-    model.eval()
+    vae.eval()
     dataset_test.load_next_buffer()
     test_loss = 0
     with torch.no_grad():
         for data in test_loader:
             obs, rewards = [arr.to(device) for arr in data]
-            
-            recon_batch, mu, logvar, _ = model(obs, rewards)
-            test_loss += loss_function(recon_batch, obs, mu, logvar).item()
+
+            encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(obs, rewards)
+            test_loss += loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma).item()
 
     test_loss /= len(test_loader.dataset)
     print('====> Test set loss: {:.4f}'.format(test_loss))
@@ -153,11 +163,11 @@ logger_filename = join(vae_dir, 'logger.json')
 reload_file = join(vae_dir, 'best.tar')
 if not args.noreload and exists(reload_file):
     state = torch.load(reload_file)
-    print("Reloading model at epoch {}"
+    print("Reloading vae at epoch {}"
           ", with test error {}".format(
               state['epoch'],
               state['precision']))
-    model.load_state_dict(state['state_dict'])
+    vae.load_state_dict(state['state_dict'])
     optimizer.load_state_dict(state['optimizer'])
     scheduler.load_state_dict(state['scheduler'])
     earlystopping.load_state_dict(state['earlystopping'])
@@ -186,7 +196,7 @@ for epoch in range(1, args.epochs + 1):
     # esp as currently every epoch is actually just a buffer size. 
     save_checkpoint({
         'epoch': epoch,
-        'state_dict': model.state_dict(),
+        'state_dict': vae.state_dict(),
         'precision': test_loss,
         'optimizer': optimizer.state_dict(),
         'scheduler': scheduler.state_dict(),
@@ -196,10 +206,12 @@ for epoch in range(1, args.epochs + 1):
     if not args.nosamples:
         with torch.no_grad():
             # get test samples
-            recon_batch, _, _, _ = model(last_test_observations, last_test_rewards)
+            encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(last_test_observations, last_test_rewards)
+            recon_batch = decoder_mu + (decoder_logsigma.exp() * torch.randn_like(decoder_mu))
+            recon_batch = recon_batch.view(3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             #sample = torch.randn(IMAGE_RESIZE_DIM, LATENT_SIZE).to(device) # random point in the latent space.  
             # image reduced size by the latent size. 64 x 32. is this a batch of 64 then?? 
-            #sample = model.decoder(sample).cpu()
+            #sample = vae.decoder(sample).cpu()
             to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu()], dim=0)
             print(to_save.shape)
             # .view(args.batch_size*2, 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)

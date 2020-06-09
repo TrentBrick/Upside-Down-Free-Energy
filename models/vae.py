@@ -27,6 +27,9 @@ class Decoder(nn.Module):
         self.deconv3 = nn.ConvTranspose2d(64, 32, 6, stride=2)
         self.deconv4 = nn.ConvTranspose2d(32, img_channels, 6, stride=2)
 
+        self.fc_mu = nn.Linear(3*64*64, 3*64*64)
+        self.fc_logsigma = nn.Linear(3*64*64, 3*64*64)
+
     def forward(self, s, r): # pylint: disable=arguments-differ
         if self.conditional:
             s = torch.cat([s, r], dim=1)
@@ -36,8 +39,12 @@ class Decoder(nn.Module):
         s = F.relu(self.deconv1(s))
         s = F.relu(self.deconv2(s))
         s = F.relu(self.deconv3(s))
-        reconstruction = F.sigmoid(self.deconv4(s))
-        return reconstruction
+        s = F.relu(self.deconv4(s))
+        s = s.view(s.size(0), -1)
+        mu = F.sigmoid(self.fc_mu(s))
+        logsigma = self.fc_logsigma(s)
+
+        return mu, logsigma
 
 class Encoder(nn.Module): # pylint: disable=too-many-instance-attributes
     """ VAE encoder """
@@ -92,10 +99,10 @@ class VAE(nn.Module):
         
         #r = r.unsqueeze(1)
         print(v.shape, r.shape)
-        mu, logsigma = self.encoder(v, r)
+        encoder_mu, encoder_logsigma = self.encoder(v, r)
         sigma = logsigma.exp()
         eps = torch.randn_like(sigma)
-        s = eps.mul(sigma).add_(mu)
+        latent_s = eps.mul(sigma).add_(mu)
 
-        recon_x = self.decoder(s, r)
-        return recon_x, mu, logsigma, s
+        decoder_mu, decoder_logsigma = self.decoder(latent_s, r)
+        return encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma
