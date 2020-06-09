@@ -163,4 +163,4 @@ class RolloutObservationDataset(_RolloutDataset): # pylint: disable=too-few-publ
         return data_length
 
     def _get_data(self, data, seq_index): # gives only a single observation at this point. 
-        return self._transform(data['observations'][seq_index]), np.expand_dims(data['rewards'][seq_index], 1)
+        return self._transform(data['observations'][seq_index]), torch.Tensor([data['rewards'][seq_index]])

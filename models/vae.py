@@ -98,11 +98,13 @@ class VAE(nn.Module):
     def forward(self, v, r): # pylint: disable=arguments-differ
         
         #r = r.unsqueeze(1)
-        print(v.shape, r.shape)
+        #print(v.shape, r.shape)
         encoder_mu, encoder_logsigma = self.encoder(v, r)
-        sigma = logsigma.exp()
-        eps = torch.randn_like(sigma)
-        latent_s = eps.mul(sigma).add_(mu)
 
+        """sigma = encoder_logsigma.exp()
+        eps = torch.randn_like(sigma)
+        latent_s = eps.mul(sigma).add_(encoder_mu)"""
+        latent_s = encoder_mu + (encoder_logsigma.exp() * torch.randn_like(encoder_mu))  
+        
         decoder_mu, decoder_logsigma = self.decoder(latent_s, r)
         return encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma
