@@ -7,3 +7,7 @@ Dockerfile
 frames/
 dock_config.json
 .mypy_cache
+exp_dir/vae/best.tar
+exp_dir/vae/checkpoint.tar
+exp_dir/mdrnn/best.tar
+exp_dir/mdrnn/checkpoint.tar

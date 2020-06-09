@@ -86,22 +86,22 @@ def loss_function(real_obs, enc_mu, enc_logsigma, dec_mu, dec_logsigma, kl_toler
     #BCE = F.mse_loss(recon_x, x, size_average=False)
     real_obs = real_obs.view(real_obs.size(0), -1) # flattening all but the batch. 
     log_P_OBS_GIVEN_S = Normal(dec_mu, dec_logsigma.exp()).log_prob(real_obs)
-    print('log p', log_P_OBS_GIVEN_S.shape)
+    #print('log p', log_P_OBS_GIVEN_S.shape, log_P_OBS_GIVEN_S[0,:])
+    #print('mus and sigmas', dec_mu[0,:], dec_logsigma.exp()[0,:])
     log_P_OBS_GIVEN_S = log_P_OBS_GIVEN_S.sum(dim=-1) #multiply the probabilities within the batch. 
 
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-    # t
     KLD = -0.5 * torch.sum(1 + 2 * enc_logsigma - enc_mu.pow(2) - (2 * enc_logsigma).exp(), dim=-1)
-    print('kld want to keep batches separate for now', KLD.shape)
+    #print('kld want to keep batches separate for now', KLD.shape)
     if kl_tolerance:
         assert enc_mu.shape[-1] == LATENT_SIZE, "early debug statement for VAE free bits to work"
         KLD = torch.max(KLD, kl_tolerance_scaled)
-    print('kld POST FREE BITS. want to keep batches separate for now', KLD.shape)
+    #print('kld POST FREE BITS. want to keep batches separate for now', KLD.shape)
     batch_loss = log_P_OBS_GIVEN_S - KLD
-    return - torch.mean(batch_loss) # take expectation across them. 
+    return - torch.mean(batch_loss), torch.mean(log_P_OBS_GIVEN_S), torch.mean(KLD)  # take expectation across them. 
     # minus sign because we are doing minimization
 
 def train(epoch):
@@ -116,15 +116,15 @@ def train(epoch):
         obs, rewards = [arr.to(device) for arr in data]
         optimizer.zero_grad()
         encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(obs, rewards)
-        loss = loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma)
+        loss, recon_loss, kld_loss = loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma)
         loss.backward()
         train_loss += loss.item()
         optimizer.step()
         if batch_idx % 20 == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tRecon: {:.6f}\tKLD: {:.6f}'.format(
                 epoch, batch_idx * len(obs), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader),
-                loss.item() / len(obs)))
+                loss.item(), recon_loss.item() , kld_loss.item() ))
             # TODO: this is the length of the buffer, not the epoch (if these become separate.)
 
     print('====> Epoch: {} Average loss: {:.4f}'.format(
@@ -142,7 +142,8 @@ def test():
             obs, rewards = [arr.to(device) for arr in data]
 
             encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(obs, rewards)
-            test_loss += loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma).item()
+            batch_test_loss, test_recon_loss, test_kld_loss = loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma)
+            test_loss += batch_test_loss.item()
 
     test_loss /= len(test_loader.dataset)
     print('====> Test set loss: {:.4f}'.format(test_loss))
@@ -208,7 +209,7 @@ for epoch in range(1, args.epochs + 1):
             # get test samples
             encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(last_test_observations, last_test_rewards)
             recon_batch = decoder_mu + (decoder_logsigma.exp() * torch.randn_like(decoder_mu))
-            recon_batch = recon_batch.view(3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            recon_batch = recon_batch.view(args.batch_size, 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             #sample = torch.randn(IMAGE_RESIZE_DIM, LATENT_SIZE).to(device) # random point in the latent space.  
             # image reduced size by the latent size. 64 x 32. is this a batch of 64 then?? 
             #sample = vae.decoder(sample).cpu()
