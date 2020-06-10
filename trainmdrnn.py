@@ -49,7 +49,7 @@ print("Loading VAE at epoch {} "
       "with test error {}".format(
           state['epoch'], state['precision']))
 
-vae = VAE(3, LATENT_SIZE).to(device)
+vae = VAE(3, LATENT_SIZE, conditional=conditional).to(device)
 vae.load_state_dict(state['state_dict'])
 
 # Loading model
@@ -122,8 +122,8 @@ def to_latent(obs, rewards):
        
     return latent_obs
 
-def get_loss(latent_obs, action, pres_reward, next_reward, terminal,
-             latent_next_obs, include_reward: bool, include_terminal:bool):
+def get_loss(latent_obs, latent_next_obs, action, pres_reward, next_reward, terminal,
+             include_reward = True, include_terminal = False):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 
     """ Compute losses.
@@ -199,8 +199,8 @@ def data_pass(epoch, train, include_reward, include_terminal): # pylint: disable
         pres_reward = reward[:, :-1]
         
         if train:
-            losses = get_loss(latent_obs, action, pres_reward, next_reward,
-                              terminal, latent_next_obs, include_reward, include_terminal)
+            losses = get_loss(latent_obs, latent_next_obs, action, pres_reward, next_reward,
+                              terminal, include_reward, include_terminal)
 
             optimizer.zero_grad()
             losses['loss'].backward()

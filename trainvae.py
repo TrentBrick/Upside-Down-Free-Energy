@@ -80,7 +80,7 @@ kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
 logger = {k:[] for k in ['train_loss','test_loss']}
 
 # Reconstruction + KL divergence losses summed over all elements and batch
-def loss_function(real_obs, enc_mu, enc_logsigma, dec_mu, dec_logsigma, kl_tolerance=True):
+def loss_function(real_obs, enc_mu, enc_logsigma, dec_mu, dec_logsigma, kl_tolerance_scaled=None):
     """ VAE loss function """
     
     #BCE = F.mse_loss(recon_x, x, size_average=False)
@@ -96,7 +96,7 @@ def loss_function(real_obs, enc_mu, enc_logsigma, dec_mu, dec_logsigma, kl_toler
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
     KLD = -0.5 * torch.sum(1 + 2 * enc_logsigma - enc_mu.pow(2) - (2 * enc_logsigma).exp(), dim=-1)
     #print('kld want to keep batches separate for now', KLD.shape)
-    if kl_tolerance:
+    if kl_tolerance_scaled:
         assert enc_mu.shape[-1] == LATENT_SIZE, "early debug statement for VAE free bits to work"
         KLD = torch.max(KLD, kl_tolerance_scaled)
     #print('kld POST FREE BITS. want to keep batches separate for now', KLD.shape)
@@ -116,7 +116,7 @@ def train(epoch):
         obs, rewards = [arr.to(device) for arr in data]
         optimizer.zero_grad()
         encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(obs, rewards)
-        loss, recon_loss, kld_loss = loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma)
+        loss, recon_loss, kld_loss = loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma, kl_tolerance_scaled)
         loss.backward()
         train_loss += loss.item()
         torch.nn.utils.clip_grad_norm_(vae.parameters(), 100.0)

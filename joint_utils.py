@@ -43,7 +43,7 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
                             for key in ('rew', 'term')]
         # this transform is already being done and saved. 
         #reward = np.expand_dims(reward, 1)
-        return obs_data, action, reward, terminal
+        return obs_data, action, reward.unsqueeze(1), terminal
         
     def __len__(self):
         return self._cum_size[-1]
@@ -96,8 +96,6 @@ def worker(inp): # run lots of rollouts
 
     return model.simulate(ctrl_params, train_mode=True, render_mode=False, 
             num_episode=num_episodes, seed=seed, max_len=max_len, compute_feef=compute_feef)
-    
-
 
 def sprint(*args):
     print(*args) # if python3, can do print(*args)
@@ -114,7 +112,8 @@ class Seeder:
         result = np.random.randint(self.limit, size=batch_size).tolist()
         return result
 
-def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per_worker, seed_start=27, time_limit=1000 ):
+def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_workers, 
+    num_trials_per_worker, num_generations, seed_start=None, time_limit=1000 ):
 
     population_size = num_workers*num_trials_per_worker
 
@@ -125,34 +124,40 @@ def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per
     sprint("num_trials_per_worker", num_trials_per_worker)
     sys.stdout.flush()
 
+    if not seed_start: 
+        seed_start = np.random.randint(0,1e9, size=1)[0]
     seeder = Seeder(seed_start)
 
     filebase = join(logdir, 'ctrl_')
     filename = filebase+'.json'
-    filename_log = filebase+'.log.json'
     filename_hist = filebase+'.hist.json'
-    filename_hist_best = filebase+'.hist_best.json'
-    filename_best = filebase+'.best.json'
 
-    controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=True).to(self.device)
-
+    if not exists(filename_hist): 
+        header_string = ""
+        for k in ['generation', 'time', 'avg_rew', 'min_rew', 'max_rew',
+                'std_rew', 'dist_std', 'mean_run_time', 'max_run_time',
+                'avg_feef', 'min_feef', 'max_feef', 'std_feef']:
+            header_string+=k+' '
+        header_string+= '\n'
+        with open(logger_filename, "w") as file:
+            file.write(header_string)  
+    
     sigma_init=0.1
-    num_params = len( flatten_parameters(controller.parameters()) )
+    num_params = len( curr_best_ctrl_params )
 
     es = CMAES(num_params,
             sigma_init=sigma_init,
-            popsize=population_size)
+            popsize=population_size, 
+            init_params= curr_best_ctrl_params,
+            invert_reward=False)
 
     t = 0
     history = []
-    history_best = []
-    eval_log = []
-    best_reward_eval = 0
-    best_model_params_eval = None
 
     max_len = time_limit # max time steps (-1 means ignore)
+    best_reward = -1000000000
 
-    while True:
+    for generation in range(num_generations):
         t += 1
 
         #sprint('asking for solutions in master')
@@ -168,104 +173,73 @@ def train_controller(logdir, gamename, num_episodes, num_workers, num_trials_per
         # start Pool and get rewards
         ###########################
         # generate a random number to give as a random seed to each pool worker. 
-        rand_ints = np.random.randint(0, 1e9, population_size)
+        #rand_ints = np.random.randint(0, 1e9, population_size)
 
         # TODO: ultimately these processes should live on to surive intializiation between CMA-ES rounds and so 
         # each worker can try different sets of parameters. But for now I am not doing this. 
         worker_data = []
         for i in range(population_size):
-            worker_data.append( (solutions[i], rand_ints[i], num_episodes, max_len, logdir, True) ) # compute_feef=True
+            worker_data.append( (solutions[i], seeds[i], num_episodes, max_len, logdir, True) ) # compute_feef=True
 
         with Pool(processes=num_workers) as pool:
             res = pool.map(worker, worker_data)
 
+        # aggregating results for each worker by averaging the results of each of their episodes
         reward_list, times_taken, feef_losses = [], [], []
         for worker_rollouts in res:
-            for ind, listt in enumerate([reward_list, times_taken, feef_losses]):
-                listt.append( np.mean(worker_rollouts[ind] )
+            for ind, li in enumerate([reward_list, times_taken, feef_losses]):
+                li.append( np.mean(worker_rollouts[ind]) )
 
-        for listt in [reward_list, times_taken, feef_losses]:
-            listt = np.asarray(listt)
+        #for li in [reward_list, times_taken, feef_losses]:
+        #    li = np.asarray(li)
 
         print('done with pool')
         ###########################
 
         mean_time_step = int(np.mean(times_taken)*100)/100. # get average time step
-        max_time_step = int(np.max(times_taken])*100)/100.
+        max_time_step = int(np.max(times_taken))*100)/100.
         r_max = int(np.max(reward_list)*100)/100.
         r_min = int(np.min(reward_list)*100)/100.
         avg_reward = int(np.mean(reward_list)*100)/100. 
         std_reward = int(np.std(reward_list)*100)/100. 
         # TODO: implement the same rounding as above? 
-        fem_max = np.max(feef_losses)
-        fem_min = np.min(feef_losses)
-        avg_fem = np.mean(feef_losses)
-        std_fem = np.std(feef_losses)
+        feef_max = np.max(feef_losses)
+        feef_min = np.min(feef_losses)
+        avg_feef = np.mean(feef_losses)
+        std_feef = np.std(feef_losses)
 
         curr_time = int(time.time()) - start_time
 
         h = (t, curr_time, avg_reward, r_min, r_max, 
                 std_reward, int(es.rms_stdev()*100000)/100000., 
-                mean_time_step+1., int(max_time_step)+1., fem_min, fem_max, 
-                avg_fem, std_fem  )
+                mean_time_step+1., int(max_time_step)+1., avg_feef, feef_min, feef_max, 
+                std_feef  )
 
         history.append(h)
 
-        es.tell(feef_losses)
+        es.tell(feef_losses) # dont need to be converted to maximization because I set it to be a min now!
 
-        es_solution = es.result()
-        model_params = es_solution[0] # best historical solution
-        reward = es_solution[1] # best reward
-        curr_reward = es_solution[2] # best of the current batch
-
-        # NOTE: update the model parameters here. Why are they quantized and set here? 
-        #model.controller = load_parameters(np.array(model_params).round(4), model.controller)
-        
-        if cap_time_mode:
-            max_len = 2*int(mean_time_step+1.0)
-        else:
-            max_len = -1
-
-        with open(filename, 'wt') as out:
-            res = json.dump([np.array(es.current_param()).round(4).tolist()], out, sort_keys=True, indent=2, separators=(',', ': '))
-
-        with open(filename_hist, 'wt') as out:
-            res = json.dump(history, out, sort_keys=False, indent=0, separators=(',', ':'))
+        if r_max > best_reward:
+            best_reward=r_max 
 
         sprint('================================',gamename, h)
 
-        if (t == 1):
-            best_reward_eval = avg_reward
-        if (t % eval_steps == 0): # evaluate on actual task at hand
+    #with open(filename_hist, 'wt') as out:
+    #    res = json.dump(history, out, sort_keys=False, indent=0, separators=(',', ':'))
 
-            prev_best_reward_eval = best_reward_eval
-            model_params_quantized = np.array(es.current_param()).round(4)
-            reward_eval = evaluate_batch(model_params_quantized, max_len=-1)
-            model_params_quantized = model_params_quantized.tolist()
-            improvement = reward_eval - best_reward_eval
-            eval_log.append([t, reward_eval, model_params_quantized])
-            with open(filename_log, 'wt') as out:
-                res = json.dump(eval_log, out)
-            if (len(eval_log) == 1 or reward_eval > best_reward_eval):
-                best_reward_eval = reward_eval
-                best_model_params_eval = model_params_quantized
-            else:
-                if retrain_mode:
-                    sprint("reset to previous best params, where best_reward_eval =", best_reward_eval)
-                    es.set_mu(best_model_params_eval)
-            with open(filename_best, 'wt') as out:
-                # TODO: save out the FEM score that came with this
-                res = json.dump([best_model_params_eval, best_reward_eval, best_fem_eval], out, sort_keys=True, indent=0, separators=(',', ': '))
+    with open(filename_hist, "a") as file:
+        log_string = ""
+        for h in history:
+            for v in h:
+                log_string += v+' '
+            log_string+= '\n'
+        file.write(log_string)
 
-            # dump history of best
-            curr_time = int(time.time()) - start_time
-            best_record = [t, curr_time, "improvement", improvement, "curr", reward_eval, "prev", prev_best_reward_eval, "best", best_reward_eval]
-            history_best.append(best_record)
-            with open(filename_hist_best, 'wt') as out:
-                res = json.dump(history_best, out, sort_keys=False, indent=0, separators=(',', ':'))
+    model_params = es.result[0] # best solution of all time
+    best_feef = es.result[1] # best feef reward of all time
+    #best_curr_feef = es.result[2] # best feef of the current batch
 
-            sprint("improvement", t, improvement, "curr", reward_eval, "prev", prev_best_reward_eval, "best", best_reward_eval)
-
+    return model_params, best_feef, best_reward
 
 if __name__ == '__main__':
 

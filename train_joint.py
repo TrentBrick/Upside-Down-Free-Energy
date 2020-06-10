@@ -25,6 +25,8 @@ import cma
 #from torch.multiprocessing import Process, Queue
 from time import sleep
 from multiprocessing import cpu_count
+from trainvae import loss_function as trainvae_loss_function
+from trainmdrnn import get_loss as trainmdrnn_loss_function
 
 parser = argparse.ArgumentParser("Joint training")
 parser.add_argument('--logdir', type=str,
@@ -33,27 +35,28 @@ parser.add_argument('--no_reload', action='store_true',
                     help="Do not reload if specified.")
 parser.add_argument('--reload_from_joint', action='store_true',
                     help="Do not reload if specified.")
+parser.add_argument('--gamename', type=str, default='carracing',
+                    help="Gym environment being used.")
 
 # Controller training arguments
-parser.add_argument('--n-samples', type=int, help='Number of samples used to obtain '
-                    'return estimate.')
-parser.add_argument('--pop-size', type=int, help='Population size.')
-parser.add_argument('--target-return', type=float, help='Stops once the return '
+parser.add_argument('--num_generations_per_epoch', type=int, help='Number of generations of CMA-ES per epoch.',
+                    default=10)
+parser.add_argument('--num_episodes', type=int, help='Number of samples rollouts to evaluate each agent')
+parser.add_argument('--num_trials_per_worker', type=int, default=1, help='Population size.')
+parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
+                    default=24)
+parser.add_argument('--target_return', type=float, help='Stops once the return '
                     'gets above target_return')
 parser.add_argument('--display', action='store_true', help="Use progress bars if "
                     "specified.")
-parser.add_argument('--num-workers', type=int, help='Maximum number of workers.',
-                    default=64)
 args = parser.parse_args()
 
 # Max number of workers. M
 
 assert args.num_workers <= cpu_count(), "Providing too many workers!" 
 
-# multiprocessing variables
-n_samples = args.n_samples
-pop_size = args.pop_size
 conditional =True
+use_ctrl_pretrain = True
 
 #parser.add_argument('--include_terminal', action='store_true',
 #                    help="Add a terminal modelisation term to the loss.")
@@ -68,12 +71,14 @@ epochs = 50
 kl_tolerance=0.5
 kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
 
+include_reward = conditional # this is very important for the conditional 
+include_terminal = False
+
 model_types = ['ctlr', 'vae', 'mdrnn']
 # Init save filenames 
 joint_dir = join(args.logdir, 'joint')
 filenames_dict = {m+'_'+bc:join(joint_dir, m+'_'+bc+'.tar') for bc in ['best', 'checkpoint'] \
                                                  for m in model_types}
-
 samples_dir = join(joint_dir, 'samples')
 for dirr in [joint_dir, samples_dir]:
     if not exists(dirr):
@@ -95,8 +100,11 @@ model_variables_dict = dict(controller=controller, vae=vae, mdrnn=mdrnn)
 model_variables_dict_NO_CTRL = dict(vae=vae, mdrnn=mdrnn) # used for when the controller is trained and these models are provided. 
 # Loading in trained models: 
 
-cur_best=None
-ctrl_cur_best = -100000
+if not vae_n_mdrnn_cur_best: 
+    vae_n_mdrnn_cur_best=None
+if not ctrl_cur_best_rewards:
+    ctrl_cur_best_rewards = None
+
 if not args.no_reload:
     for name, model_var in model_variables_dict_NO_CTRL.items():
     # Loading from previous joint training or from all separate training
@@ -121,13 +129,25 @@ if not args.no_reload:
             optimizer.load_state_dict(state["optimizer"])
             scheduler.load_state_dict(state['scheduler'])
             earlystopping.load_state_dict(state['earlystopping'])
+            vae_n_mdrnn_cur_best = state['precision']
 
     # load in the controller 
-    with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
-        ctrl_params = json.load(f)
-    print("Loading in the best controller model, its average eval score was:", ctrl_params[1])
-    controller = load_parameters(ctrl_params[0], self.controller)
-    ctrl_cur_best = ctrl_params[1]
+    if use_ctrl_pretrain: 
+        with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
+            ctrl_params = json.load(f)
+        print("Loading in the pretrained best controller model, its average eval score was:", ctrl_params[1])
+        controller = load_parameters(ctrl_params[0], self.controller)
+        ctrl_cur_best_rewards = ctrl_params[1]
+
+    else: 
+        if exists(filenames_dict['ctrl_best']): # loading in the checkpoint
+            print('loading in the best controller')
+            state = torch.load(filenames_dict['ctrl_best'], map_location={'cuda:0': str(device)})
+        ctrl_cur_best_rewards = state['reward']
+        ctrl_cur_best_feef = state['feef']
+        controller.load_state_dict(state['state_dict'])
+        print("Previous best reward was {} and best FEEF {}...".format(ctrl_cur_best_rewards, ctrl_cur_best_feef))
+
 
 # never need gradients with controller for evo methods. 
 controller.eval()
@@ -145,7 +165,7 @@ test_loader = DataLoader(
     RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=10),
     batch_size=BATCH_SIZE, num_workers=args.num_workers, drop_last=True)'''
 
-vae_output_names = ['recon_obs', 'mu', 'logsigma', 's']
+vae_output_names = ['encoder_mu', 'encoder_logsigma', 'latent_s', 'decoder_mu', 'decoder_logsigma']
 
 def run_vae(obs, rewards):
     # TODO: update this documentation. 
@@ -175,71 +195,18 @@ def run_vae(obs, rewards):
     return vae_res_dict
 
 # Reconstruction + KL divergence losses summed over all elements and batch
-def vae_loss_function(recon_x, x, mu, logsigma):
+def vae_loss_function(real_obs, vae_res_dict):
     """ VAE loss function 
     Images (recon_x and x) are: (BATCH_SIZE, SEQ_LEN, NUM_CHANNELS, IMG_RESIZE, IMG_RESIZE)
     mu and logsigma: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
     treating time independently here. 
     """
+
+    # flatten the batch and seq length tensors. 
+    flat_tensors = [ vae_res_dict[k].flatten(end_dim=1) for k in ['encoder_mu', 'encoder_logsigma', 'decoder_mu', 'decoder_logsigma']]
+    vae_loss, recon, kld = trainvae_loss_function(real_obs, *flat_tensors, kl_tolerance_scaled)
     
-    # reconstruction loss. 
-    BCE = F.mse_loss(recon_x.flatten(end_dim=1), x.flatten(end_dim=1), size_average=False)
-
-    # see Appendix B from VAE paper:
-    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
-    # https://arxiv.org/abs/1312.6114
-    # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
-    mu, logsigma = mu.flatten(end_dim=1), logsigma.flatten(end_dim=1)
-    KLD = -0.5 * torch.sum(1 + 2 * logsigma - mu.pow(2) - (2 * logsigma).exp())
-    if kl_tolerance:
-        assert mu.shape[-1] == LATENT_SIZE, "early debug statement for VAE free bits to work"
-        KLD = torch.max(KLD, kl_tolerance_scaled)
-    return dict(loss=BCE + KLD, recon=BCE, kld=KLD)
-
-def mdrnn_loss_function(latent_obs, latent_next_obs, action, 
-                            pres_reward, next_reward,
-                            terminal):
-    """ Compute losses.
-
-    The loss that is computed is:
-    (GMMLoss(latent_next_obs, GMMPredicted) + MSE(reward, predicted_reward) +
-         BCE(terminal, logit_terminal)) / (LATENT_SIZE + 2)
-    The LATENT_SIZE + 2 factor is here to counteract the fact that the GMMLoss scales
-    approximately linearily with LATENT_SIZE. All losses are averaged both on the
-    batch and the sequence dimensions (the two first dimensions).
-
-    :args latent_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
-    :args action: (BATCH_SIZE, SEQ_LEN, ACTION_SIZE) torch tensor
-    :args reward: (BATCH_SIZE, SEQ_LEN) torch tensor
-    :args latent_next_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
-
-    :returns: dictionary of losses, containing the gmm, the mse, the bce and
-        the averaged loss.
-    """
-    # set LSTM to batch true instead. This does not affect the loss in any other way as I mean across the seq len and batch anyways. 
-    '''latent_obs, action,\
-        reward, terminal,\
-        latent_next_obs = [arr.transpose(1, 0)
-                           for arr in [latent_obs, action,
-                                       reward, terminal,
-                                       latent_next_obs]]'''
-    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, pres_reward)
-    gmm = gmm_loss(latent_next_obs, mus, sigmas, logpi) # by default gives mean over all.
-    # scale = LATENT_SIZE
-    if args.include_reward:
-        mse = f.mse_loss(rs, next_reward.squeeze())
-        #scale += 1
-    else:
-        mse = 0
-
-    if args.include_terminal:
-        bce = f.binary_cross_entropy_with_logits(ds, terminal)
-        #scale += 1
-    else:
-        bce = 0
-
-    loss = (gmm + bce + mse) #/ scale
-    return dict(gmm=gmm, bce=bce, mse=mse, loss=loss)
+    return dict(loss=vae_loss, recon=recon, kld=kld)
 
 def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
     """ One pass through the data """
@@ -259,7 +226,7 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
     def forward_and_loss():
         # transform obs
         vae_res_dict = run_vae(obs, reward)
-        vae_loss_dict = vae_loss_function(vae_res_dict['recon'], obs, vae_res_dict['mu'], vae_res_dict['logsigma'])
+        vae_loss_dict = vae_loss_function(obs, vae_res_dict)
 
         #split into previous and next observations:
         latent_next_obs = vae_res_dict['s'][:,1:,:].clone() #possible BUG: need to ensure these tensors are different to each other. Tensors arent being modified though so should be ok? Test it anyways.
@@ -268,9 +235,9 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
         next_reward = reward[:, 1:].clone()
         pres_reward = reward[:, :-1]
 
-        mdrnn_loss_dict = mdrnn_loss_function(latent_obs, latent_next_obs, action, 
+        mdrnn_loss_dict = trainmdrnn_loss_function(latent_obs, latent_next_obs, action, 
                             pres_reward, next_reward,
-                            terminal )
+                            terminal, include_reward, include_terminal )
 
         return vae_loss_dict, mdrnn_loss_dict
 
@@ -306,7 +273,7 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
         postfix_str = ""
         for k,v in cumloss_dict.items():
             v = v / (i + 1)
-            postfix_str+= k+'='+str(round(v,4))=', '
+            postfix_str+= k+'='+str(round(v,4))+', '
         pbar.set_postfix_str(postfix_str)
         pbar.update(BATCH_SIZE)
     pbar.close()
@@ -332,7 +299,6 @@ seq_len = 64
 #transform = transforms.Lambda(
 #    lambda x: np.transpose(x, (0, 3, 1, 2)) / 255) #why is this necessary?
 
-log_step = 10
 for e in range(epochs):
     # run the current policy with the current VAE and MDRNN
     # does this data need to be on policy? no. TODO: implement memory buffer
@@ -348,14 +314,14 @@ for e in range(epochs):
     
     # train VAE and MDRNN. uses partial(data_pass)
     train_loss_dict = train(e, train_loader)
-    test_loss_dict, last_test_obs, last_test_rewards = test(e, test_loader)
+    test_loss_dict, last_test_observations, last_test_rewards = test(e, test_loader)
     scheduler.step(test_loss_dict['loss'])
 
     # checkpointing the model: 
     # needs to be here so that the policy learning workers below can load in the new parameters.
-    is_best = not cur_best or test_loss_dict['loss'] < cur_best
+    is_best = not vae_n_mdrnn_cur_best or test_loss_dict['loss'] < vae_n_mdrnn_cur_best
     if is_best:
-        cur_best = test_loss_dict['loss']
+        vae_n_mdrnn_cur_best = test_loss_dict['loss']
     
     for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
         save_checkpoint({
@@ -370,38 +336,64 @@ for e in range(epochs):
     # generating VAE samples
     if not args.nosamples:
         with torch.no_grad():
-            recon_batch, _, _, _ = vae(last_test_obs, last_test_rewards)
-            to_save = torch.cat([last_test_obs.cpu(), recon_batch.cpu()], dim=0)
+            # get test samples
+            encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(last_test_observations, last_test_rewards)
+            recon_batch = decoder_mu + (decoder_logsigma.exp() * torch.randn_like(decoder_mu))
+            recon_batch = recon_batch.view(recon_batch.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            decoder_mu = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
+            print('to save shape', to_save.shape)
             save_image(to_save,
-                       join(samples_dir, 'sample_' + str(epoch) + '.png'))
+                       join(vae_dir, 'samples/sample_' + str(epoch) + '.png'))
+
 
     # TODO: generate MDRNN examples. 
 
     # train the controller/policy using the updated VAE and MDRNN
 
-    best_reward, best_feef, best_params = train_controller()
+    best_params, best_feef, best_reward = train_controller(flatten_parameters(controller.parameters()) args.logdir, 
+        args.gamename, args.num_episodes, args.num_workers, args.num_trials_per_worker,
+        args.num_generations, seed_start=None, time_limit=1000 )
 
-    # best, worst, std, mean, best on eval!
-    train_loss_dict['policy_best'] .... 
+    controller = load_parameters(best_params, controller)
 
-    log_string = ""
-    for loss_dict in [train_loss_dict, test_loss_dict]:
-        for k, v in loss_dict.items():
-            log_string += v+' '
-    log_string+= '\n'
+    # checkpointing controller:
+    # TODO: compute and save the best based upon the reward it gets. 
+    is_best = not ctrl_cur_best_rewards or ctrl_cur_best_rewards > best_reward
+    if is_best:
+        ctrl_cur_best_rewards = best_reward
+    
+    save_checkpoint({
+        "state_dict": controller.state_dict(),
+        "feef": best_feef,
+        "reward": best_reward,
+        "epoch": e}, is_best, filenames_dict['ctrl_checkpoint'],
+                    filenames_dict['ctrl_best'])
+
+    test_loss_dict['best_reward_ctrl'] = best_reward
+    test_loss_dict['best_feef_ctrl'] = best_feef
+    test_loss_dict['loss'] += best_feef
+
+    # header at the top of logger file
+    if not exists(logger_filename): 
+        header_string = ""
+        for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):
+            for k in loss_dict.keys():
+                header_string+=train_or_test+'_'+k+' '
+        header_string+= '\n'
+        with open(logger_filename, "w") as file:
+            file.write(header_string) 
 
     # write out all of the logger losses.
     with open(logger_filename, "a") as file:
-        if epoch==0: # header at the top
-            header_string = ""
-            for loss_dict in [train_loss_dict, test_loss_dict]:
-                for k in loss_dict.keys():
-                    header_string+=k+' '
-            header_string+= '\n'
-            file.write(header_string)
+        log_string = ""
+        for loss_dict in [train_loss_dict, test_loss_dict]:
+            for k, v in loss_dict.items():
+                log_string += v+' '
+        log_string+= '\n'
         file.write(log_string)
     
-    earlystopping.step(test_loss_dict['loss']+controllerlossor neg reward?)
+    earlystopping.step(test_loss_dict['loss'])
 
     if earlystopping.stop:
         print("End of Training because of early stopping at epoch {}".format(e))
