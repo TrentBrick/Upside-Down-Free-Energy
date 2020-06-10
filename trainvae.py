@@ -210,16 +210,19 @@ for epoch in range(1, args.epochs + 1):
             # get test samples
             encoder_mu, encoder_logsigma, latent_s, decoder_mu, decoder_logsigma = vae(last_test_observations, last_test_rewards)
             recon_batch = decoder_mu + (decoder_logsigma.exp() * torch.randn_like(decoder_mu))
-            recon_batch = recon_batch.view(args.batch_size, 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            recon_batch = recon_batch.view(recon_batch.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             #sample = torch.randn(IMAGE_RESIZE_DIM, LATENT_SIZE).to(device) # random point in the latent space.  
             # image reduced size by the latent size. 64 x 32. is this a batch of 64 then?? 
             #sample = vae.decoder(sample).cpu()
-            decoder_mu = decoder_mu.view(args.batch_size, 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            decoder_mu = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
-            print(to_save.shape)
+            print('to save shape', to_save.shape)
             # .view(args.batch_size*2, 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             save_image(to_save,
                        join(vae_dir, 'samples/sample_' + str(epoch) + '.png'))
+            save_image(recon_batch.cpu(),
+                       join(vae_dir, 'samples/decoder_samps_' + str(epoch) + '.png'))
+
 
     if earlystopping.stop:
         print("End of Training because of early stopping at epoch {}".format(epoch))
