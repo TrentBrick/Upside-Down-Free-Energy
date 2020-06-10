@@ -27,7 +27,7 @@ class Decoder(nn.Module):
         self.deconv3 = nn.ConvTranspose2d(64, 32, 6, stride=2)
         self.deconv4 = nn.ConvTranspose2d(32, img_channels, 6, stride=2)
 
-        self.fc_mu = nn.Linear(3*64*64, 3*64*64)
+        #self.fc_mu = nn.Linear(3*64*64, 3*64*64)
         self.fc_logsigma = nn.Linear(3*64*64, 3*64*64)
 
     def forward(self, s, r): # pylint: disable=arguments-differ
@@ -39,10 +39,10 @@ class Decoder(nn.Module):
         s = F.relu(self.deconv1(s))
         s = F.relu(self.deconv2(s))
         s = F.relu(self.deconv3(s))
-        s = F.relu(self.deconv4(s))
+        s = self.deconv4(s)
         s = s.view(s.size(0), -1)
-        mu = F.sigmoid(self.fc_mu(s))
-        logsigma = self.fc_logsigma(s)
+        mu = F.sigmoid(s)
+        logsigma = self.fc_logsigma( F.relu(s))
 
         return mu, logsigma
 

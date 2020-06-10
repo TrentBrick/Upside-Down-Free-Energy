@@ -74,6 +74,7 @@ if exists(best_filename) and not args.noreload:
     print("Loading MDRNN at epoch {} "
           "with test error {}".format(
               rnn_state["epoch"], rnn_state["precision"]))
+    cur_best = rnn_state["precision"]
     mdrnn.load_state_dict(rnn_state["state_dict"])
     optimizer.load_state_dict(rnn_state["optimizer"])
     scheduler.load_state_dict(rnn_state['scheduler'])
@@ -231,7 +232,9 @@ def data_pass(epoch, train, include_reward, include_terminal): # pylint: disable
 train = partial(data_pass, train=True, include_reward=args.include_reward, include_terminal=args.include_terminal)
 test = partial(data_pass, train=False, include_reward=args.include_reward, include_terminal=args.include_terminal)
 
-cur_best = None
+if not cur_best:
+    cur_best = None
+    
 for e in range(epochs):
     train_loss = train(e)
     test_loss = test(e)
