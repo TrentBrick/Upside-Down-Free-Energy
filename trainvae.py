@@ -119,7 +119,7 @@ def train(epoch):
         loss, recon_loss, kld_loss = loss_function(obs, encoder_mu, encoder_logsigma, decoder_mu, decoder_logsigma)
         loss.backward()
         train_loss += loss.item()
-        torch.nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(vae.parameters(), 100.0)
         optimizer.step()
         if batch_idx % 20 == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tRecon: {:.6f}\tKLD: {:.6f}'.format(
