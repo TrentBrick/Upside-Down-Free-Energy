@@ -28,21 +28,20 @@ class Decoder(nn.Module):
         self.deconv4 = nn.ConvTranspose2d(32, img_channels, 6, stride=2)
 
         #self.fc_mu = nn.Linear(3*64*64, 3*64*64)
-        self.fc_logsigma = nn.Linear(3*64*64, 3*64*64)
+        self.fc_logsigma = nn.Linear(1024, 3*64*64)
 
     def forward(self, s, r): # pylint: disable=arguments-differ
         if self.conditional:
             s = torch.cat([s, r], dim=1)
             s = F.relu(self.r_cond1(s))
         s = F.relu(self.fc1(s))
+        logsigma = self.fc_logsigma(s)
         s = s.unsqueeze(-1).unsqueeze(-1)
         s = F.relu(self.deconv1(s))
         s = F.relu(self.deconv2(s))
         s = F.relu(self.deconv3(s))
-        s = self.deconv4(s)
-        s = s.view(s.size(0), -1)
-        mu = F.sigmoid(s)
-        logsigma = self.fc_logsigma( F.relu(s))
+        s = F.sigmoid(self.deconv4(s))
+        mu = s.view(s.size(0), -1)
 
         return mu, logsigma
 

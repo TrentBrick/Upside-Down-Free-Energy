@@ -217,12 +217,8 @@ for epoch in range(1, args.epochs + 1):
             decoder_mu = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
             print('to save shape', to_save.shape)
-            # .view(args.batch_size*2, 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
             save_image(to_save,
                        join(vae_dir, 'samples/sample_' + str(epoch) + '.png'))
-            save_image(recon_batch.cpu(),
-                       join(vae_dir, 'samples/decoder_samps_' + str(epoch) + '.png'))
-
 
     if earlystopping.stop:
         print("End of Training because of early stopping at epoch {}".format(epoch))
