@@ -10,7 +10,6 @@ import torch.utils.data
 from torchvision import transforms
 import gym 
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
-from ha_es import CMAES
 import time
 import cma
 from controller_model import Models, load_parameters, flatten_parameters
@@ -66,7 +65,7 @@ def combine_worker_rollouts(inp, dim=2):
     return combo_dict
 
 def generate_rollouts(ctrl_params, seq_len, 
-    time_limit, logdir, num_rolls=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
+    time_limit, logdir, total_num_rolls=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
 
     # 10% of the rollouts to use for test data. 
     ninety_perc = 0.1 - np.floor(num_workers*0.1)
@@ -77,7 +76,7 @@ def generate_rollouts(ctrl_params, seq_len,
     worker_data = []
     #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
-        worker_data.append( (ctrl_params, rand_ints[i], num_rolls, time_limit, logdir, False ) ) # compute FEEF.
+        worker_data.append( (ctrl_params, rand_ints[i], total_num_rolls, time_limit, logdir, False ) ) # compute FEEF.
 
     with Pool(processes=num_workers) as pool:
         res = pool.map(worker, worker_data) 
@@ -114,7 +113,7 @@ class Seeder:
         result = np.random.randint(self.limit, size=batch_size).tolist()
         return result
 
-def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_workers, 
+def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, num_workers, 
     num_trials_per_worker, num_generations, seed_start=None, time_limit=1000 ):
 
     population_size = num_workers*num_trials_per_worker
@@ -132,6 +131,9 @@ def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_
 
     filename_hist = join(logdir, 'ctrl_hist.txt')
 
+    # making header for the history saving. 
+    # the append writing operation is important here so memory is stored 
+    # across the epochs of VAE and MDRNN training
     if not exists(filename_hist): 
         header_string = ""
         for k in ['generation', 'time', 'avg_rew', 'min_rew', 'max_rew',
@@ -141,15 +143,6 @@ def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_
         header_string+= '\n'
         with open(filename_hist, "w") as file:
             file.write(header_string)  
-    
-    sigma_init=0.1
-    num_params = len( curr_best_ctrl_params )
-
-    es = CMAES(num_params,
-            sigma_init=sigma_init,
-            popsize=population_size, 
-            init_params= curr_best_ctrl_params,
-            invert_reward=False)
 
     t = 0
     history = []
@@ -211,9 +204,9 @@ def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_
         curr_time = int(time.time()) - start_time
 
         h = (t, curr_time, avg_reward, r_min, r_max, 
-                std_reward, int(es.rms_stdev()*100000)/100000., 
-                mean_time_step+1., int(max_time_step)+1., avg_feef, feef_min, feef_max, 
-                std_feef  )
+            std_reward, int(es.rms_stdev()*100000)/100000., 
+            mean_time_step+1., int(max_time_step)+1., avg_feef, feef_min, feef_max, 
+            std_feef )
 
         history.append(h)
 
@@ -239,7 +232,7 @@ def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_
     best_feef = es.result[1] # best feef reward of all time
     #best_curr_feef = es.result[2] # best feef of the current batch
 
-    return model_params, best_feef, best_reward
+    return es, model_params, best_feef, best_reward
 
 if __name__ == '__main__':
 
@@ -254,7 +247,7 @@ if __name__ == '__main__':
     print(len(ctrl_params[0]))
 
     generate_rollouts(ctrl_params[0], transform, 30, 1000, 
-        'exp_dir', num_rolls = 4, num_workers = 1 )
+        'exp_dir', total_num_rolls = 4, num_workers = 1 )
 
 
 

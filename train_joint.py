@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as f
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from torchvision.utils import save_image
 import numpy as np
 import json
 from tqdm import tqdm
@@ -16,14 +17,13 @@ from utils.misc import save_checkpoint, load_parameters, flatten_parameters
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
 from utils.learning import EarlyStopping
 from utils.learning import ReduceLROnPlateau
+from ha_es import CMAES
 import sys
 from data.loaders import RolloutSequenceDataset
 from models.vae import VAE
 from models.mdrnn import MDRNN, gmm_loss
 from models import Controller
 import cma
-#from torch.multiprocessing import Process, Queue
-from time import sleep
 from multiprocessing import cpu_count
 from trainvae import loss_function as trainvae_loss_function
 from trainmdrnn import get_loss as trainmdrnn_loss_function
@@ -31,6 +31,8 @@ from trainmdrnn import get_loss as trainmdrnn_loss_function
 parser = argparse.ArgumentParser("Joint training")
 parser.add_argument('--logdir', type=str,
                     help="Where things are logged and models are loaded from.")
+parser.add_argument('--gamename', type=str, default='carracing'
+                    help="What environment to train in.")
 parser.add_argument('--reload_from_pretrain', action='store_true',
                     help="Do not reload if specified.")
 parser.add_argument('--no_reload', action='store_true',
@@ -51,26 +53,22 @@ parser.add_argument('--display', action='store_true', help="Use progress bars if
                     "specified.")
 args = parser.parse_args()
 
-# Max number of workers. M
-
 assert args.num_workers <= cpu_count(), "Providing too many workers!" 
 
 conditional =True
 use_ctrl_pretrain = False # as it is not trained to be conditioned on rewards!
 
-
+# used for saving which models are the best based upon their train performance. 
 vae_n_mdrnn_cur_best=None
 ctrl_cur_best_rewards = None
-
-#parser.add_argument('--include_terminal', action='store_true',
-#                    help="Add a terminal modelisation term to the loss.")
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # constants
 BATCH_SIZE = 48
 SEQ_LEN = 256
 epochs = 50
+time_limit =1000 # for the rollouts generated
+num_vae_mdrnn_training_rollouts = 16
 
 kl_tolerance=0.5
 kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
@@ -83,6 +81,7 @@ model_types = ['ctrl', 'vae', 'mdrnn']
 joint_dir = join(args.logdir, 'joint')
 filenames_dict = {m+'_'+bc:join(joint_dir, m+'_'+bc+'.tar') for bc in ['best', 'checkpoint'] \
                                                  for m in model_types}
+# make directories if they dont exist
 samples_dir = join(joint_dir, 'samples')
 for dirr in [joint_dir, samples_dir]:
     if not exists(dirr):
@@ -90,7 +89,7 @@ for dirr in [joint_dir, samples_dir]:
 
 logger_filename = join(joint_dir, 'logger.txt')
 
-# load models
+# init models
 vae = VAE(3, LATENT_SIZE, conditional).to(device)
 mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5,conditional).to(device)
 controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional).to(device)
@@ -108,7 +107,7 @@ if not args.no_reload:
     for name, model_var in model_variables_dict_NO_CTRL.items():
     # Loading from previous joint training or from all separate training
     # TODO: enable some to come from pretraining and others to be fresh. 
-        if not args.reload_from_pretrain:
+        if not args.reload_from_pretrain: # dont come from separate pretraining steps. 
             load_file = filenames_dict[name+'_best']
         else: 
             load_file = join(args.logdir, name, 'best.tar')
@@ -143,7 +142,7 @@ if not args.no_reload:
                                 filenames_dict[model_name+'_best'])
 
     # load in the controller 
-    if use_ctrl_pretrain: 
+    if use_ctrl_pretrain:
         with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
             ctrl_params = json.load(f)
         print("Loading in the pretrained best controller model, its average eval score was:", ctrl_params[1])
@@ -158,24 +157,14 @@ if not args.no_reload:
             ctrl_cur_best_feef = state['feef']
             controller.load_state_dict(state['state_dict'])
             print("Previous best reward was {} and best FEEF {}...".format(ctrl_cur_best_rewards, ctrl_cur_best_feef))
-
+            print("At epoch:", state['epoch'])
 
 # never need gradients with controller for evo methods. 
 # NOTE: if I stop using evolutionary approach this will need to change. 
 controller.eval()
 
-# Data Loading. Cant use previous transform directly as it is a seq len sized batch of observations!!
-transform = transforms.Lambda(
-    lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
-
-# note that the buffer sizes are very small. and batch size is even smaller.
-# batch size is smaller because each element is in fact 32 observations!
-'''train_loader = DataLoader(
-    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
-    batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
-test_loader = DataLoader(
-    RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=10),
-    batch_size=BATCH_SIZE, num_workers=args.num_workers, drop_last=True)'''
+# dont need as saving the observations after their transforms in the rollout itself. 
+#transform = transforms.Lambda( lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
 
 vae_output_names = ['encoder_mu', 'encoder_logsigma', 'latent_s', 'decoder_mu', 'decoder_logsigma']
 
@@ -302,23 +291,29 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
 train = partial(data_pass, train=True)
 test = partial(data_pass, train=False)
 
-##############################################
+# TODO: take in the final sigma from the last epoch. 
+sigma_init=0.1
+num_params = len( flatten_parameters(controller.parameters()) )
 
-time_limit =1000 # for the rollouts generated
-seq_len = 64
+# init here so the learning memory is retained over time. 
+es = CMAES(num_params,
+        sigma_init=sigma_init,
+        popsize=population_size, 
+        init_params= flatten_parameters(controller.parameters()),
+        invert_reward=False)
 
-# Data Loading. Cant use previous transform directly as it is a seq len sized batch of observations!!
-#transform = transforms.Lambda(
-#    lambda x: np.transpose(x, (0, 3, 1, 2)) / 255) #why is this necessary?
+################## Main Training Loop ############################
 
 for e in range(epochs):
-    # run the current policy with the current VAE and MDRNN
-    # does this data need to be on policy? no. TODO: implement memory buffer
-
+    ## run the current policy with the current VAE and MDRNN
+    # TODO: implement memory buffer as data doesnt need to be on policy. 
+    # TODO: sample a set of parameters from the controller rather than just using the same one. 
     train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
-            seq_len, 
-            time_limit, joint_dir, num_rolls=16, num_workers=args.num_workers, joint_file_dir=True )
+            SEQ_LEN, time_limit, joint_dir, total_num_rolls=num_vae_mdrnn_training_rollouts, 
+            num_workers=args.num_workers, joint_file_dir=True )
+            # joint_file_dir is to direct the workers to load from the joint directory which is flat. 
  
+    # TODO: ensure these workers are freed up after the vae/mdrnn training is done. 
     train_loader = DataLoader(train_dataset,
         batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
     test_loader = DataLoader(test_dataset,
@@ -326,6 +321,7 @@ for e in range(epochs):
     
     # train VAE and MDRNN. uses partial(data_pass)
     train_loss_dict = train(e, train_loader)
+    # returns the last ones in order to produce samples!
     test_loss_dict, last_test_observations, last_test_rewards = test(e, test_loader)
     scheduler.step(test_loss_dict['loss'])
 
@@ -334,7 +330,6 @@ for e in range(epochs):
     is_best = not vae_n_mdrnn_cur_best or test_loss_dict['loss'] < vae_n_mdrnn_cur_best
     if is_best:
         vae_n_mdrnn_cur_best = test_loss_dict['loss']
-    
     for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
         save_checkpoint({
             "state_dict": model_var.state_dict(),
@@ -345,7 +340,7 @@ for e in range(epochs):
             "epoch": e}, is_best, filenames_dict[model_name+'_checkpoint'],
                         filenames_dict[model_name+'_best'])
 
-    # generating VAE samples
+    # generating and saving VAE samples
     if not args.nosamples:
         with torch.no_grad():
             # get test samples
@@ -356,20 +351,18 @@ for e in range(epochs):
             to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
             print('to save shape', to_save.shape)
             save_image(to_save,
-                       join(joint_dir, 'samples/sample_' + str(epoch) + '.png'))
-
+                       join(samples_dir, 'sample_' + str(epoch) + '.png'))
 
     # TODO: generate MDRNN examples. 
 
     # train the controller/policy using the updated VAE and MDRNN
-    best_params, best_feef, best_reward = train_controller(flatten_parameters(controller.parameters()), joint_dir, 
+    es, best_params, best_feef, best_reward = train_controller(flatten_parameters(controller.parameters()), joint_dir, 
         args.gamename, args.num_episodes, args.num_workers, args.num_trials_per_worker,
-        args.num_generations, seed_start=None, time_limit=1000 )
+        args.num_generations_per_epoch, seed_start=None, time_limit=time_limit )
 
     controller = load_parameters(best_params, controller)
 
     # checkpointing controller:
-    # TODO: compute and save the best based upon the reward it gets. 
     is_best = not ctrl_cur_best_rewards or ctrl_cur_best_rewards > best_reward
     if is_best:
         ctrl_cur_best_rewards = best_reward
@@ -404,6 +397,7 @@ for e in range(epochs):
         log_string+= '\n'
         file.write(log_string)
     
+    # accounts for all of the different module losses. 
     earlystopping.step(test_loss_dict['loss'])
 
     if earlystopping.stop:
