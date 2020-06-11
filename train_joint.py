@@ -317,7 +317,7 @@ for e in range(epochs):
 
     train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
             seq_len, 
-            time_limit, join(args.logdir,'joint'), num_rolls=16, num_workers=args.num_workers, joint_file_dir=True )
+            time_limit, joint_dir, num_rolls=16, num_workers=args.num_workers, joint_file_dir=True )
  
     train_loader = DataLoader(train_dataset,
         batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
@@ -356,13 +356,13 @@ for e in range(epochs):
             to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
             print('to save shape', to_save.shape)
             save_image(to_save,
-                       join(vae_dir, 'samples/sample_' + str(epoch) + '.png'))
+                       join(joint_dir, 'samples/sample_' + str(epoch) + '.png'))
 
 
     # TODO: generate MDRNN examples. 
 
     # train the controller/policy using the updated VAE and MDRNN
-    best_params, best_feef, best_reward = train_controller(flatten_parameters(controller.parameters()), args.logdir, 
+    best_params, best_feef, best_reward = train_controller(flatten_parameters(controller.parameters()), joint_dir, 
         args.gamename, args.num_episodes, args.num_workers, args.num_trials_per_worker,
         args.num_generations, seed_start=None, time_limit=1000 )
 
