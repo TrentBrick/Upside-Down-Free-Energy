@@ -31,20 +31,20 @@ from trainmdrnn import get_loss as trainmdrnn_loss_function
 parser = argparse.ArgumentParser("Joint training")
 parser.add_argument('--logdir', type=str,
                     help="Where things are logged and models are loaded from.")
-parser.add_argument('--no_reload', action='store_true',
+parser.add_argument('--reload_from_pretrain', action='store_true',
                     help="Do not reload if specified.")
-parser.add_argument('--reload_from_joint', action='store_true',
+parser.add_argument('--no_reload', action='store_true',
                     help="Do not reload if specified.")
 parser.add_argument('--gamename', type=str, default='carracing',
                     help="Gym environment being used.")
 
 # Controller training arguments
 parser.add_argument('--num_generations_per_epoch', type=int, help='Number of generations of CMA-ES per epoch.',
-                    default=10)
-parser.add_argument('--num_episodes', type=int, help='Number of samples rollouts to evaluate each agent')
+                    default=2)
+parser.add_argument('--num_episodes', type=int, default=2 ,help='Number of samples rollouts to evaluate each agent')
 parser.add_argument('--num_trials_per_worker', type=int, default=1, help='Population size.')
 parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
-                    default=24)
+                    default=4)
 parser.add_argument('--target_return', type=float, help='Stops once the return '
                     'gets above target_return')
 parser.add_argument('--display', action='store_true', help="Use progress bars if "
@@ -56,7 +56,11 @@ args = parser.parse_args()
 assert args.num_workers <= cpu_count(), "Providing too many workers!" 
 
 conditional =True
-use_ctrl_pretrain = True
+use_ctrl_pretrain = False # as it is not trained to be conditioned on rewards!
+
+
+vae_n_mdrnn_cur_best=None
+ctrl_cur_best_rewards = None
 
 #parser.add_argument('--include_terminal', action='store_true',
 #                    help="Add a terminal modelisation term to the loss.")
@@ -74,7 +78,7 @@ kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
 include_reward = conditional # this is very important for the conditional 
 include_terminal = False
 
-model_types = ['ctlr', 'vae', 'mdrnn']
+model_types = ['ctrl', 'vae', 'mdrnn']
 # Init save filenames 
 joint_dir = join(args.logdir, 'joint')
 filenames_dict = {m+'_'+bc:join(joint_dir, m+'_'+bc+'.tar') for bc in ['best', 'checkpoint'] \
@@ -92,7 +96,7 @@ mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5,conditional).to
 controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional).to(device)
 
 # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
-optimizer = torch.optim.Adam([[vae.parameters()]+[mdrnn.parameters()]], lr=1e-3)
+optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
 scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
 earlystopping = EarlyStopping('min', patience=30) # NOTE: this needs to be esp high as the epochs are heterogenous buffers!! not all data. 
 
@@ -100,56 +104,64 @@ model_variables_dict = dict(controller=controller, vae=vae, mdrnn=mdrnn)
 model_variables_dict_NO_CTRL = dict(vae=vae, mdrnn=mdrnn) # used for when the controller is trained and these models are provided. 
 # Loading in trained models: 
 
-if not vae_n_mdrnn_cur_best: 
-    vae_n_mdrnn_cur_best=None
-if not ctrl_cur_best_rewards:
-    ctrl_cur_best_rewards = None
-
 if not args.no_reload:
     for name, model_var in model_variables_dict_NO_CTRL.items():
     # Loading from previous joint training or from all separate training
     # TODO: enable some to come from pretraining and others to be fresh. 
-        if args.reload_from_joint:
+        if not args.reload_from_pretrain:
             load_file = filenames_dict[name+'_best']
         else: 
             load_file = join(args.logdir, name, 'best.tar')
-        assert exists(load_file), "No trained model in the logdir:: "+load_file
-        state = torch.load(load_file, map_location={'cuda:0': str(device)})
-        #if name != 'ctrl':
-        print("Loading model_type {} at epoch {} "
-            "with test error {}".format(name,
-                state['epoch'], state['precision']))
+        if exists(load_file):
+            state = torch.load(load_file, map_location={'cuda:0': str(device)})
+            #if name != 'ctrl':
+            print("Loading model_type {} at epoch {} "
+                "with test error {}".format(name,
+                    state['epoch'], state['precision']))
 
-        model_var.load_state_dict(state['state_dict'])
+            model_var.load_state_dict(state['state_dict'])
 
-        # load in the training loop states only if all jointly trained together before
-        if args.reload_from_joint: 
-            # this info is currently saved with the vae and mdrnn on their own pulling from mdrnn as its currently the last.
-            print(' Loading in training state info (eg optimizer state) from last model in iter list:', name)
-            optimizer.load_state_dict(state["optimizer"])
-            scheduler.load_state_dict(state['scheduler'])
-            earlystopping.load_state_dict(state['earlystopping'])
-            vae_n_mdrnn_cur_best = state['precision']
+            # load in the training loop states only if all jointly trained together before
+            if not args.reload_from_pretrain: 
+                # this info is currently saved with the vae and mdrnn on their own pulling from mdrnn as its currently the last.
+                print(' Loading in training state info (eg optimizer state) from last model in iter list:', name)
+                optimizer.load_state_dict(state["optimizer"])
+                scheduler.load_state_dict(state['scheduler'])
+                earlystopping.load_state_dict(state['earlystopping'])
+                vae_n_mdrnn_cur_best = state['precision']
+        else: 
+            print('trying to load file at:', load_file, "but couldnt find it so starting fresh")
+
+            for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
+                save_checkpoint({
+                    "state_dict": model_var.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'earlystopping': earlystopping.state_dict(),
+                    "precision": None,
+                    "epoch": -1}, True, filenames_dict[model_name+'_checkpoint'],
+                                filenames_dict[model_name+'_best'])
 
     # load in the controller 
     if use_ctrl_pretrain: 
         with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
             ctrl_params = json.load(f)
         print("Loading in the pretrained best controller model, its average eval score was:", ctrl_params[1])
-        controller = load_parameters(ctrl_params[0], self.controller)
+        controller = load_parameters(ctrl_params[0], controller)
         ctrl_cur_best_rewards = ctrl_params[1]
 
     else: 
         if exists(filenames_dict['ctrl_best']): # loading in the checkpoint
             print('loading in the best controller')
             state = torch.load(filenames_dict['ctrl_best'], map_location={'cuda:0': str(device)})
-        ctrl_cur_best_rewards = state['reward']
-        ctrl_cur_best_feef = state['feef']
-        controller.load_state_dict(state['state_dict'])
-        print("Previous best reward was {} and best FEEF {}...".format(ctrl_cur_best_rewards, ctrl_cur_best_feef))
+            ctrl_cur_best_rewards = state['reward']
+            ctrl_cur_best_feef = state['feef']
+            controller.load_state_dict(state['state_dict'])
+            print("Previous best reward was {} and best FEEF {}...".format(ctrl_cur_best_rewards, ctrl_cur_best_feef))
 
 
 # never need gradients with controller for evo methods. 
+# NOTE: if I stop using evolutionary approach this will need to change. 
 controller.eval()
 
 # Data Loading. Cant use previous transform directly as it is a seq len sized batch of observations!!
@@ -235,7 +247,7 @@ def data_pass(epoch, train, loader): # pylint: disable=too-many-locals
         next_reward = reward[:, 1:].clone()
         pres_reward = reward[:, :-1]
 
-        mdrnn_loss_dict = trainmdrnn_loss_function(latent_obs, latent_next_obs, action, 
+        mdrnn_loss_dict = trainmdrnn_loss_function(mdrnn, latent_obs, latent_next_obs, action, 
                             pres_reward, next_reward,
                             terminal, include_reward, include_terminal )
 
@@ -305,7 +317,7 @@ for e in range(epochs):
 
     train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
             seq_len, 
-            time_limit, args.logdir, num_rolls=16, num_workers=args.num_workers )
+            time_limit, join(args.logdir,'joint'), num_rolls=16, num_workers=args.num_workers, joint_file_dir=True )
  
     train_loader = DataLoader(train_dataset,
         batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
@@ -325,7 +337,7 @@ for e in range(epochs):
     
     for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
         save_checkpoint({
-            "state_dict": model.state_dict(),
+            "state_dict": model_var.state_dict(),
             "optimizer": optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
             'earlystopping': earlystopping.state_dict(),
@@ -350,8 +362,7 @@ for e in range(epochs):
     # TODO: generate MDRNN examples. 
 
     # train the controller/policy using the updated VAE and MDRNN
-
-    best_params, best_feef, best_reward = train_controller(flatten_parameters(controller.parameters()) args.logdir, 
+    best_params, best_feef, best_reward = train_controller(flatten_parameters(controller.parameters()), args.logdir, 
         args.gamename, args.num_episodes, args.num_workers, args.num_trials_per_worker,
         args.num_generations, seed_start=None, time_limit=1000 )
 

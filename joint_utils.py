@@ -1,5 +1,6 @@
 
 import numpy as np
+import sys 
 from os.path import join, exists
 from os import mkdir, unlink, listdir, getpid
 from multiprocessing import Pool 
@@ -65,15 +66,16 @@ def combine_worker_rollouts(inp, dim=2):
     return combo_dict
 
 def generate_rollouts(ctrl_params, seq_len, 
-    time_limit, logdir, num_rolls=2, num_workers=16, transform=None): # this makes 32 pieces of data.
+    time_limit, logdir, num_rolls=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
 
     # 10% of the rollouts to use for test data. 
-    ninety_perc = ten_perc - np.floor(num_workers*0.1)
+    ninety_perc = 0.1 - np.floor(num_workers*0.1)
 
     # generate a random number to give as a random seed to each pool worker. 
     rand_ints = np.random.randint(0, 1e9, num_workers)
 
     worker_data = []
+    #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
         worker_data.append( (ctrl_params, rand_ints[i], num_rolls, time_limit, logdir, False ) ) # compute FEEF.
 
@@ -90,7 +92,7 @@ def worker(inp): # run lots of rollouts
     print('worker has started')
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
-            return_events=True, use_old_gym=False)
+            return_events=True, use_old_gym=False, joint_file_dir=True)
 
     model.make_env(seed)
 
@@ -128,9 +130,7 @@ def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_
         seed_start = np.random.randint(0,1e9, size=1)[0]
     seeder = Seeder(seed_start)
 
-    filebase = join(logdir, 'ctrl_')
-    filename = filebase+'.json'
-    filename_hist = filebase+'.hist.json'
+    filename_hist = join(logdir, 'ctrl_hist.txt')
 
     if not exists(filename_hist): 
         header_string = ""
@@ -139,7 +139,7 @@ def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_
                 'avg_feef', 'min_feef', 'max_feef', 'std_feef']:
             header_string+=k+' '
         header_string+= '\n'
-        with open(logger_filename, "w") as file:
+        with open(filename_hist, "w") as file:
             file.write(header_string)  
     
     sigma_init=0.1
@@ -197,7 +197,7 @@ def train_controller(curr_best_ctrl_params, logdir, gamename, num_episodes, num_
         ###########################
 
         mean_time_step = int(np.mean(times_taken)*100)/100. # get average time step
-        max_time_step = int(np.max(times_taken))*100)/100.
+        max_time_step = int(np.max(times_taken)*100)/100.
         r_max = int(np.max(reward_list)*100)/100.
         r_min = int(np.min(reward_list)*100)/100.
         avg_reward = int(np.mean(reward_list)*100)/100. 

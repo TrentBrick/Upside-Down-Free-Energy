@@ -155,9 +155,9 @@ class MDRNNCell(_MDRNNBase):
         mus = out_full[:, :stride]
         mus = mus.view(-1, self.gaussians, self.latents)
 
-        sigmas = out_full[:, stride:2 * stride]
-        sigmas = sigmas.view(-1, self.gaussians, self.latents)
-        sigmas = torch.exp(sigmas)
+        log_sigmas = out_full[:, stride:2 * stride]
+        log_sigmas = log_sigmas.view(-1, self.gaussians, self.latents)
+        sigmas = torch.exp(log_sigmas)
 
         pi = out_full[:, 2 * stride:3 * stride]
         pi = pi.view(-1, self.gaussians, self.latents)

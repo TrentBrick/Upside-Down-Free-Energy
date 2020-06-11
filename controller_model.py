@@ -8,7 +8,6 @@ import numpy as np
 from models import MDRNNCell, VAE, Controller
 import pickle
 import gym 
-from feef import feef_loss 
 from ha_env import make_env
 #import gym
 #import gym.envs.box2d
@@ -65,8 +64,8 @@ testing_old_controller = False
 
 class Models:
 
-    def __init__(self, env_name, time_limit, use_old_gym=True, 
-        mdir=None, return_events=False, give_models=None, conditional=True):
+    def __init__(self, env_name, time_limit, use_old_gym=False, 
+        mdir=None, return_events=False, give_models=None, conditional=True, joint_file_dir=False):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
@@ -83,7 +82,7 @@ class Models:
                 transforms.ToTensor()
             ])
 
-        self.fixed_ob = pickle.load(open('notebooks/image_array.pkl', 'rb'))
+        #self.fixed_ob = pickle.load(open('notebooks/image_array.pkl', 'rb'))
 
         if give_models:
             self.vae = give_models['vae']
@@ -97,11 +96,15 @@ class Models:
 
         else:
             # Loading world model and vae
-            vae_file, rnn_file, ctrl_file = \
-                [join(mdir, m, 'best.tar') for m in ['vae', 'mdrnn', 'ctrl']]
+            if joint_file_dir:
+                vae_file, rnn_file, ctrl_file = \
+                    [join(mdir, m+'_best.tar') for m in ['vae', 'mdrnn', 'ctrl']]
+            else: 
+                vae_file, rnn_file, ctrl_file = \
+                    [join(mdir, m, 'best.tar') for m in ['vae', 'mdrnn', 'ctrl']]
 
             assert exists(vae_file) and exists(rnn_file),\
-                "Either vae or mdrnn is untrained or the file is in the wrong place."
+                "Either vae or mdrnn is untrained or the file is in the wrong place. "+vae_file+' '+rnn_file
 
             vae_state, rnn_state = [
                 torch.load(fname, map_location={'cuda:0': str(self.device)})
@@ -253,19 +256,31 @@ class Models:
                     return cumulative, i # ending time and cum reward
             i += 1
 
-    def elbo_calculation(self, recon_obs, obs, mu, logsigma):
+    def importance_sampling(self, num_samps, real_obs, encoder_mu, encoder_logsigma, cond_reward):
+        """
+        Returns a full batch. 
+        """
 
-        # vae loss function but also computes the normalizing constant. 
-        # and things are all positive not negative because we arent doing minimization here. 
-        # NOTE: I dont have free bits in here and dont think that I should. this enables a looser bound but doesnt affect the probability calculation. 
-        
-        log_p_obs_given_s = Normal(torch.flatten(recon_obs), 1.0)).log_prob(torch.flatten(obs))
-        
-        KLD = -0.5 * torch.sum(1 + 2 * logsigma - mu.pow(2) - (2 * logsigma).exp())
-        
-        return log_p_obs_given_s - KLD
+        log_p_v = torch.zeros(encoder_mu.shape[0]) # batch size
 
-    def p_policy(self, rollout_dict, num_s_samps, num_next_s_samps):
+        for _ in range(num_samps):
+
+            z = encoder_mu + (encoder_logsigma.exp() * torch.randn_like(encoder_mu))
+
+            decoder_mu, decoder_logsigma = vae.decoder(z, cond_reward)
+
+            log_P_OBS_GIVEN_S = Normal(decoder_mu, decoder_logsigma.exp()).log_prob(real_obs)
+            log_P_OBS_GIVEN_S = log_P_OBS_GIVEN_S.sum(dim=-1) #multiply the probabilities within the batch. 
+
+            log_P_S = Normal(0.0, 1.0).log_prob(z).sum(dim=-1)
+            log_Q_S_GIVEN_X = Normal(encoder_mu, encoder_logsigma.exp()).log_prob(z).sum(dim=-1)
+
+            log_p_v += log_P_OBS_GIVEN_S + log_P_S - log_Q_S_GIVEN_X
+
+        return log_p_v/num_samps
+
+    def p_policy(self, rollout_dict, num_s_samps, num_next_encoder_samps, 
+            num_importance_samps, encoder_mus, encoder_logsigmas):
 
         # rollout_dict values are of the size and shape seq_len, values dimensions. 
 
@@ -278,13 +293,11 @@ class Models:
         print('this might give OOM and need to break into batch')
         # TODO: break the sequence length into smaller batches. 
         
-        total_samples = num_s_samps * num_next_s_samps
+        total_samples = num_s_samps * num_next_encoder_samps * num_importance_samps
         expected_kld = 0
 
-        mus, logsigmas = self.vae.encoder(rollout_dict['obs'], rollout_dict['rewards'])
-
-        for _ in range(num_s_samps): # vectorize this somehow 
-            latent_s =  mus + logsigmas.exp() * torch.randn_like(mus)
+        for i in range(num_s_samps): # vectorize this somehow 
+            latent_s =  encoder_mus + encoder_logsigmas.exp() * torch.randn_like(encoder_mus)
 
             # predict the next state from this one. 
             # I already have access to the action from the runs generated. 
@@ -294,53 +307,40 @@ class Models:
                                                                         latent_s, rollout_dict['rewards'])
 
             # reward loss 
-            log_reward_surprise = self.reward_prior.log_prob(next_r)
+            log_p_r = self.reward_prior.log_prob(next_r)
 
             g_probs = Categorical(probs=torch.exp(logpi).permute(0,2,1))
-            which_g = g_probs.sample()
-            mus_g, sigs_g = torch.gather(mus.squeeze(), 0, which_g), torch.gather(sigmas.squeeze(), 0, which_g)
-            #print(mus_g.shape)
-            for _ in range(num_next_s_samps): # this performs the same function as the ELBO sampling. 
-                next_s = mus_g + sigs_g * torch.randn_like(mus_g)
-                recon_obs = self.vae.decoder(next_s, next_r)
-                # ELBO: 
-                log_p_obs = elbo_calculation(recon_obs, rollout_dict['obs'], mus_g, torch.log(sigs_g), kl_tolerance=False)
-                per_time_loss = torch.log(BCE) + log_reward_surprise
-                print(per_time_loss.shape)
-                # can sum across time with these logs. 
-                expected_loss += torch.sum(per_time_loss, dim=0)
-                # multiply all of these probabilities together within a single batch. 
+            for j in range(num_next_encoder_samps):
+                which_g = g_probs.sample()
+                mus_g, sigs_g = torch.gather(mus.squeeze(), 0, which_g), torch.gather(sigmas.squeeze(), 0, which_g)
+                #print(mus_g.shape)
+
+                # importance sampling which has its own number of iterations: 
+                next_obs = rollout_dict['obs'][1:]
+                log_p_v = self.importance_sampling(num_importance_samps, mus_g, torch.log(sigs_g), next_r)
+                
+                # can sum across time with these logs. (as the batch is the different time points)
+                expected_loss += torch.sum(log_p_v+log_p_r)
 
         # average across the all of the sample rollouts. 
-        return expected_loss / total_samples, mus, logsigmas # use these for the tilde computation
+        return expected_loss / total_samples
 
-    def p_tilde(self, rollout_dict, elbo_samps,  mus, logsigmas):
+    def p_tilde(self, rollout_dict, num_importance_samps, encoder_mus, encoder_logsigmas):
         # for the actual observations need to compute the prob of seeing it and its reward
         # the rollout will also contain the reconstruction loss so: 
 
         # compute the ELBO: 
-        log_p_obs = 0
-        for _ in range(elbo_samps):
-            latent_s =  mus + logsigmas.exp() * torch.randn_like(mus)
-            recon_obs = self.vae.decoder(latent_s, rollout_dict['rewards'])
-            # NOTE: should I have the free bits in here or not??? 
-            # negative to make it approximate ln(p(x)). At least be proportional to this. Ignoring normalizing constants. 
-            log_p_obs += elbo_calculation( recon_obs, rollout_dict['obs'], mus, logsigmas, kl_tolerance=False)
-
-        # note that elbos are already in log. 
-        log_p_obs /= elbo_samps # average here. 
+        log_p_v = self.importance_sampling(num_importance_samps, encoder_mus, encoder_logsigmas, rollout_dict['rewards'])
 
         # all of the rewards
-        log_reward_surprise = self.reward_prior.log_prob(rollout_dict['rewards'])
+        log_p_r = self.reward_prior.log_prob(rollout_dict['rewards'])
 
-        per_time_loss = log_p_obs+reward_surprise
-
-        # can sum across time with these logs. 
-        expected_loss += torch.sum(per_time_loss, dim=0)
+        # can sum across time with these logs. (as the batch is the different time points)
+        expected_loss += torch.sum(log_p_v+log_p_r)
 
         return expected_loss
 
-    def feef_loss(self, data_dict_rollout):
+    def feef_loss(self, data_dict_rollout, reward_prior_mu = 4.0, reward_prior_sigma=0.1):
 
         # choose the action that minimizes the following reward.
         # provided with information from a single rollout 
@@ -350,15 +350,20 @@ class Models:
         # as calculating a single value would be so much faster. 
 
         num_s_samps = 3
-        num_next_s_samps = 3 
-        elbo_samps_tilde = 5
+        num_next_encoder_samps = 3 
+        num_importance_samps = 5 # I think 250 is ideal but probably too slow
         data_dict_rollout = {k:v.to(self.device) for k, v in data_dict_rollout.items()}
 
-        self.reward_prior = Normal(1.5,0.5)
+        self.reward_prior = Normal(reward_prior_mu,reward_prior_sigma) # treating this as basically a half normal. it should be higher than the max reward available for any run. 
 
         with torch.no_grad():
-            log_policy_loss, mus, logsigmas = self.p_policy(data_dict_rollout, num_s_samps, num_next_s_samps)
-            log_tilde_loss =  torch.log( self.p_tilde(data_dict_rollout, elbo_samps_tilde, mus, logsigmas ) )
+
+            # this computation is shared across both
+            encoder_mus, encoder_logsigmas = self.vae.encoder(rollout_dict['obs'], rollout_dict['rewards'])
+
+            log_policy_loss = self.p_policy(data_dict_rollout, num_s_samps, num_next_encoder_samps, 
+                                                                            num_importance_samps, encoder_mus, encoder_logsigmas)
+            log_tilde_loss =  self.p_tilde(data_dict_rollout, num_importance_samps, encoder_mus, encoder_logsigmas )
 
         return log_policy_loss - log_tilde_loss
 
