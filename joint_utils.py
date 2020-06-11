@@ -18,14 +18,16 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
     def __init__(self, transform, data, seq_len): 
         self._transform = transform
         self.data = data
-        self._cum_size = None
+        self._cum_size = [0]
         self._buffer_index = 0
         self._seq_len = seq_len
 
         # set the cum size tracker by iterating through the data:
-        for d in self.data['term']:
+        rollout_mask = torch.ones(len(self.data))
+        for d in self.data['terminal']:
+            #print(d, 'whats being added to cum size')
             self._cum_size += [self._cum_size[-1] +
-                                   (d.shape[0]-self._seq_len)]
+                                   (len(d)-self._seq_len)]
 
     def __getitem__(self, i): # kind of like the modulo operator but within rollouts of batch size. 
         # binary search through cum_size
@@ -36,11 +38,11 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
         obs_data = self.data['obs'][rollout_index][seq_index:seq_index + self._seq_len + 1]
         if self._transform:
             obs_data = self._transform(obs_data.astype(np.float32))
-        action = self.data['act'][rollout_index][seq_index+1:seq_index + self._seq_len + 1]
-        action = action.astype(np.float32)
+        action = self.data['actions'][rollout_index][seq_index+1:seq_index + self._seq_len + 1]
+        #action = action.astype(np.float32)
         reward, terminal = [self.data[key][rollout_index][seq_index:
-                                      seq_index + self._seq_len + 1].astype(np.float32)
-                            for key in ('rew', 'term')]
+                                      seq_index + self._seq_len + 1]#.astype(np.float32)
+                            for key in ('rewards', 'terminal')]
         # this transform is already being done and saved. 
         #reward = np.expand_dims(reward, 1)
         return obs_data, action, reward.unsqueeze(1), terminal
@@ -48,15 +50,22 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
     def __len__(self):
         return self._cum_size[-1]
 
-def combine_worker_rollouts(inp, dim=2):
+def combine_worker_rollouts(inp, seq_len, dim=1):
     """Combine data across the workers and their rollouts (making each rollout a separate batch)
     I currently only care about the data_dict_list. This is a list of each rollout: 
     each one has the dictionary keys: 'obs', 'rewards', 'actions', 'terminal'"""
+    
     first_iter = True
     for worker_rollouts in inp: 
         for rollout_data_dict in worker_rollouts[dim]:
+            # this rollout is too small so it is being ignored. 
+            # getting one of the keys from the dictionary
+            if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
+                print('!!!!!! Combine_worker_rollouts is ignoring rollout of length', len(rollout_data_dict[rollout_data_dict.keys()[0]]), 'for being smaller than the sequence length')
+                continue
+
             if first_iter:
-                combo_dict = rollout_data_dict
+                combo_dict = {k:[v] for k, v in rollout_data_dict.items()} 
                 first_iter = False
             else: 
                 combo_dict = {k:v.append(rollout_data_dict[k]) for k, v in combo_dict.items()}
@@ -65,10 +74,13 @@ def combine_worker_rollouts(inp, dim=2):
     return combo_dict
 
 def generate_rollouts(ctrl_params, seq_len, 
-    time_limit, logdir, total_num_rolls=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
+    time_limit, logdir, num_rolls_per_worker=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
 
     # 10% of the rollouts to use for test data. 
-    ninety_perc = 0.1 - np.floor(num_workers*0.1)
+    ten_perc = np.floor(num_workers*0.1)
+    if ten_perc == 0.0:
+        ten_perc=1
+    ninety_perc = int(num_workers- ten_perc)
 
     # generate a random number to give as a random seed to each pool worker. 
     rand_ints = np.random.randint(0, 1e9, num_workers)
@@ -76,15 +88,17 @@ def generate_rollouts(ctrl_params, seq_len,
     worker_data = []
     #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
-        worker_data.append( (ctrl_params, rand_ints[i], total_num_rolls, time_limit, logdir, False ) ) # compute FEEF.
+        worker_data.append( (ctrl_params, rand_ints[i], num_rolls_per_worker, time_limit, logdir, False ) ) # compute FEEF.
 
     with Pool(processes=num_workers) as pool:
         res = pool.map(worker, worker_data) 
+
+    #print('result!!!!', res)
     # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
-    print('done with pool')
-    
-    return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], dim=2) , seq_len),  \
-                GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], dim=2), seq_len)
+    print('===== Done with pool of workers')
+
+    return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
+                GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len)
 
 def worker(inp): # run lots of rollouts 
     ctrl_params, seed, num_episodes, max_len, logdir, compute_feef = inp
@@ -96,7 +110,8 @@ def worker(inp): # run lots of rollouts
     model.make_env(seed)
 
     return model.simulate(ctrl_params, train_mode=True, render_mode=False, 
-            num_episode=num_episodes, seed=seed, max_len=max_len, compute_feef=compute_feef)
+            num_episode=num_episodes, seed=seed, max_len=max_len, 
+            compute_feef=compute_feef)
 
 def sprint(*args):
     print(*args) # if python3, can do print(*args)
@@ -145,6 +160,7 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
             file.write(header_string)  
 
     t = 0
+    antithetic=True
     history = []
 
     max_len = time_limit # max time steps (-1 means ignore)

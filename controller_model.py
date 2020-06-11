@@ -5,12 +5,11 @@ from os.path import join, exists
 import torch
 from torchvision import transforms
 import numpy as np
-from models import MDRNNCell, VAE, Controller
+from models import MDRNN, MDRNNCell, VAE, Controller
 import pickle
 import gym 
+import gym.envs.box2d
 from ha_env import make_env
-#import gym
-#import gym.envs.box2d
 from torch.distributions.normal import Normal
 from torch.distributions.categorical import Categorical
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
@@ -72,7 +71,7 @@ class Models:
         self.env_name = env_name
         self.use_old_gym = use_old_gym
 
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = 'cpu' #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
 
@@ -123,6 +122,9 @@ class Models:
             self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(self.device)
             self.mdrnn.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
+
+            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5, conditional=conditional ).to(self.device)
+            self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
 
             #print('loadin in controller.')
             if testing_old_controller: 
@@ -185,8 +187,8 @@ class Models:
         # Why is this the minus cumulative reward?!?!!?
         """
 
-        if self.use_old_gym:
-            self.env.render('rgb_array')
+        #if self.use_old_gym:
+        self.env.render('rgb_array')
         self.trim_controls = trim_controls
 
         # copy params into the controller
@@ -233,8 +235,10 @@ class Models:
             
             if self.return_events: 
                 for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
-                                        [obs,reward, action, done ]):
-                    rollout_dict[key].append(var)
+                                        [obs, reward, action, done ]):
+                    if key == 'actions' or key=='terminal':
+                        var = torch.Tensor([var])
+                    rollout_dict[key].append(var.squeeze())
 
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
             obs, reward, done, _ = self.env.step(action)
@@ -249,9 +253,10 @@ class Models:
             if done or i > time_limit:
                 #print('done with this simulation')
                 if self.return_events:
-                    for k,v in rollout_dict.items():
-                        rollout_dict[k] = torch.Tensor(v, requires_grad=False)
-                    return cumulative, rollout_dict, i
+                    for k,v in rollout_dict.items(): # list of tensors arrays.
+                        #print(k, v[0].shape, len(v))
+                        rollout_dict[k] = torch.stack(v)
+                    return cumulative, i, rollout_dict # passed back to simulate. 
                 else: 
                     return cumulative, i # ending time and cum reward
             i += 1
@@ -303,7 +308,7 @@ class Models:
             # I already have access to the action from the runs generated. 
             # TODO: make both of these run with a batch. DONT NEED TO GENERATE OR PASS AROUND HIDDEN AS A RESULT. 
 
-            md_mus, md_sigmas, md_logpi, next_r, d, next_hidden = self.mdrnn(rollout_dict['actions'], 
+            md_mus, md_sigmas, md_logpi, next_r, d, next_hidden = self.mdrnn_full(rollout_dict['actions'], 
                                                                         latent_s, rollout_dict['rewards'])
 
             # reward loss 
@@ -359,11 +364,12 @@ class Models:
         with torch.no_grad():
 
             # this computation is shared across both
-            encoder_mus, encoder_logsigmas = self.vae.encoder(rollout_dict['obs'], rollout_dict['rewards'])
+            encoder_mus, encoder_logsigmas = self.vae.encoder(data_dict_rollout['obs'], data_dict_rollout['rewards'].unsqueeze(1))
 
             log_policy_loss = self.p_policy(data_dict_rollout, num_s_samps, num_next_encoder_samps, 
-                                                                            num_importance_samps, encoder_mus, encoder_logsigmas)
-            log_tilde_loss =  self.p_tilde(data_dict_rollout, num_importance_samps, encoder_mus, encoder_logsigmas )
+                                            num_importance_samps, encoder_mus, encoder_logsigmas)
+            log_tilde_loss =  self.p_tilde(data_dict_rollout, num_importance_samps, 
+                                            encoder_mus, encoder_logsigmas )
 
         return log_policy_loss - log_tilde_loss
 
@@ -400,7 +406,7 @@ class Models:
 
                 rand_env_seed = np.random.randint(0,1e9,1)[0]
                 if self.return_events: 
-                    rew, data_dict, t = self.rollout(rand_env_seed, render=render_mode, 
+                    rew, t, data_dict = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                 
@@ -416,7 +422,7 @@ class Models:
 
         if self.return_events: 
             if compute_feef:
-                return reward_list, t_list, feef_losses # no need to return the data.
+                return reward_list, t_list, feef_losses  # no need to return the data.
             else: 
                 return reward_list, t_list, data_dict_list
         else: 

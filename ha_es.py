@@ -97,7 +97,7 @@ class CMAES:
 
     if not num_params: 
       num_params = len(init_params)
-    elif not init_params: 
+    elif init_params is None: 
       init_params = self.num_params * [0]
 
 

@@ -1,7 +1,10 @@
 from multiprocessing import Pool 
 
+def const():
+    return dict(o=['lolz','stre'], t=['hehe'])#[1,2,3], [5,6,7]
+
 def worker(inp):
-    return [1,2,3], [5,6,7]
+    return const()
 
 if __name__ == '__main__':
     num_workers = 2

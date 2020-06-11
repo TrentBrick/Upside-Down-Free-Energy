@@ -25,6 +25,7 @@ def loss_function(real_obs, enc_mu, enc_logsigma, dec_mu, dec_logsigma, kl_toler
     
     #BCE = F.mse_loss(recon_x, x, size_average=False)
     real_obs = real_obs.view(real_obs.size(0), -1) # flattening all but the batch. 
+    
     log_P_OBS_GIVEN_S = Normal(dec_mu, dec_logsigma.exp()).log_prob(real_obs)
     #print('log p', log_P_OBS_GIVEN_S.shape, log_P_OBS_GIVEN_S[0,:])
     #print('mus and sigmas', dec_mu[0,:], dec_logsigma.exp()[0,:])

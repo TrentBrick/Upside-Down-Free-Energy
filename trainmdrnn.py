@@ -1,5 +1,9 @@
 """ Recurrent model training """
 
+# rest of imports are at the bottom. This ensures they are only
+# imported if this file is run directly. 
+from models.mdrnn import MDRNN, gmm_loss
+import torch.nn.functional as f
 
 def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_reward, terminal,
              include_reward = True, include_terminal = False):
@@ -140,8 +144,6 @@ def main(args):
         
         return latent_obs
 
-
-
     def data_pass(epoch, train, include_reward, include_terminal): # pylint: disable=too-many-locals
         """ One pass through the data """
         if train:
@@ -246,7 +248,6 @@ if __name__ == '__main__':
     from os.path import join, exists
     from os import mkdir
     import torch
-    import torch.nn.functional as f
     from torch.utils.data import DataLoader
     from torchvision import transforms
     import numpy as np
@@ -260,7 +261,7 @@ if __name__ == '__main__':
 
     from data.loaders import RolloutSequenceDataset
     from models.vae import VAE
-    from models.mdrnn import MDRNN, gmm_loss
+    
     parser = argparse.ArgumentParser("MDRNN training")
     parser.add_argument('--logdir', type=str,
                         help="Where things are logged and models are loaded from.")
