@@ -282,6 +282,10 @@ class Models:
 
             log_p_v += log_P_OBS_GIVEN_S + log_P_S - log_Q_S_GIVEN_X
 
+            print('importance sampling', z.shape, decoder_mu.shape, 
+                decoder_logsigma.shape, encoder_mu.shape, encoder_logsigma.shape, cond_reward.shape)
+            print( "more importance sampling",log_P_OBS_GIVEN_S.shape, log_P_S.shape, log_Q_S_GIVEN_X.shape,log_p_v.shape )
+
         return log_p_v/num_samps
 
     def p_policy(self, rollout_dict, num_s_samps, num_next_encoder_samps, 
@@ -308,21 +312,29 @@ class Models:
             # I already have access to the action from the runs generated. 
             # TODO: make both of these run with a batch. DONT NEED TO GENERATE OR PASS AROUND HIDDEN AS A RESULT. 
 
-            md_mus, md_sigmas, md_logpi, next_r, d, next_hidden = self.mdrnn_full(rollout_dict['actions'], 
-                                                                        latent_s, rollout_dict['rewards'])
+            #print(rollout_dict['actions'].shape, latent_s.shape, rollout_dict['rewards'].shape)
 
+            # need to unsqueeze everything to add a batch dimension of 1. 
+            md_mus, md_sigmas, md_logpi, next_r, d = self.mdrnn_full(rollout_dict['actions'].unsqueeze(0), 
+                                                                        latent_s.unsqueeze(0), rollout_dict['rewards'].unsqueeze(0))
+
+            next_r = next_r.squeeze()
+
+            print('mdrnn output', md_mus.shape, md_sigmas.shape, md_logpi.shape, next_r.shape, d.shape)
             # reward loss 
             log_p_r = self.reward_prior.log_prob(next_r)
+            print('log pr is:', log_p_r.shape)
 
-            g_probs = Categorical(probs=torch.exp(logpi).permute(0,2,1))
+            g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
             for j in range(num_next_encoder_samps):
                 which_g = g_probs.sample()
-                mus_g, sigs_g = torch.gather(mus.squeeze(), 0, which_g), torch.gather(sigmas.squeeze(), 0, which_g)
-                #print(mus_g.shape)
+                print('which g', which_g.shape)
+                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 0, which_g), torch.gather(md_sigmas.squeeze(), 0, which_g)
+                print('sapmles from mdrnn', mus_g.shape, sigs_g.shape)
 
                 # importance sampling which has its own number of iterations: 
                 next_obs = rollout_dict['obs'][1:]
-                log_p_v = self.importance_sampling(num_importance_samps, mus_g, torch.log(sigs_g), next_r)
+                log_p_v = self.importance_sampling(num_importance_samps, mus_g, torch.log(sigs_g), next_r.unsqueeze(1))
                 
                 # can sum across time with these logs. (as the batch is the different time points)
                 expected_loss += torch.sum(log_p_v+log_p_r)
@@ -334,12 +346,12 @@ class Models:
         # for the actual observations need to compute the prob of seeing it and its reward
         # the rollout will also contain the reconstruction loss so: 
 
-        # compute the ELBO: 
-        log_p_v = self.importance_sampling(num_importance_samps, encoder_mus, encoder_logsigmas, rollout_dict['rewards'])
-
         # all of the rewards
         log_p_r = self.reward_prior.log_prob(rollout_dict['rewards'])
 
+        # compute the probability of the visual observations: 
+        log_p_v = self.importance_sampling(num_importance_samps, encoder_mus, encoder_logsigmas, rollout_dict['rewards'].unsqueeze(1))
+        print('p tilde', log_p_r.shape, log_p_v.shape)
         # can sum across time with these logs. (as the batch is the different time points)
         expected_loss += torch.sum(log_p_v+log_p_r)
 
@@ -358,13 +370,14 @@ class Models:
         num_next_encoder_samps = 3 
         num_importance_samps = 5 # I think 250 is ideal but probably too slow
         data_dict_rollout = {k:v.to(self.device) for k, v in data_dict_rollout.items()}
+        data_dict_rollout['rewards'] = data_dict_rollout['rewards'].unsqueeze(1)
 
         self.reward_prior = Normal(reward_prior_mu,reward_prior_sigma) # treating this as basically a half normal. it should be higher than the max reward available for any run. 
 
         with torch.no_grad():
 
             # this computation is shared across both
-            encoder_mus, encoder_logsigmas = self.vae.encoder(data_dict_rollout['obs'], data_dict_rollout['rewards'].unsqueeze(1))
+            encoder_mus, encoder_logsigmas = self.vae.encoder(data_dict_rollout['obs'], data_dict_rollout['rewards'])
 
             log_policy_loss = self.p_policy(data_dict_rollout, num_s_samps, num_next_encoder_samps, 
                                             num_importance_samps, encoder_mus, encoder_logsigmas)
