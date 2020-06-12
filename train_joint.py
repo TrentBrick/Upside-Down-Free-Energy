@@ -289,7 +289,7 @@ def main(args):
         ## run the current policy with the current VAE and MDRNN
         # TODO: implement memory buffer as data doesnt need to be on policy. 
         # TODO: sample a set of parameters from the controller rather than just using the same one.
-        print('Generating Rollouts to train the MDRNN and VAE') 
+        print('====== Generating Rollouts to train the MDRNN and VAE') 
         # TODO: dont feed in similar time sequences, have some gap between them or slicing of them.
         # TODO: get rollouts from the agent CMA-ES evaluation and use them here for training. 
         train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
@@ -299,10 +299,10 @@ def main(args):
     
         # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
         train_loader = DataLoader(train_dataset,
-            batch_size=BATCH_SIZE, num_workers=args.num_workers, shuffle=True, drop_last=True)
+            batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=True)
         test_loader = DataLoader(test_dataset,
-            batch_size=BATCH_SIZE, num_workers=args.num_workers, drop_last=True)
-        
+            batch_size=BATCH_SIZE, num_workers=0, drop_last=True)
+        print('====== Starting Training of VAE and MDRNN')
         # train VAE and MDRNN. uses partial(data_pass)
         train_loss_dict = train(e)
         print('====== Done Training VAE and MDRNN')
