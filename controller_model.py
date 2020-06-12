@@ -146,6 +146,7 @@ class Models:
         else: 
             self.env = gym.make("CarRacing-v0")
             self.env.seed(int(seed))
+            self.env.render('rgb_array')
     def get_action_and_transition(self, obs, hidden, reward):
         """ Get action and transition.
 
@@ -266,13 +267,14 @@ class Models:
         Returns a full batch. 
         """
 
+        real_obs = real_obs.view(real_obs.size(0), -1) # flatten all but batch. 
         log_p_v = torch.zeros(encoder_mu.shape[0]) # batch size
 
         for _ in range(num_samps):
 
             z = encoder_mu + (encoder_logsigma.exp() * torch.randn_like(encoder_mu))
 
-            decoder_mu, decoder_logsigma = vae.decoder(z, cond_reward)
+            decoder_mu, decoder_logsigma = self.vae.decoder(z, cond_reward)
 
             log_P_OBS_GIVEN_S = Normal(decoder_mu, decoder_logsigma.exp()).log_prob(real_obs)
             log_P_OBS_GIVEN_S = log_P_OBS_GIVEN_S.sum(dim=-1) #multiply the probabilities within the batch. 
@@ -281,10 +283,6 @@ class Models:
             log_Q_S_GIVEN_X = Normal(encoder_mu, encoder_logsigma.exp()).log_prob(z).sum(dim=-1)
 
             log_p_v += log_P_OBS_GIVEN_S + log_P_S - log_Q_S_GIVEN_X
-
-            print('importance sampling', z.shape, decoder_mu.shape, 
-                decoder_logsigma.shape, encoder_mu.shape, encoder_logsigma.shape, cond_reward.shape)
-            print( "more importance sampling",log_P_OBS_GIVEN_S.shape, log_P_S.shape, log_Q_S_GIVEN_X.shape,log_p_v.shape )
 
         return log_p_v/num_samps
 
@@ -303,7 +301,7 @@ class Models:
         # TODO: break the sequence length into smaller batches. 
         
         total_samples = num_s_samps * num_next_encoder_samps * num_importance_samps
-        expected_kld = 0
+        expected_loss = 0
 
         for i in range(num_s_samps): # vectorize this somehow 
             latent_s =  encoder_mus + encoder_logsigmas.exp() * torch.randn_like(encoder_mus)
@@ -313,28 +311,26 @@ class Models:
             # TODO: make both of these run with a batch. DONT NEED TO GENERATE OR PASS AROUND HIDDEN AS A RESULT. 
 
             #print(rollout_dict['actions'].shape, latent_s.shape, rollout_dict['rewards'].shape)
+            pres_actions, pres_rewards = rollout_dict['actions'][:-1], rollout_dict['rewards'][:-1]
 
             # need to unsqueeze everything to add a batch dimension of 1. 
-            md_mus, md_sigmas, md_logpi, next_r, d = self.mdrnn_full(rollout_dict['actions'].unsqueeze(0), 
-                                                                        latent_s.unsqueeze(0), rollout_dict['rewards'].unsqueeze(0))
+            md_mus, md_sigmas, md_logpi, next_r, d = self.mdrnn_full(pres_actions.unsqueeze(0), 
+                                                                        latent_s.unsqueeze(0), pres_rewards.unsqueeze(0))
 
             next_r = next_r.squeeze()
 
-            print('mdrnn output', md_mus.shape, md_sigmas.shape, md_logpi.shape, next_r.shape, d.shape)
             # reward loss 
             log_p_r = self.reward_prior.log_prob(next_r)
-            print('log pr is:', log_p_r.shape)
 
             g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
             for j in range(num_next_encoder_samps):
                 which_g = g_probs.sample()
-                print('which g', which_g.shape)
-                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 0, which_g), torch.gather(md_sigmas.squeeze(), 0, which_g)
-                print('sapmles from mdrnn', mus_g.shape, sigs_g.shape)
+                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+                print('samples from mdrnn', mus_g.shape, sigs_g.shape)
 
                 # importance sampling which has its own number of iterations: 
                 next_obs = rollout_dict['obs'][1:]
-                log_p_v = self.importance_sampling(num_importance_samps, mus_g, torch.log(sigs_g), next_r.unsqueeze(1))
+                log_p_v = self.importance_sampling(num_importance_samps, next_obs, mus_g, torch.log(sigs_g), next_r.unsqueeze(1))
                 
                 # can sum across time with these logs. (as the batch is the different time points)
                 expected_loss += torch.sum(log_p_v+log_p_r)
@@ -346,14 +342,17 @@ class Models:
         # for the actual observations need to compute the prob of seeing it and its reward
         # the rollout will also contain the reconstruction loss so: 
 
+        pres_rewards = rollout_dict['rewards'][:-1]
+
         # all of the rewards
-        log_p_r = self.reward_prior.log_prob(rollout_dict['rewards'])
+        log_p_r = self.reward_prior.log_prob(pres_rewards.squeeze())
 
         # compute the probability of the visual observations: 
-        log_p_v = self.importance_sampling(num_importance_samps, encoder_mus, encoder_logsigmas, rollout_dict['rewards'].unsqueeze(1))
+        curr_obs = rollout_dict['obs'][:-1]
+        log_p_v = self.importance_sampling(num_importance_samps, curr_obs, encoder_mus, encoder_logsigmas, pres_rewards)
         print('p tilde', log_p_r.shape, log_p_v.shape)
         # can sum across time with these logs. (as the batch is the different time points)
-        expected_loss += torch.sum(log_p_v+log_p_r)
+        expected_loss = torch.sum(log_p_v+log_p_r)
 
         return expected_loss
 
@@ -366,9 +365,9 @@ class Models:
         # should see what the difference in variance is between using a single value and taking an expectation over many. 
         # as calculating a single value would be so much faster. 
 
-        num_s_samps = 3
-        num_next_encoder_samps = 3 
-        num_importance_samps = 5 # I think 250 is ideal but probably too slow
+        num_s_samps = 1
+        num_next_encoder_samps = 1 
+        num_importance_samps = 1 # I think 250 is ideal but probably too slow
         data_dict_rollout = {k:v.to(self.device) for k, v in data_dict_rollout.items()}
         data_dict_rollout['rewards'] = data_dict_rollout['rewards'].unsqueeze(1)
 
@@ -378,6 +377,10 @@ class Models:
 
             # this computation is shared across both
             encoder_mus, encoder_logsigmas = self.vae.encoder(data_dict_rollout['obs'], data_dict_rollout['rewards'])
+
+            # remove last one that is in the future. 
+            encoder_mus, encoder_logsigmas = encoder_mus[:-1], encoder_logsigmas[:-1]
+            print('encoder mu going into feef calcs: ', encoder_mus.shape)
 
             log_policy_loss = self.p_policy(data_dict_rollout, num_s_samps, num_next_encoder_samps, 
                                             num_importance_samps, encoder_mus, encoder_logsigmas)

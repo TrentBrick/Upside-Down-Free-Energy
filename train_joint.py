@@ -381,7 +381,7 @@ def main(args):
             log_string = ""
             for loss_dict in [train_loss_dict, test_loss_dict]:
                 for k, v in loss_dict.items():
-                    log_string += v+' '
+                    log_string += str(v)+' '
             log_string+= '\n'
             file.write(log_string)
         print('====== Done Writing out to the Logger')
@@ -405,11 +405,11 @@ if __name__ =='__main__':
 
     # Controller training arguments
     parser.add_argument('--num_generations_per_epoch', type=int, help='Number of generations of CMA-ES per epoch.',
-                        default=2)
-    parser.add_argument('--num_episodes', type=int, default=2 ,help='Number of samples rollouts to evaluate each agent')
+                        default=5)
+    parser.add_argument('--num_episodes', type=int, default=8 ,help='Number of samples rollouts to evaluate each agent')
     parser.add_argument('--num_trials_per_worker', type=int, default=1, help='Population size.')
     parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
-                        default=2)
+                        default=16)
     parser.add_argument('--target_return', type=float, help='Stops once the return '
                         'gets above target_return')
     parser.add_argument('--display', action='store_true', help="Use progress bars if "

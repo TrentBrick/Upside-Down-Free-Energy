@@ -116,7 +116,6 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
             g_probs = Categorical(probs=torch.exp(logpi).permute(0,2,1))
             which_g = g_probs.sample()
-            print('which g', which_g.shape, mus.squeeze().shape)
             mus_g, sigs_g = torch.gather(mus.squeeze(), 0, which_g), torch.gather(sigmas.squeeze(), 0, which_g)
             #print(mus_g.shape)
             next_z = mus_g + sigs_g * torch.randn_like(mus_g)

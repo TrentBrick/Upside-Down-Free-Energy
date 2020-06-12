@@ -93,6 +93,7 @@ def load_parameters(params, controller):
 
     for p, p_0 in zip(controller.parameters(), params):
         p.data.copy_(p_0)
+    return controller
 
 class RolloutGenerator(object):
     """ Utility to generate rollouts.

@@ -240,12 +240,16 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
         log_string = ""
         for h in history:
             for v in h:
-                log_string += v+' '
+                log_string += str(v)+' '
             log_string+= '\n'
         file.write(log_string)
 
-    model_params = es.result[0] # best solution of all time
-    best_feef = es.result[1] # best feef reward of all time
+    index_min = np.argmin(feef_losses)
+    model_params = solutions[index_min]
+    best_feef = np.min(feef_losses)
+
+    #model_params = es.result[0] # best solution of all time
+    #best_feef = es.result[1] # best feef reward of all time
     #best_curr_feef = es.result[2] # best feef of the current batch
 
     return es, model_params, best_feef, best_reward
