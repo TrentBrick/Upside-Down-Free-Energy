@@ -330,7 +330,7 @@ class Models:
             for j in range(num_next_encoder_samps):
                 which_g = g_probs.sample()
                 mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
-                print('samples from mdrnn', mus_g.shape, sigs_g.shape)
+                #print('samples from mdrnn', mus_g.shape, sigs_g.shape)
 
                 # importance sampling which has its own number of iterations: 
                 next_obs = rollout_dict['obs'][1:]
@@ -354,7 +354,7 @@ class Models:
         # compute the probability of the visual observations: 
         curr_obs = rollout_dict['obs'][:-1]
         log_p_v = self.importance_sampling(num_importance_samps, curr_obs, encoder_mus, encoder_logsigmas, pres_rewards)
-        print('p tilde', log_p_r.shape, log_p_v.shape)
+        #print('p tilde', log_p_r.shape, log_p_v.shape)
         # can sum across time with these logs. (as the batch is the different time points)
         expected_loss = torch.sum(log_p_v+log_p_r)
 
@@ -384,7 +384,7 @@ class Models:
 
             # remove last one that is in the future. 
             encoder_mus, encoder_logsigmas = encoder_mus[:-1], encoder_logsigmas[:-1]
-            print('encoder mu going into feef calcs: ', encoder_mus.shape)
+            #print('encoder mu going into feef calcs: ', encoder_mus.shape)
 
             log_policy_loss = self.p_policy(data_dict_rollout, num_s_samps, num_next_encoder_samps, 
                                             num_importance_samps, encoder_mus, encoder_logsigmas)

@@ -3,7 +3,6 @@ import numpy as np
 import sys 
 from os.path import join, exists
 from os import mkdir, unlink, listdir, getpid
-from multiprocessing import Pool 
 from bisect import bisect
 import torch
 import torch.utils.data
@@ -13,6 +12,8 @@ from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_RECURRENT_SIZE, LAT
 import time
 import cma
 from controller_model import Models, load_parameters, flatten_parameters
+from ray.util.multiprocessing import Pool
+#from multiprocessing import Pool 
 
 class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-public-methods
     def __init__(self, transform, data, seq_len): 
@@ -55,12 +56,10 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
     each one has the dictionary keys: 'obs', 'rewards', 'actions', 'terminal'"""
     
     first_iter = True
-    print('input, should be size num workers -1', len(inp))
     for worker_rollouts in inp: 
-        print('len worker rollouts size 3', len(worker_rollouts))
         for rollout_data_dict in worker_rollouts[dim]: # this is pulling from a list!
             
-            print('specific rollout dictionary, should be size 4', len(rollout_data_dict.keys()))
+            #print('specific rollout dictionary, should be size 4', len(rollout_data_dict.keys()))
             # this rollout is too small so it is being ignored. 
             # getting one of the keys from the dictionary
             if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
@@ -71,8 +70,6 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
                 combo_dict = {k:[v] for k, v in rollout_data_dict.items()} 
                 first_iter = False
             else: 
-                print('comob dictt', combo_dict.keys())
-                print(combo_dict['terminal'])
                 for k, v in combo_dict.items():
                     v.append(rollout_data_dict[k])
 
@@ -96,6 +93,7 @@ def generate_rollouts(ctrl_params, seq_len,
     for i in range(num_workers):
         worker_data.append( (ctrl_params, rand_ints[i], num_rolls_per_worker, time_limit, logdir, False ) ) # compute FEEF.
 
+    #res = ray.get( [worker.remote() ] )
     with Pool(processes=num_workers) as pool:
         res = pool.map(worker, worker_data) 
 
@@ -106,6 +104,7 @@ def generate_rollouts(ctrl_params, seq_len,
     return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
                 GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len)
 
+#@ray.remote
 def worker(inp): # run lots of rollouts 
     ctrl_params, seed, num_episodes, max_len, logdir, compute_feef = inp
     print('worker has started')
