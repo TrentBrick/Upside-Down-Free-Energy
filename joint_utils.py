@@ -141,7 +141,7 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
         seed_start = np.random.randint(0,1e9, size=1)[0]
     seeder = Seeder(seed_start)
 
-    filename_hist = join(logdir, 'ctrl_hist.txt')
+    filename_hist = join(logdir, 'ctrl_logger.txt')
 
     # making header for the history saving. 
     # the append writing operation is important here so memory is stored 
