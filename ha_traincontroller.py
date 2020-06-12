@@ -416,7 +416,8 @@ def mpi_fork(n):
         )
         # runs the given number of processes. 
         print( ["mpirun", "-np", str(n), sys.executable] + sys.argv)
-        subprocess.check_call(["mpirun", "-np", str(n), sys.executable] +['-u']+ sys.argv, env=env)
+        subprocess.check_call(["mpirun", "-np", str(n), 
+                    sys.executable] +['-u']+ sys.argv, env=env)
         return "parent"
     else:
         global nworkers, rank

@@ -445,8 +445,6 @@ class Models:
 
                 self.env.close()
 
-
-
         if self.return_events: 
             if compute_feef:
                 return reward_list, t_list, feef_losses  # no need to return the data.

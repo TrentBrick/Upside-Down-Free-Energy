@@ -42,7 +42,7 @@ def main(args):
 
     # constants
     BATCH_SIZE = 48
-    SEQ_LEN = 32 #256
+    SEQ_LEN = 128 #256
     epochs = 50
     time_limit =1000 # for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 1
@@ -291,6 +291,7 @@ def main(args):
         # TODO: sample a set of parameters from the controller rather than just using the same one.
         print('Generating Rollouts to train the MDRNN and VAE') 
         # TODO: dont feed in similar time sequences, have some gap between them or slicing of them.
+        # TODO: get rollouts from the agent CMA-ES evaluation and use them here for training. 
         train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
                 SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
                 num_workers=args.num_workers, joint_file_dir=True, transform=None )

@@ -55,8 +55,12 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
     each one has the dictionary keys: 'obs', 'rewards', 'actions', 'terminal'"""
     
     first_iter = True
+    print('input, should be size num workers -1', len(inp))
     for worker_rollouts in inp: 
-        for rollout_data_dict in worker_rollouts[dim]:
+        print('len worker rollouts size 3', len(worker_rollouts))
+        for rollout_data_dict in worker_rollouts[dim]: # this is pulling from a list!
+            
+            print('specific rollout dictionary, should be size 4', len(rollout_data_dict.keys()))
             # this rollout is too small so it is being ignored. 
             # getting one of the keys from the dictionary
             if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
@@ -67,8 +71,11 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
                 combo_dict = {k:[v] for k, v in rollout_data_dict.items()} 
                 first_iter = False
             else: 
-                combo_dict = {k:v.append(rollout_data_dict[k]) for k, v in combo_dict.items()}
-    
+                print('comob dictt', combo_dict.keys())
+                print(combo_dict['terminal'])
+                for k, v in combo_dict.items():
+                    v.append(rollout_data_dict[k])
+
     #combo_dict = {k:torch.stack(v) for k, v in combo_dict.items()}
     return combo_dict
 
