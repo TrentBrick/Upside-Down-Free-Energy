@@ -147,6 +147,7 @@ class Models:
             self.env = gym.make("CarRacing-v0")
             self.env.seed(int(seed))
             self.env.render('rgb_array')
+
     def get_action_and_transition(self, obs, hidden, reward):
         """ Get action and transition.
 
@@ -189,7 +190,8 @@ class Models:
         """
 
         #if self.use_old_gym:
-        self.env.render('rgb_array')
+        # setting in make env. 
+        #self.env.render('rgb_array')
         self.trim_controls = trim_controls
 
         # copy params into the controller
@@ -202,14 +204,16 @@ class Models:
         #random(rand_env_seed)
         np.random.seed(rand_env_seed)
         torch.manual_seed(rand_env_seed)
-        self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
+        #now setting in make env.
+        #self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
         obs = self.env.reset()
         if self.use_old_gym:
             self.env.viewer.window.dispatch_events()
 
-        if not self.use_old_gym:
-            # This first render is required !
-            self.env.render()
+        # NOTE: TODO: call first render in the make env. note this is before I call reset though...
+        #if not self.use_old_gym:
+        # This first render is required !
+        #    self.env.render()
 
         hidden = [
             torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
@@ -399,8 +403,8 @@ class Models:
         recording_mode = False
         penalize_turning = False
 
-        if train_mode and max_len < 0:
-            max_episode_length = max_len
+        #if train_mode and max_len < 0:
+        #    max_episode_length = max_len
 
         #random(seed)
         np.random.seed(seed)
@@ -421,6 +425,9 @@ class Models:
             for i in range(num_episode):
 
                 rand_env_seed = np.random.randint(0,1e9,1)[0]
+
+                self.make_env(seed=rand_env_seed)
+                
                 if self.return_events: 
                     rew, t, data_dict = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)
@@ -435,6 +442,10 @@ class Models:
                                 params=None, time_limit=max_len)
                 reward_list.append(rew)
                 t_list.append(t)
+
+                self.env.close()
+
+
 
         if self.return_events: 
             if compute_feef:

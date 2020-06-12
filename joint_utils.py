@@ -23,7 +23,6 @@ class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publ
         self._seq_len = seq_len
 
         # set the cum size tracker by iterating through the data:
-        rollout_mask = torch.ones(len(self.data))
         for d in self.data['terminal']:
             #print(d, 'whats being added to cum size')
             self._cum_size += [self._cum_size[-1] +
@@ -106,8 +105,6 @@ def worker(inp): # run lots of rollouts
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
             return_events=True, use_old_gym=False, joint_file_dir=True)
-
-    model.make_env(seed)
 
     return model.simulate(ctrl_params, train_mode=True, render_mode=False, 
             num_episode=num_episodes, seed=seed, max_len=max_len, 
@@ -253,22 +250,3 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
     #best_curr_feef = es.result[2] # best feef of the current batch
 
     return es, model_params, best_feef, best_reward
-
-if __name__ == '__main__':
-
-    import json 
-
-    with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
-        ctrl_params = json.load(f)
-
-    transform = transforms.Lambda(
-        lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
-
-    print(len(ctrl_params[0]))
-
-    generate_rollouts(ctrl_params[0], transform, 30, 1000, 
-        'exp_dir', total_num_rolls = 4, num_workers = 1 )
-
-
-
-

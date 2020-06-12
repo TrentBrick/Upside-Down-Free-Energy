@@ -76,7 +76,7 @@ def main(args):
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
     earlystopping = EarlyStopping('min', patience=30) # NOTE: this needs to be esp high as the epochs are heterogenous buffers!! not all data. 
 
-    model_variables_dict = dict(controller=controller, vae=vae, mdrnn=mdrnn)
+    #model_variables_dict = dict(controller=controller, vae=vae, mdrnn=mdrnn)
     model_variables_dict_NO_CTRL = dict(vae=vae, mdrnn=mdrnn) # used for when the controller is trained and these models are provided. 
     # Loading in trained models: 
 
@@ -168,7 +168,7 @@ def main(args):
                 vae_res_dict[n].append(vae_outputs[ind])
 
         # stacking everything.
-        for k, v in vae_res_dict.items():
+        for k in vae_res_dict.keys():
             vae_res_dict[k] = torch.stack(vae_res_dict[k])
         
         return vae_res_dict
