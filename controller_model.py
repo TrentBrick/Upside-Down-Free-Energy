@@ -64,7 +64,8 @@ testing_old_controller = False
 class Models:
 
     def __init__(self, env_name, time_limit, use_old_gym=False, 
-        mdir=None, return_events=False, give_models=None, conditional=True, joint_file_dir=False):
+        mdir=None, return_events=False, give_models=None, conditional=True, 
+        joint_file_dir=False, planner_n_particles=700):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
@@ -74,6 +75,15 @@ class Models:
         self.device = 'cpu' #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
+
+        self.planner_n_particles = planner_n_particles
+        self.ensemble_size = 1
+        assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
+        self.ensemble_interval = self.planner_n_particles//self.ensemble_size 
+        '''self.ensemble_indices = []
+        for i in range(ensemble_size):
+            self.ensemble_indices += [i]*indices_split
+        self.ensemble_indices = np.asarray(self.ensemble_indices)'''
 
         self.transform = transforms.Compose([
                 transforms.ToPILImage(),
@@ -127,7 +137,7 @@ class Models:
             self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
 
             #print('loadin in controller.')
-            if testing_old_controller: 
+            '''if testing_old_controller: 
                 self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=False).to(self.device)
             else: 
                 self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=conditional).to(self.device)
@@ -137,7 +147,7 @@ class Models:
                 ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(self.device)})
                 print("Loading Controller with reward {}".format(
                     ctrl_state['reward']))
-                self.controller.load_state_dict(ctrl_state['state_dict'])
+                self.controller.load_state_dict(ctrl_state['state_dict'])'''
 
     def make_env(self, seed=-1, render_mode=False, full_episode=False):
         self.render_mode = render_mode
@@ -169,13 +179,79 @@ class Models:
 
         assert latent_s.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
 
-        if testing_old_controller: 
+        '''if testing_old_controller: 
             action = self.controller(latent_s, hidden[0])
         else: 
-            action = self.controller(latent_s, hidden[0], reward)
-        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
+            action = self.controller(latent_s, hidden[0], reward)'''
+
+        action = self.planner( action, latent_s, hidden, reward)
+
+        #_, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
         
         return action.squeeze().cpu().numpy(), next_hidden
+
+
+    def planner(self, action, latent_s, full_hidden, reward):
+        # predicts into the future up to horizon. 
+        # returns the immediate action that will lead to the largest
+        # cumulative reward
+
+        '''# assign particles to one of the mdrnn ensemble: 
+        self.ensemble_size = 1
+
+        # assign particles to one of the mdrnn ensembles'''
+        #np.random.shuffle(self.ensemble_indices)
+
+        cum_reward = torch.zeros((self.planner_n_particles))
+        all_particles_first_action = []
+        
+        for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
+
+            # initialize particles for a single ensemble model. 
+            ens_action, ens_latent_s, ens_full_hidden, ens_reward = [var.clone().repeat(self.ensemble_interval, *len(var.shape[1:])*[1]) for var in [action, latent_s, full_hidden, reward]]
+            # only repeat the first dimension. 
+            print('planner tensors, should now have larger batch size of', self.ensemble_interval, action.shape,latent_s.shape )
+
+            for t in range(self.horizon):
+                
+                md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = self.mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+
+                # get the next latent state
+                g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
+                which_g = g_probs.sample()
+                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+                ens_latent_s = mus_g + (sigs_g * torch.randn_like(mus_g))
+
+                # sample actions for each particle!!! 
+                # TODO: implement CEM here: 
+                ens_action = self.random_shooting(self.ensemble_indices)
+
+                # save these cumulative rewards
+                cum_reward[self.ensemble_interval*mdrnn_ind:self.ensemble_interval*mdrnn_ind+self.ensemble_interval] += ens_reward
+
+                if t==0:
+                    # store next action to be taken
+                    ens_first_action = ens_action
+
+            all_particles_first_action.append(ens_first_action)
+
+        all_particles_first_action = torch.stack(all_particles_first_action)
+        # choose the best next action out of all of them. 
+        best_actions_ind = torch.argmax(cum_reward)
+        return all_particles_first_action[best_actions_ind]
+
+    def random_shooting(self, batch_size):
+
+        if self.env_name=='carracing':
+            out = torch.distributions.Uniform(-1,1).sample((batch_size, 3))
+            out = torch.tanh(out)
+            out[0,1] = (out[0,1]+1)/2.0 # this converts tanh to sigmoid
+            out[0,2] = torch.clamp(out[0,2], min=0.0, max=1.0)
+
+        else:
+            raise NotImplementedError("The environment you are trying to use does not have random shooting actions implemented.")
+
+        return out
 
     def rollout(self, rand_env_seed, params=None, render=False, time_limit=None, trim_controls=True):
         """ Execute a rollout and returns minus cumulative reward.
@@ -236,6 +312,7 @@ class Models:
             obs = self.transform(obs).unsqueeze(0).to(self.device)
             reward = torch.Tensor([reward]).to(self.device).unsqueeze(0)
             
+            # using planner!
             action, hidden = self.get_action_and_transition(obs, hidden, reward)
             
             if self.return_events: 
@@ -393,12 +470,12 @@ class Models:
 
         return log_policy_loss - log_tilde_loss
 
-    def simulate(self, params, train_mode=True, 
+    def simulate(self, planner_n_particles, train_mode=True, 
         render_mode=False, num_episode=16, 
         seed=27, max_len=1000, compute_feef=False): # run lots of rollouts 
 
         # update params into the controller
-        self.controller = load_parameters(params, self.controller)
+        #self.controller = load_parameters(params, self.controller)
 
         recording_mode = False
         penalize_turning = False
@@ -413,11 +490,11 @@ class Models:
         reward_list = []
         t_list = []
         if self.return_events:
+            data_dict_list = []
             if compute_feef:
-                feef_losses = []
-            else: 
-                data_dict_list = []
-
+                feef_losses_list = []
+                cum_rewards_list = []
+                
         if max_len ==-1:
             max_len = 1000 # making it very long
 
@@ -433,10 +510,12 @@ class Models:
                                 params=None, time_limit=max_len)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                 
+                    data_dict_list.append(data_dict)
                     if compute_feef: 
-                        feef_losses.append(  self.feef_loss(data_dict)  )
-                    else: 
-                        data_dict_list.append(data_dict)
+                        feef_losses_list.append(  self.feef_loss(data_dict)  )
+
+                        cum_rewards_list.append( data_dict['rewards'].sum()   )
+                    
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None, time_limit=max_len)
@@ -447,9 +526,9 @@ class Models:
 
         if self.return_events: 
             if compute_feef:
-                return reward_list, t_list, feef_losses  # no need to return the data.
+                return reward_list, t_list, data_dict_list, feef_losses_list, cum_rewards_list  # no need to return the data.
             else: 
-                return reward_list, t_list, data_dict_list
+                return reward_list, t_list, data_dict_list 
         else: 
             return reward_list, t_list
 

@@ -17,6 +17,7 @@ import numpy as np
 from pyglet.window import key
 import json 
 from controller_model import load_parameters
+import copy 
 
 class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attributes
     """
@@ -28,12 +29,14 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
     :args directory: directory from which the vae and mdrnn are
     loaded.
     """
-    def __init__(self, directory, real_obs=False, test_agent=False):
+    def __init__(self, directory, real_obs=False, test_agent=False, use_planner=False):
         self.real_obs = real_obs 
         self.test_agent = test_agent
+        self.use_planner = use_planner
         self.condition = True 
 
         if test_agent: 
+
             # load in controller: 
             self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing', condition=self.condition).to('cpu')
             
@@ -56,8 +59,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.vae = VAE(3, LATENT_SIZE)
         vae_state = torch.load(vae_file, map_location=lambda storage, location: storage)
         print("Loading VAE at epoch {}, "
-              "with test error {}...".format(
-                  vae_state['epoch'], vae_state['precision']))
+            "with test error {}...".format(
+                vae_state['epoch'], vae_state['precision']))
         self.vae.load_state_dict(vae_state['state_dict'])
         self._decoder = self.vae.decoder
 
@@ -65,8 +68,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self._rnn = MDRNNCell(32, 3, LATENT_RECURRENT_SIZE, 5)
         rnn_state = torch.load(rnn_file, map_location=lambda storage, location: storage)
         print("Loading MDRNN at epoch {}, "
-              "with test error {}...".format(
-                  rnn_state['epoch'], rnn_state['precision']))
+            "with test error {}...".format(
+                rnn_state['epoch'], rnn_state['precision']))
         rnn_state_dict = {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()}
         self._rnn.load_state_dict(rnn_state_dict)
 
@@ -93,7 +96,6 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         action = self.controller(latent_z, hidden[0], reward)
         _, _, _, _, _, next_hidden = self._rnn(action, latent_z, hidden)
         return action.squeeze().cpu().numpy(), next_hidden
-
 
     def reset(self):
         """ Resetting """
@@ -152,6 +154,69 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.monitor.set_data(self._visual_obs)
         plt.pause(.01)
 
+
+""" Testing the planner by giving it the real world dynamics """
+
+
+def random_shooting(batch_size):
+    out = torch.distributions.Uniform(-1,1).sample((batch_size, 3))
+    out = torch.tanh(out)
+    out[0,1] = (out[0,1]+1)/2.0 # this converts tanh to sigmoid
+    out[0,2] = torch.clamp(out[0,2], min=0.0, max=1.0)
+
+    return out
+
+def planner(env):
+    # predicts into the future up to horizon. 
+    # returns the immediate action that will lead to the largest
+    # cumulative reward
+
+    env.render(close=True)
+
+    planner_n_particles = 10
+    horizon = 30
+
+    cum_rewards = []
+    all_particles_first_action = []
+    
+    # initialize particles for a single ensemble model. 
+    #ens_action, ens_latent_s, ens_full_hidden, ens_reward = [var.clone().repeat(self.ensemble_interval, *len(var.shape[1:])*[1]) for var in [action, latent_s, full_hidden, reward]]:
+    # only repeat the first dimension. 
+    #print('planner tensors, should now have larger batch size of', self.ensemble_interval, action.shape,latent_s.shape )
+    for p in range(planner_n_particles):
+
+        env_clone = copy.deepcopy(env)
+        print(env_clone)
+        ens_reward = 0
+
+        for t in range(horizon):
+
+            # sample actions for each particle!!! 
+            # TODO: implement CEM here: 
+            ens_action = random_shooting(1)
+            #print(ens_action)
+
+            obs, reward, done, _ = env_clone.step(ens_action.squeeze())
+
+            # save these cumulative rewards
+            ens_reward += reward 
+            
+            if t==0:
+                # store next action to be taken
+                ens_first_action = ens_action
+
+        cum_rewards.append(ens_reward)
+        all_particles_first_action.append(ens_first_action)
+
+    all_particles_first_action = torch.stack(all_particles_first_action)
+    # choose the best next action out of all of them. 
+    best_actions_ind = np.argmax(cum_reward)
+
+    env.render()
+
+    return all_particles_first_action[best_actions_ind]
+
+
 if __name__ == '__main__':
     # argument parsing
     parser = argparse.ArgumentParser()
@@ -161,6 +226,8 @@ if __name__ == '__main__':
                     help="Use the real observations not dream ones")
     parser.add_argument('--test_agent', action='store_true',
                     help="Put the trained controller to the test!")
+    parser.add_argument('--use_planner', action='store_true',
+                    help="Use a planner rather than the controller")
     args = parser.parse_args()
     if args.real_obs: 
         env = gym.make("CarRacing-v0")
@@ -221,18 +288,21 @@ if __name__ == '__main__':
         env.figure.canvas.mpl_connect('key_release_event', on_key_release)
 
     if args.real_obs:
-        hidden = [
-            torch.zeros(1, LATENT_RECURRENT_SIZE).to('cpu')
-            for _ in range(2)]
-        reward = 0
 
-        transform = transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
-                transforms.ToTensor()
-            ])
+        if not args.use_planner: 
 
-        agent_class = SimulatedCarracing( args.logdir, args.real_obs, args.test_agent)
+            hidden = [
+                torch.zeros(1, LATENT_RECURRENT_SIZE).to('cpu')
+                for _ in range(2)]
+            reward = 0
+
+            transform = transforms.Compose([
+                    transforms.ToPILImage(),
+                    transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
+                    transforms.ToTensor()
+                ])
+
+            agent_class = SimulatedCarracing( args.logdir, args.real_obs, args.test_agent, args.use_planner)
 
     cum_reward = 0
     while True:
@@ -240,9 +310,17 @@ if __name__ == '__main__':
             
             # need to generate actions!
             if args.test_agent: 
-                with torch.no_grad():
-                    obs_t = transform(obs).unsqueeze(0).to('cpu')
-                    action, hidden = agent_class.agent_action(obs_t, hidden, reward)
+
+                if args.use_planner: 
+
+                    print(env)
+
+                    action = planner(env)
+
+                else: 
+                    with torch.no_grad():
+                        obs_t = transform(obs).unsqueeze(0).to('cpu')
+                        action, hidden = agent_class.agent_action(obs_t, hidden, reward)
 
             print(action)
             obs, reward, done, _ = env.step(action)

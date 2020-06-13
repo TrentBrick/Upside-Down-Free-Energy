@@ -11,7 +11,7 @@ from torchvision.utils import save_image
 import numpy as np
 import json
 from tqdm import tqdm
-from joint_utils import generate_rollouts, train_controller
+from joint_utils import generate_rollouts, train_controller, generate_rollouts_using_planner
 from controller_model import flatten_parameters
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
@@ -295,11 +295,20 @@ def main(args):
         print('====== Generating Rollouts to train the MDRNN and VAE') 
         # TODO: dont feed in similar time sequences, have some gap between them or slicing of them.
         # TODO: get rollouts from the agent CMA-ES evaluation and use them here for training. 
-        train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
+        
+        # Uses Controller policy provided. 
+        '''train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
                 SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
                 num_workers=args.num_workers, joint_file_dir=True, transform=None )
-                # joint_file_dir is to direct the workers to load from the joint directory which is flat. 
-    
+                # joint_file_dir is to direct the workers to load from the joint directory which is flat.'''
+
+        # Uses planning
+        # TODO: Have CEM collect the best results across distributed CPUs. 
+        train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
+                planner_n_particles, 
+                SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
+                num_workers=args.num_workers, joint_file_dir=True, transform=None )
+
         # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
         train_loader = DataLoader(train_dataset,
             batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=True)
@@ -346,7 +355,8 @@ def main(args):
 
         # TODO: generate MDRNN examples. 
 
-        # train the controller/policy using the updated VAE and MDRNN
+        # Train a policy (controller) using CMA-ES. 
+        '''# train the controller/policy using the updated VAE and MDRNN
         es, best_params, best_feef, best_reward = train_controller(es, flatten_parameters(controller.parameters()), joint_dir, 
             args.gamename, args.num_episodes, args.num_workers, args.num_trials_per_worker,
             args.num_generations_per_epoch, seed_start=None, time_limit=time_limit, use_feef=use_feef )
@@ -368,7 +378,7 @@ def main(args):
 
         test_loss_dict['best_reward_ctrl'] = best_reward
         test_loss_dict['best_feef_ctrl'] = best_feef
-        test_loss_dict['loss'] += best_feef
+        test_loss_dict['loss'] += best_feef'''
 
         # header at the top of logger file
         if not exists(logger_filename): 

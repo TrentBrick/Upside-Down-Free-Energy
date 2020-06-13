@@ -104,15 +104,52 @@ def generate_rollouts(ctrl_params, seq_len,
     return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
                 GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len)
 
+
+def generate_rollouts_using_planner(planner_n_particles, seq_len, 
+    time_limit, logdir, num_rolls_per_worker=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
+
+    # 10% of the rollouts to use for test data. 
+    ten_perc = np.floor(num_workers*0.1)
+    if ten_perc == 0.0:
+        ten_perc=1
+    ninety_perc = int(num_workers- ten_perc)
+
+    # generate a random number to give as a random seed to each pool worker. 
+    rand_ints = np.random.randint(0, 1e9, num_workers)
+
+    worker_data = []
+    #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
+    for i in range(num_workers):
+        worker_data.append( (planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, False ) ) # compute FEEF.
+
+    #res = ray.get( [worker.remote() ] )
+    with Pool(processes=num_workers) as pool:
+        res = pool.map(worker, worker_data) 
+
+    #print('result!!!!', res)
+    # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
+    print('===== Done with pool of workers')
+
+    # get all of the feef losses aggregated across the different workers: 
+    feef_losses, reward_list = [], []
+    for worker_rollouts in res:
+        for ind, li in enumerate([feef_losses, reward_list]):
+            li.append( np.mean(worker_rollouts[3+ind]) )
+
+    return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
+                GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len), \
+                feef_losses, reward_list
+
 #@ray.remote
 def worker(inp): # run lots of rollouts 
-    ctrl_params, seed, num_episodes, max_len, logdir, compute_feef = inp
+    planner_n_particles, seed, num_episodes, max_len, logdir, compute_feef = inp
     print('worker has started')
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
-            return_events=True, use_old_gym=False, joint_file_dir=True)
+            return_events=True, use_old_gym=False, joint_file_dir=True,
+            planner_n_particles = planner_n_particles)
 
-    return model.simulate(ctrl_params, train_mode=True, render_mode=False, 
+    return model.simulate(train_mode=True, render_mode=False, 
             num_episode=num_episodes, seed=seed, max_len=max_len, 
             compute_feef=compute_feef)
 
