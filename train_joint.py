@@ -40,12 +40,14 @@ def main(args):
     ctrl_cur_best_rewards = None
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    use_feef = False
+
     # constants
     BATCH_SIZE = 48
     SEQ_LEN = 128 #256
     epochs = 50
     time_limit =1000 # for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 3
+    num_vae_mdrnn_training_rollouts_per_worker = 2
 
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
@@ -347,7 +349,7 @@ def main(args):
         # train the controller/policy using the updated VAE and MDRNN
         es, best_params, best_feef, best_reward = train_controller(es, flatten_parameters(controller.parameters()), joint_dir, 
             args.gamename, args.num_episodes, args.num_workers, args.num_trials_per_worker,
-            args.num_generations_per_epoch, seed_start=None, time_limit=time_limit )
+            args.num_generations_per_epoch, seed_start=None, time_limit=time_limit, use_feef=use_feef )
         print('====== Done Training Controller Samples')
 
         controller = load_parameters(best_params, controller)

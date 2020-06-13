@@ -132,7 +132,7 @@ class Seeder:
         return result
 
 def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, num_workers, 
-    num_trials_per_worker, num_generations, seed_start=None, time_limit=1000 ):
+    num_trials_per_worker, num_generations, seed_start=None, time_limit=1000, use_feef=True ):
 
     population_size = num_workers*num_trials_per_worker
 
@@ -229,7 +229,11 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
 
         history.append(h)
 
-        es.tell(feef_losses) # dont need to be converted to maximization because I set it to be a min now!
+        if use_feef:
+            es.tell(feef_losses) # dont need to be converted to maximization because I set it to be a min now!
+        else: 
+            es.tell(-reward_list)
+
 
         if r_max > best_reward:
             best_reward=r_max 
@@ -247,9 +251,15 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
             log_string+= '\n'
         file.write(log_string)
 
-    index_min = np.argmin(feef_losses)
-    model_params = solutions[index_min]
+    if use_feef:
+        index_min = np.argmin(feef_losses)
+        model_params = solutions[index_min]
     best_feef = np.min(feef_losses)
+    else: 
+        index_max = np.argmax(reward_list)
+        model_params = solutions[index_max]
+        #best_reward = np.max(reward_list)
+
 
     #model_params = es.result[0] # best solution of all time
     #best_feef = es.result[1] # best feef reward of all time

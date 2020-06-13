@@ -100,7 +100,6 @@ class CMAES:
     elif init_params is None: 
       init_params = self.num_params * [0]
 
-
     self.num_params = num_params
     self.sigma_init = sigma_init
     self.popsize = popsize
