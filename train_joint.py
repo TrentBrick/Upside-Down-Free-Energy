@@ -48,6 +48,8 @@ def main(args):
     epochs = 50
     time_limit =1000 # for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 2
+    planner_n_particles = 100
+    horizon = 15
 
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
@@ -274,7 +276,10 @@ def main(args):
     train = partial(data_pass, train=True)
     test = partial(data_pass, train=False)
 
-    # TODO: take in the final sigma from the last epoch. 
+    # TODO: store the CEM parameters across runs. 
+    cem_params = (    )
+
+    '''# TODO: take in the final sigma from the last epoch. 
     sigma_init=0.1
     num_params = len( flatten_parameters(controller.parameters()) )
     population_size = args.num_workers*args.num_trials_per_worker
@@ -283,7 +288,7 @@ def main(args):
             sigma_init=sigma_init,
             popsize=population_size, 
             init_params= flatten_parameters(controller.parameters()),
-            invert_reward=False)
+            invert_reward=False)'''
 
     ################## Main Training Loop ############################
 
@@ -304,10 +309,12 @@ def main(args):
 
         # Uses planning
         # TODO: Have CEM collect the best results across distributed CPUs. 
-        train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
-                planner_n_particles, 
+        cem_params, train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
+                cem_params, horizon, planner_n_particles, 
                 SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
                 num_workers=args.num_workers, joint_file_dir=True, transform=None )
+
+        print('cem parameters after generating rollouts!!', cem_params)
 
         # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
         train_loader = DataLoader(train_dataset,
@@ -322,6 +329,16 @@ def main(args):
         test_loss_dict, last_test_observations, last_test_rewards = test(e)
         print('====== Done Testing VAE and MDRNN')
         scheduler.step(test_loss_dict['loss'])
+
+        # append the planning results 
+        test_loss_dict['avg_reward_planner'] = np.mean(reward_losses)
+        test_loss_dict['std_reward_planner'] = np.std(reward_losses)
+        test_loss_dict['max_reward_planner'] = np.max(reward_losses)
+        test_loss_dict['min_reward_planner'] = np.min(reward_losses)
+        test_loss_dict['avg_feef_planner'] = np.mean(feef_losses)
+        test_loss_dict['std_feef_planner'] = np.std(feef_losses)
+        test_loss_dict['max_feef_planner'] = np.max(feef_losses)
+        test_loss_dict['min_feef_planner'] = np.min(feef_losses)
 
         # checkpointing the model: 
         # needs to be here so that the policy learning workers below can load in the new parameters.
@@ -380,7 +397,7 @@ def main(args):
         test_loss_dict['best_feef_ctrl'] = best_feef
         test_loss_dict['loss'] += best_feef'''
 
-        # header at the top of logger file
+        # header at the top of logger file written once. 
         if not exists(logger_filename): 
             header_string = ""
             for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):

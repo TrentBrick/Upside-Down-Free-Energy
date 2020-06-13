@@ -204,7 +204,6 @@ def main(args):
         pbar.close()
         return cum_loss * BATCH_SIZE / len(loader.dataset) # puts it on a per seq len chunk level. 
 
-
     train = partial(data_pass, train=True, include_reward=args.include_reward, include_terminal=args.include_terminal)
     test = partial(data_pass, train=False, include_reward=args.include_reward, include_terminal=args.include_terminal)
 

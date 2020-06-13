@@ -65,7 +65,7 @@ class Models:
 
     def __init__(self, env_name, time_limit, use_old_gym=False, 
         mdir=None, return_events=False, give_models=None, conditional=True, 
-        joint_file_dir=False, planner_n_particles=700):
+        joint_file_dir=False, planner_n_particles=100, cem_params=None, horizon=30):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
@@ -76,14 +76,14 @@ class Models:
         self.return_events = return_events
         self.time_limit = time_limit
 
-        self.planner_n_particles = planner_n_particles
-        self.ensemble_size = 1
-        assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
-        self.ensemble_interval = self.planner_n_particles//self.ensemble_size 
-        '''self.ensemble_indices = []
+        if cem_params:
+            self.cem_mus = cem_params[0]
+            self.cem_sigmas = cem_params[1]
+
+        '''self.ensemble_batchsize = []
         for i in range(ensemble_size):
-            self.ensemble_indices += [i]*indices_split
-        self.ensemble_indices = np.asarray(self.ensemble_indices)'''
+            self.ensemble_batchsize += [i]*indices_split
+        self.ensemble_batchsize = np.asarray(self.ensemble_batchsize)'''
 
         self.transform = transforms.Compose([
                 transforms.ToPILImage(),
@@ -149,6 +149,15 @@ class Models:
                     ctrl_state['reward']))
                 self.controller.load_state_dict(ctrl_state['state_dict'])'''
 
+        self.horizon = horizon
+        self.planner_n_particles = planner_n_particles
+        # TODO: make an MDRNN ensemble. 
+        self.mdrnn_ensemble = [self.mdrnn]
+        self.ensemble_size = len(self.mdrnn_ensemble)
+        assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
+        self.k_top = int(planner_n_particles*0.20)
+        self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size 
+
     def make_env(self, seed=-1, render_mode=False, full_episode=False):
         self.render_mode = render_mode
         if self.use_old_gym:
@@ -184,14 +193,13 @@ class Models:
         else: 
             action = self.controller(latent_s, hidden[0], reward)'''
 
-        action = self.planner( action, latent_s, hidden, reward)
+        action = self.planner(latent_s, hidden, reward)
 
-        #_, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
+        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
         
         return action.squeeze().cpu().numpy(), next_hidden
 
-
-    def planner(self, action, latent_s, full_hidden, reward):
+    def planner(self, latent_s, full_hidden, reward):
         # predicts into the future up to horizon. 
         # returns the immediate action that will lead to the largest
         # cumulative reward
@@ -200,7 +208,7 @@ class Models:
         self.ensemble_size = 1
 
         # assign particles to one of the mdrnn ensembles'''
-        #np.random.shuffle(self.ensemble_indices)
+        #np.random.shuffle(self.ensemble_batchsize)
 
         cum_reward = torch.zeros((self.planner_n_particles))
         all_particles_first_action = []
@@ -208,13 +216,17 @@ class Models:
         for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
 
             # initialize particles for a single ensemble model. 
-            ens_action, ens_latent_s, ens_full_hidden, ens_reward = [var.clone().repeat(self.ensemble_interval, *len(var.shape[1:])*[1]) for var in [action, latent_s, full_hidden, reward]]
+            ens_latent_s, ens_full_hidden, ens_reward = [var.clone().repeat(self.ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, full_hidden, reward]]
             # only repeat the first dimension. 
-            print('planner tensors, should now have larger batch size of', self.ensemble_interval, action.shape,latent_s.shape )
+            print('planner tensors, should now have larger batch size of', self.ensemble_batchsize,
+                ens_latent_s.shape, ens_full_hidden.shape )
+
+            # need to produce a batch of first actions here. 
+            ens_action = self.sample_cross_entropy_method() 
 
             for t in range(self.horizon):
                 
-                md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = self.mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+                md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
 
                 # get the next latent state
                 g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
@@ -224,30 +236,55 @@ class Models:
 
                 # sample actions for each particle!!! 
                 # TODO: implement CEM here: 
-                ens_action = self.random_shooting(self.ensemble_indices)
+                #ens_action = self.random_shooting(self.ensemble_batchsize)
+                ens_action = self.sample_cross_entropy_method() 
 
-                # save these cumulative rewards
-                cum_reward[self.ensemble_interval*mdrnn_ind:self.ensemble_interval*mdrnn_ind+self.ensemble_interval] += ens_reward
+                # store these cumulative rewards
+                cum_reward[self.ensemble_batchsize*mdrnn_ind:self.ensemble_batchsize*mdrnn_ind+self.ensemble_batchsize] += ens_reward
 
                 if t==0:
                     # store next action to be taken
-                    ens_first_action = ens_action
-
-            all_particles_first_action.append(ens_first_action)
+                    all_particles_first_action.append(ens_action)
 
         all_particles_first_action = torch.stack(all_particles_first_action)
+
+        # update CEM parameters: 
+        # TODO: should CEM learn from all of the actions adn their rewards to go? 
+        # or only from the first actions? 
+        self.update_cross_entropy_method(all_particles_first_action, cum_reward)
+        
         # choose the best next action out of all of them. 
         best_actions_ind = torch.argmax(cum_reward)
-        return all_particles_first_action[best_actions_ind]
+        best_action = all_particles_first_action[best_actions_ind]
+        return best_action
+
+    def sample_cross_entropy_method(self):
+        actions = Normal(self.cem_mus, self.cem_sigmas).sample(self.ensemble_batchsize)
+        # constrain these actions:
+        if self.env_name=='carracing':
+            actions = self.constrain_actions(actions)
+        else:
+            raise NotImplementedError("The environment you are trying to use does not have random shooting actions implemented.")
+        return actions
+
+    def update_cross_entropy_method(self, first_actions, rewards):
+        # for carracing we have 3 independent gaussians
+        vals, inds = torch.topk(rewards, self.k_top )
+        elite_actions = first_actions[inds]
+        self.cem_mus = elite_actions.sum(dim=0)/self.k_top 
+        self.cem_sigmas = torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top 
+        print('cem_mus and sigma', self.cem_mus.shape, self.cem_sigmas.shape)
+
+    def constrain_actions(self, out):
+        out = torch.tanh(out)
+        out[0,1] = (out[0,1]+1)/2.0 # this converts tanh to sigmoid
+        out[0,2] = torch.clamp(out[0,2], min=0.0, max=1.0)
+        return out
 
     def random_shooting(self, batch_size):
-
         if self.env_name=='carracing':
             out = torch.distributions.Uniform(-1,1).sample((batch_size, 3))
-            out = torch.tanh(out)
-            out[0,1] = (out[0,1]+1)/2.0 # this converts tanh to sigmoid
-            out[0,2] = torch.clamp(out[0,2], min=0.0, max=1.0)
-
+            out = self.constrain_actions(out)
         else:
             raise NotImplementedError("The environment you are trying to use does not have random shooting actions implemented.")
 
@@ -470,7 +507,7 @@ class Models:
 
         return log_policy_loss - log_tilde_loss
 
-    def simulate(self, planner_n_particles, train_mode=True, 
+    def simulate(self, train_mode=True, 
         render_mode=False, num_episode=16, 
         seed=27, max_len=1000, compute_feef=False): # run lots of rollouts 
 

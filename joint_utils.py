@@ -105,7 +105,7 @@ def generate_rollouts(ctrl_params, seq_len,
                 GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len)
 
 
-def generate_rollouts_using_planner(planner_n_particles, seq_len, 
+def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, seq_len, 
     time_limit, logdir, num_rolls_per_worker=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
 
     # 10% of the rollouts to use for test data. 
@@ -120,11 +120,29 @@ def generate_rollouts_using_planner(planner_n_particles, seq_len,
     worker_data = []
     #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
-        worker_data.append( (planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, False ) ) # compute FEEF.
+        worker_data.append( (cem_params, horizon, planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, False ) ) # compute FEEF.
 
     #res = ray.get( [worker.remote() ] )
     with Pool(processes=num_workers) as pool:
-        res = pool.map(worker, worker_data) 
+        all_worker_outputs = pool.map(worker, worker_data) 
+
+    res = []
+    for ind, worker_output in enumerate(all_worker_outputs): 
+        res.append(worker_output[0])
+        if ind==0:
+            cem_mus = worker_output[1]  
+            cem_sigmas = worker_output[2]
+        else:
+            cem_mus += worker_output[1] 
+            cem_sigmas += worker_output[2]
+    # averaging across the workers for the new CEM parameters. 
+    cem_mus /= num_workers
+    cem_sigmas /= num_workers
+
+    # cem_smoothing: 
+    alpha_smoothing=0.5
+    cem_mus = cem_mus*alpha_smoothing + (1-alpha_smoothing)*cem_mus
+    cem_sigmas = cem_sigmas*alpha_smoothing + (1-alpha_smoothing)*cem_sigmas
 
     #print('result!!!!', res)
     # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
@@ -134,24 +152,25 @@ def generate_rollouts_using_planner(planner_n_particles, seq_len,
     feef_losses, reward_list = [], []
     for worker_rollouts in res:
         for ind, li in enumerate([feef_losses, reward_list]):
-            li.append( np.mean(worker_rollouts[3+ind]) )
+            li += worker_rollouts[3+ind]
 
-    return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
+    return (cem_mus, cem_sigmas), GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
                 GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len), \
                 feef_losses, reward_list
 
 #@ray.remote
 def worker(inp): # run lots of rollouts 
-    planner_n_particles, seed, num_episodes, max_len, logdir, compute_feef = inp
+    cem_params, horizon, planner_n_particles, seed, num_episodes, max_len, logdir, compute_feef = inp
     print('worker has started')
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
             return_events=True, use_old_gym=False, joint_file_dir=True,
-            planner_n_particles = planner_n_particles)
+            planner_n_particles = planner_n_particles, cem_params=cem_params, 
+            horizon=horizon)
 
     return model.simulate(train_mode=True, render_mode=False, 
             num_episode=num_episodes, seed=seed, max_len=max_len, 
-            compute_feef=compute_feef)
+            compute_feef=compute_feef), model.cem_mus, model.cem_sigmas
 
 def sprint(*args):
     print(*args) # if python3, can do print(*args)
