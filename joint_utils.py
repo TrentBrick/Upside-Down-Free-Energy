@@ -232,7 +232,7 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
         if use_feef:
             es.tell(feef_losses) # dont need to be converted to maximization because I set it to be a min now!
         else: 
-            es.tell(-reward_list)
+            es.tell(-np.asarray(reward_list))
 
 
         if r_max > best_reward:
@@ -254,11 +254,12 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
     if use_feef:
         index_min = np.argmin(feef_losses)
         model_params = solutions[index_min]
-    best_feef = np.min(feef_losses)
     else: 
         index_max = np.argmax(reward_list)
         model_params = solutions[index_max]
         #best_reward = np.max(reward_list)
+    best_feef = np.min(feef_losses)
+    
 
 
     #model_params = es.result[0] # best solution of all time
