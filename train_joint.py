@@ -45,7 +45,7 @@ def main(args):
     SEQ_LEN = 128 #256
     epochs = 50
     time_limit =1000 # for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 1
+    num_vae_mdrnn_training_rollouts_per_worker = 3
 
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
@@ -98,7 +98,7 @@ def main(args):
                 model_var.load_state_dict(state['state_dict'])
 
                 # load in the training loop states only if all jointly trained together before
-                if not args.reload_from_pretrain: 
+                if not args.reload_from_pretrain and name =='mdrnn': 
                     # this info is currently saved with the vae and mdrnn on their own pulling from mdrnn as its currently the last.
                     print(' Loading in training state info (eg optimizer state) from last model in iter list:', name)
                     optimizer.load_state_dict(state["optimizer"])
@@ -234,6 +234,7 @@ def main(args):
                 optimizer.zero_grad()
                 total_loss.backward()
                 # TODO: consider adding gradient clipping like Ha.  
+                # torch.nn.utils.clip_grad_norm_(list(vae.parameters())+list(mdrnn.parameters()), 100.0)
                 optimizer.step()
             else:
                 with torch.no_grad():
