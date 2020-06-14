@@ -18,6 +18,8 @@ from pyglet.window import key
 import json 
 from controller_model import load_parameters
 import copy 
+from torchvision.utils import save_image
+import time
 
 class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attributes
     """
@@ -35,7 +37,10 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.use_planner = use_planner
         self.condition = True 
 
-        if test_agent: 
+        self.cem_mus = torch.Tensor([0,0.6,0]) 
+        self.cem_sigmas = torch.Tensor([0.3,0.5,0.1])
+
+        if test_agent and not use_planner: 
 
             # load in controller: 
             self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing', condition=self.condition).to('cpu')
@@ -154,67 +159,126 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.monitor.set_data(self._visual_obs)
         plt.pause(.01)
 
+    def planner(self, latent_s, full_hidden, reward, time_step):
+        # predicts into the future up to horizon. 
+        # returns the immediate action that will lead to the largest
+        # cumulative reward
+        horizon = 15
+        ensemble_batchsize = 200
+        self.ensemble_batchsize = ensemble_batchsize
+        self.planner_n_particles = ensemble_batchsize
+        self.mdrnn_ensemble = [self._rnn]
+        self.k_top = int(0.2*ensemble_batchsize)
 
-""" Testing the planner by giving it the real world dynamics """
+        cum_reward = torch.zeros((self.planner_n_particles))
+        all_particles_first_action = []
+        all_particles_all_predicted_obs = []
+        
+        for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
 
+            # initialize particles for a single ensemble model. 
+            ens_latent_s, ens_reward = [var.clone().repeat(ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, reward]]
+            hidden_0 = full_hidden[0].clone().repeat(ensemble_batchsize, *len(full_hidden[0].shape[1:])*[1])
+            hidden_1 = full_hidden[1].clone().repeat(ensemble_batchsize, *len(full_hidden[1].shape[1:])*[1])
+            ens_full_hidden = [hidden_0,hidden_1]
+            # only repeat the first dimension. 
 
-def random_shooting(batch_size):
-    out = torch.distributions.Uniform(-1,1).sample((batch_size, 3))
-    out = torch.tanh(out)
-    out[0,1] = (out[0,1]+1)/2.0 # this converts tanh to sigmoid
-    out[0,2] = torch.clamp(out[0,2], min=0.0, max=1.0)
+            # need to produce a batch of first actions here. 
+            ens_action = self.sample_cross_entropy_method() 
 
-    return out
+            for t in range(horizon):
+                
+                md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+                
+                # get the next latent state
+                g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
+                which_g = g_probs.sample()
+                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+                ens_latent_s = mus_g + (sigs_g * torch.randn_like(mus_g))
 
-def planner(env):
-    # predicts into the future up to horizon. 
-    # returns the immediate action that will lead to the largest
-    # cumulative reward
+                ens_action = self.sample_cross_entropy_method() 
+                #ens_action = self.random_shooting(ensemble_batchsize) 
 
-    env.render(close=True)
+                # store these cumulative rewards
+                cum_reward[ensemble_batchsize*mdrnn_ind:ensemble_batchsize*mdrnn_ind+ensemble_batchsize] += ens_reward
 
-    planner_n_particles = 10
-    horizon = 30
+                ens_reward = ens_reward.unsqueeze(1)
 
-    cum_rewards = []
-    all_particles_first_action = []
-    
-    # initialize particles for a single ensemble model. 
-    #ens_action, ens_latent_s, ens_full_hidden, ens_reward = [var.clone().repeat(self.ensemble_interval, *len(var.shape[1:])*[1]) for var in [action, latent_s, full_hidden, reward]]:
-    # only repeat the first dimension. 
-    #print('planner tensors, should now have larger batch size of', self.ensemble_interval, action.shape,latent_s.shape )
-    for p in range(planner_n_particles):
+                if t==0:
+                    # store next action to be taken
+                    all_particles_first_action.append(ens_action)
 
-        env_clone = copy.deepcopy(env)
-        print(env_clone)
-        ens_reward = 0
+                dec_mu, dec_logsigma = self.vae.decoder( ens_latent_s, ens_reward )
+                print('appending future pred')
+                all_particles_all_predicted_obs.append( dec_mu )
 
-        for t in range(horizon):
+        all_particles_first_action = torch.stack(all_particles_first_action).squeeze()
 
-            # sample actions for each particle!!! 
-            # TODO: implement CEM here: 
-            ens_action = random_shooting(1)
-            #print(ens_action)
+        all_particles_all_predicted_obs = torch.stack(all_particles_all_predicted_obs)
 
-            obs, reward, done, _ = env_clone.step(ens_action.squeeze())
+        print('all predicted obs', all_particles_all_predicted_obs.shape)
+        all_particles_all_predicted_obs = all_particles_all_predicted_obs.permute(1,0,2)
+        # update CEM parameters: 
+        # TODO: should CEM learn from all of the actions adn their rewards to go? 
+        # or only from the first actions? 
+        #print('best actions ind', all_particles_first_action.shape, cum_reward)
 
-            # save these cumulative rewards
-            ens_reward += reward 
-            
-            if t==0:
-                # store next action to be taken
-                ens_first_action = ens_action
+        self.update_cross_entropy_method(all_particles_first_action, cum_reward)
 
-        cum_rewards.append(ens_reward)
-        all_particles_first_action.append(ens_first_action)
+        print('new cem params', self.cem_mus, self.cem_sigmas)
 
-    all_particles_first_action = torch.stack(all_particles_first_action)
-    # choose the best next action out of all of them. 
-    best_actions_ind = np.argmax(cum_reward)
+        #print('updated cross entropies')
+        # choose the best next action out of all of them. 
+        best_actions_ind = torch.argmax(cum_reward)
+        worst_actions_ind = torch.argmin(cum_reward)
+        best_action = all_particles_first_action[best_actions_ind]
 
-    env.render()
+        sequence_best_pred_obs = all_particles_all_predicted_obs[best_actions_ind]
+        sequence_worst_pred_obs = all_particles_all_predicted_obs[worst_actions_ind]
 
-    return all_particles_first_action[best_actions_ind]
+        # saving this out. 
+        sequence_best_pred_obs = sequence_best_pred_obs.view(sequence_best_pred_obs.shape[0], 3, 64, 64)
+        sequence_worst_pred_obs = sequence_worst_pred_obs.view(sequence_worst_pred_obs.shape[0], 3, 64, 64)
+        save_image(sequence_best_pred_obs,
+                        'exp_dir/simulation/samples/best_sample_' + str(time_step) + '.png')
+        save_image(sequence_worst_pred_obs,
+                        'exp_dir/simulation/samples/worst_sample_' + str(time_step) + '.png')
+
+        print('predicted reward of best particle', torch.max(cum_reward))
+        print('predicted reward of worst particle', torch.min(cum_reward))
+        #print('best action is:', best_action)
+        return best_action.unsqueeze(0)
+
+    def sample_cross_entropy_method(self):
+        actions = torch.distributions.Normal(self.cem_mus, self.cem_sigmas).sample([self.ensemble_batchsize])
+        # constrain these actions:
+        actions = self.constrain_actions(actions)
+        return actions
+
+    def update_cross_entropy_method(self, first_actions, rewards):
+        # for carracing we have 3 independent gaussians
+        smoothing = 0.5
+        vals, inds = torch.topk(rewards, self.k_top )
+        elite_actions = first_actions[inds]
+        self.cem_mus = smoothing*self.cem_mus + (1-smoothing)*(elite_actions.sum(dim=0)/self.k_top) 
+        self.cem_sigmas = smoothing*self.cem_sigmas+(1-smoothing)*(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top )
+        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.1)
+        #print('updated cems',self.cem_mus, self.cem_sigmas )
+
+    def constrain_actions(self, out):
+        #print('before tanh', out)
+        out = torch.tanh(out)
+        out[:,1] = (out[:,1]+1)/2.0 # this converts tanh to sigmoid
+        out[:,2] = torch.clamp(out[:,2], min=0.0, max=1.0)
+        #print('after all processing', out)
+        return out
+
+    def random_shooting(self, batch_size):
+        
+        out = torch.distributions.Uniform(-1,1).sample((batch_size, 3))
+        out = self.constrain_actions(out)
+        
+        return out
 
 
 if __name__ == '__main__':
@@ -229,6 +293,10 @@ if __name__ == '__main__':
     parser.add_argument('--use_planner', action='store_true',
                     help="Use a planner rather than the controller")
     args = parser.parse_args()
+
+    if args.use_planner: 
+        args.test_agent = True 
+
     if args.real_obs: 
         env = gym.make("CarRacing-v0")
         figure = plt.figure()
@@ -289,37 +357,48 @@ if __name__ == '__main__':
 
     if args.real_obs:
 
-        if not args.use_planner: 
+        #if not args.use_planner: 
 
-            hidden = [
-                torch.zeros(1, LATENT_RECURRENT_SIZE).to('cpu')
-                for _ in range(2)]
-            reward = 0
+        hidden = [
+            torch.zeros(1, LATENT_RECURRENT_SIZE).to('cpu')
+            for _ in range(2)]
+        reward = 0
 
-            transform = transforms.Compose([
-                    transforms.ToPILImage(),
-                    transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
-                    transforms.ToTensor()
-                ])
+        transform = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
+                transforms.ToTensor()
+            ])
 
-            agent_class = SimulatedCarracing( args.logdir, args.real_obs, args.test_agent, args.use_planner)
+        agent_class = SimulatedCarracing( args.logdir, args.real_obs, args.test_agent, args.use_planner)
 
     cum_reward = 0
+    t = 0
     while True:
         if args.real_obs:
             
             # need to generate actions!
             if args.test_agent: 
 
-                if args.use_planner: 
+                with torch.no_grad():
 
-                    print(env)
+                    obs_t = obs[:84, :, :]
 
-                    action = planner(env)
+                    obs_t = transform(obs_t).unsqueeze(0).to('cpu')
 
-                else: 
-                    with torch.no_grad():
-                        obs_t = transform(obs).unsqueeze(0).to('cpu')
+                    if args.use_planner: 
+
+                        reward = torch.Tensor([reward]).unsqueeze(0)
+
+                        mu, logsigma = agent_class.vae.encoder(obs_t, reward)
+                        latent_z =  mu + logsigma.exp() * torch.randn_like(mu) 
+
+                        action = agent_class.planner(latent_z, hidden, reward, t)
+
+                        _, _, _, _, _, hidden = agent_class._rnn(action, latent_z, hidden, reward)
+                        action = action.squeeze().cpu().numpy()
+
+                    else:  
                         action, hidden = agent_class.agent_action(obs_t, hidden, reward)
 
             print(action)
@@ -330,7 +409,10 @@ if __name__ == '__main__':
             print(action)
             _, reward, done = env.step(action)
         env.render()
+        #time.sleep(5)
         cum_reward += reward
+        print('time step of simulation', t)
+        t+=1
         if done:
             print(cum_reward)
             break
