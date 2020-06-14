@@ -101,8 +101,6 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
 
     res = []
     for ind, worker_output in enumerate(all_worker_outputs): 
-        print('length of worker output', len(worker_output))
-        print('what is being appended to res? ', len(worker_output[0]))
         res.append(worker_output[0])
         if ind==0:
             cem_mus = worker_output[1]  
@@ -115,9 +113,9 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
     cem_sigmas /= num_workers
 
     # cem_smoothing: 
-    alpha_smoothing=0.5
-    cem_mus = cem_mus*alpha_smoothing + (1-alpha_smoothing)*cem_mus
-    cem_sigmas = cem_sigmas*alpha_smoothing + (1-alpha_smoothing)*cem_sigmas
+    alpha_smoothing=0.2
+    cem_mus = cem_mus*alpha_smoothing + (1-alpha_smoothing)*cem_params[0]
+    cem_sigmas = cem_sigmas*alpha_smoothing + (1-alpha_smoothing)*cem_params[1]
 
     # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
     print('===== Done with pool of workers')

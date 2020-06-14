@@ -1,8 +1,8 @@
 """ Joint training of  """
 import argparse
 from functools import partial
-from os.path import join, exists, unlink
-from os import mkdir
+from os.path import join, exists
+from os import mkdir, unlink
 import torch
 import torch.nn.functional as f
 from torch.utils.data import DataLoader
@@ -104,10 +104,11 @@ def main(args):
                 if not args.reload_from_pretrain and name =='mdrnn': 
                     # this info is currently saved with the vae and mdrnn on their own pulling from mdrnn as its currently the last.
                     print(' Loading in training state info (eg optimizer state) from last model in iter list:', name)
-                    optimizer.load_state_dict(state["optimizer"])
-                    scheduler.load_state_dict(state['scheduler'])
-                    earlystopping.load_state_dict(state['earlystopping'])
+                    #optimizer.load_state_dict(state["optimizer"])
+                    #scheduler.load_state_dict(state['scheduler'])
+                    #earlystopping.load_state_dict(state['earlystopping'])
                     vae_n_mdrnn_cur_best = state['precision']
+
             else: 
                 print('trying to load file at:', load_file, "but couldnt find it so starting fresh")
 
@@ -136,7 +137,10 @@ def main(args):
                             filenames_dict[model_name+'_best'])
 
         # unlinking the logger too
-        os.unlink(logger_filename)
+        unlink(logger_filename)
+    
+    # NOTE: I am now starting with a lower learning rate. 
+    optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-4)
 
     # dont need as saving the observations after their transforms in the rollout itself. 
     #transform = transforms.Lambda( lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)

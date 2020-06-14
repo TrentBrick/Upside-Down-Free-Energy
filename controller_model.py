@@ -269,12 +269,16 @@ class Models:
 
     def update_cross_entropy_method(self, first_actions, rewards):
         # for carracing we have 3 independent gaussians
-        smoothing = 0.5
+        smoothing = 0.2
         vals, inds = torch.topk(rewards, self.k_top )
         elite_actions = first_actions[inds]
-        self.cem_mus = smoothing*self.cem_mus + (1-smoothing)*(elite_actions.sum(dim=0)/self.k_top) 
-        self.cem_sigmas = smoothing*self.cem_sigmas+(1-smoothing)*(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top )
-        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.2)
+
+        new_mu = elite_actions.sum(dim=0)/self.k_top
+        new_sigma = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top)
+        self.cem_mus = smoothing*new_mu + (1-smoothing)*(self.cem_mus) 
+        self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
+        
+        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.1)
         #print('updated cems',self.cem_mus, self.cem_sigmas )
 
     def constrain_actions(self, out):
