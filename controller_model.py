@@ -75,8 +75,9 @@ class Models:
         self.device = 'cpu' #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
-
+        
         if cem_params:
+            
             self.cem_mus = cem_params[0]
             self.cem_sigmas = cem_params[1]
 
@@ -155,7 +156,7 @@ class Models:
         self.mdrnn_ensemble = [self.mdrnn]
         self.ensemble_size = len(self.mdrnn_ensemble)
         assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
-        self.k_top = int(planner_n_particles*0.20)
+        self.k_top = int(planner_n_particles*0.10)
         self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size 
 
     def make_env(self, seed=-1, render_mode=False, full_episode=False):
@@ -204,22 +205,17 @@ class Models:
         # returns the immediate action that will lead to the largest
         # cumulative reward
 
-        '''# assign particles to one of the mdrnn ensemble: 
-        self.ensemble_size = 1
-
-        # assign particles to one of the mdrnn ensembles'''
-        #np.random.shuffle(self.ensemble_batchsize)
-
         cum_reward = torch.zeros((self.planner_n_particles))
         all_particles_first_action = []
         
         for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
 
             # initialize particles for a single ensemble model. 
-            ens_latent_s, ens_full_hidden, ens_reward = [var.clone().repeat(self.ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, full_hidden, reward]]
+            ens_latent_s, ens_reward = [var.clone().repeat(self.ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, reward]]
+            hidden_0 = full_hidden[0].clone().repeat(self.ensemble_batchsize, *len(full_hidden[0].shape[1:])*[1])
+            hidden_1 = full_hidden[1].clone().repeat(self.ensemble_batchsize, *len(full_hidden[1].shape[1:])*[1])
+            ens_full_hidden = [hidden_0,hidden_1]
             # only repeat the first dimension. 
-            print('planner tensors, should now have larger batch size of', self.ensemble_batchsize,
-                ens_latent_s.shape, ens_full_hidden.shape )
 
             # need to produce a batch of first actions here. 
             ens_action = self.sample_cross_entropy_method() 
@@ -227,7 +223,7 @@ class Models:
             for t in range(self.horizon):
                 
                 md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
-
+                
                 # get the next latent state
                 g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
                 which_g = g_probs.sample()
@@ -242,24 +238,28 @@ class Models:
                 # store these cumulative rewards
                 cum_reward[self.ensemble_batchsize*mdrnn_ind:self.ensemble_batchsize*mdrnn_ind+self.ensemble_batchsize] += ens_reward
 
+                ens_reward = ens_reward.unsqueeze(1)
+
                 if t==0:
                     # store next action to be taken
                     all_particles_first_action.append(ens_action)
 
-        all_particles_first_action = torch.stack(all_particles_first_action)
+        all_particles_first_action = torch.stack(all_particles_first_action).squeeze()
 
         # update CEM parameters: 
         # TODO: should CEM learn from all of the actions adn their rewards to go? 
         # or only from the first actions? 
+        #print('best actions ind', all_particles_first_action.shape, cum_reward)
         self.update_cross_entropy_method(all_particles_first_action, cum_reward)
-        
+        #print('updated cross entropies')
         # choose the best next action out of all of them. 
         best_actions_ind = torch.argmax(cum_reward)
         best_action = all_particles_first_action[best_actions_ind]
-        return best_action
+        #print('best action is:', best_action)
+        return best_action.unsqueeze(0)
 
     def sample_cross_entropy_method(self):
-        actions = Normal(self.cem_mus, self.cem_sigmas).sample(self.ensemble_batchsize)
+        actions = Normal(self.cem_mus, self.cem_sigmas).sample([self.ensemble_batchsize])
         # constrain these actions:
         if self.env_name=='carracing':
             actions = self.constrain_actions(actions)
@@ -269,16 +269,20 @@ class Models:
 
     def update_cross_entropy_method(self, first_actions, rewards):
         # for carracing we have 3 independent gaussians
+        smoothing = 0.5
         vals, inds = torch.topk(rewards, self.k_top )
         elite_actions = first_actions[inds]
-        self.cem_mus = elite_actions.sum(dim=0)/self.k_top 
-        self.cem_sigmas = torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top 
-        print('cem_mus and sigma', self.cem_mus.shape, self.cem_sigmas.shape)
+        self.cem_mus = smoothing*self.cem_mus + (1-smoothing)*(elite_actions.sum(dim=0)/self.k_top) 
+        self.cem_sigmas = smoothing*self.cem_sigmas+(1-smoothing)*(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top )
+        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.2)
+        #print('updated cems',self.cem_mus, self.cem_sigmas )
 
     def constrain_actions(self, out):
+        #print('before tanh', out)
         out = torch.tanh(out)
-        out[0,1] = (out[0,1]+1)/2.0 # this converts tanh to sigmoid
-        out[0,2] = torch.clamp(out[0,2], min=0.0, max=1.0)
+        out[:,1] = (out[:,1]+1)/2.0 # this converts tanh to sigmoid
+        out[:,2] = torch.clamp(out[:,2], min=0.0, max=1.0)
+        #print('after all processing', out)
         return out
 
     def random_shooting(self, batch_size):
@@ -358,9 +362,9 @@ class Models:
                     if key == 'actions' or key=='terminal':
                         var = torch.Tensor([var])
                     rollout_dict[key].append(var.squeeze())
-
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
             obs, reward, done, _ = self.env.step(action)
+            #print('reward recieved:', reward)
             if self.use_old_gym:
                 self.env.viewer.window.dispatch_events()
 
@@ -409,13 +413,6 @@ class Models:
 
         # rollout_dict values are of the size and shape seq_len, values dimensions. 
 
-        '''#Should have access already
-        #transform then encode the observations and sample latent zs
-        #obs = transform(obs).unsqueeze(0).to(device)
-        # batch, channels, image dim, image dim
-        #mu, logsigma = vae.encoder(obs)'''
-
-        print('this might give OOM and need to break into batch')
         # TODO: break the sequence length into smaller batches. 
         
         total_samples = num_s_samps * num_next_encoder_samps * num_importance_samps
@@ -482,7 +479,7 @@ class Models:
         # for p_opi
         # should see what the difference in variance is between using a single value and taking an expectation over many. 
         # as calculating a single value would be so much faster. 
-
+        print('computing feef loss')
         num_s_samps = 1
         num_next_encoder_samps = 1 
         num_importance_samps = 1 # I think 250 is ideal but probably too slow
@@ -530,7 +527,6 @@ class Models:
             data_dict_list = []
             if compute_feef:
                 feef_losses_list = []
-                cum_rewards_list = []
                 
         if max_len ==-1:
             max_len = 1000 # making it very long
@@ -550,8 +546,6 @@ class Models:
                     data_dict_list.append(data_dict)
                     if compute_feef: 
                         feef_losses_list.append(  self.feef_loss(data_dict)  )
-
-                        cum_rewards_list.append( data_dict['rewards'].sum()   )
                     
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
@@ -563,7 +557,7 @@ class Models:
 
         if self.return_events: 
             if compute_feef:
-                return reward_list, t_list, data_dict_list, feef_losses_list, cum_rewards_list  # no need to return the data.
+                return reward_list, t_list, data_dict_list, feef_losses_list  # no need to return the data.
             else: 
                 return reward_list, t_list, data_dict_list 
         else: 

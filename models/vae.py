@@ -5,7 +5,7 @@ for our model of the world.
 """
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+#import torch.nn.functional as F
 
 class Decoder(nn.Module):
     """ VAE decoder """
@@ -33,14 +33,14 @@ class Decoder(nn.Module):
     def forward(self, s, r): # pylint: disable=arguments-differ
         if self.conditional:
             s = torch.cat([s, r], dim=1)
-            s = F.relu(self.r_cond1(s))
-        s = F.relu(self.fc1(s))
+            s = torch.relu(self.r_cond1(s))
+        s = torch.relu(self.fc1(s))
         logsigma = self.fc_logsigma(s)
         s = s.unsqueeze(-1).unsqueeze(-1)
-        s = F.relu(self.deconv1(s))
-        s = F.relu(self.deconv2(s))
-        s = F.relu(self.deconv3(s))
-        s = F.sigmoid(self.deconv4(s))
+        s = torch.relu(self.deconv1(s))
+        s = torch.relu(self.deconv2(s))
+        s = torch.relu(self.deconv3(s))
+        s = torch.sigmoid(self.deconv4(s))
         mu = s.view(s.size(0), -1)
 
         return mu, logsigma
@@ -71,16 +71,16 @@ class Encoder(nn.Module): # pylint: disable=too-many-instance-attributes
 
 
     def forward(self, v, r): # v is the observation# pylint: disable=arguments-differ
-        v = F.relu(self.conv1(v))
-        v = F.relu(self.conv2(v))
-        v = F.relu(self.conv3(v))
-        v = F.relu(self.conv4(v))
+        v = torch.relu(self.conv1(v))
+        v = torch.relu(self.conv2(v))
+        v = torch.relu(self.conv3(v))
+        v = torch.relu(self.conv4(v))
         v = v.view(v.size(0), -1)
 
         if self.conditional: 
             x = torch.cat([v,r], dim=1)
-            x = F.relu(self.r_cond1(x))
-            x = F.relu(self.r_cond2(x))
+            x = torch.relu(self.r_cond1(x))
+            x = torch.relu(self.r_cond2(x))
 
         mu = self.fc_mu(x)
         logsigma = self.fc_logsigma(x)

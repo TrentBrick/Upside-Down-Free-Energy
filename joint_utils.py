@@ -54,12 +54,14 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
     """Combine data across the workers and their rollouts (making each rollout a separate batch)
     I currently only care about the data_dict_list. This is a list of each rollout: 
     each one has the dictionary keys: 'obs', 'rewards', 'actions', 'terminal'"""
-    
+    print('RUNNING COMBINE WORKER')
+
     first_iter = True
     for worker_rollouts in inp: 
+        print('one of the worker rollouts, should be 3.', len(worker_rollouts))
         for rollout_data_dict in worker_rollouts[dim]: # this is pulling from a list!
-            
-            #print('specific rollout dictionary, should be size 4', len(rollout_data_dict.keys()))
+        
+            print('specific rollout dictionary, should be size 4', len(rollout_data_dict.keys()))
             # this rollout is too small so it is being ignored. 
             # getting one of the keys from the dictionary
             if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
@@ -76,35 +78,6 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
     #combo_dict = {k:torch.stack(v) for k, v in combo_dict.items()}
     return combo_dict
 
-def generate_rollouts(ctrl_params, seq_len, 
-    time_limit, logdir, num_rolls_per_worker=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
-
-    # 10% of the rollouts to use for test data. 
-    ten_perc = np.floor(num_workers*0.1)
-    if ten_perc == 0.0:
-        ten_perc=1
-    ninety_perc = int(num_workers- ten_perc)
-
-    # generate a random number to give as a random seed to each pool worker. 
-    rand_ints = np.random.randint(0, 1e9, num_workers)
-
-    worker_data = []
-    #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
-    for i in range(num_workers):
-        worker_data.append( (ctrl_params, rand_ints[i], num_rolls_per_worker, time_limit, logdir, False ) ) # compute FEEF.
-
-    #res = ray.get( [worker.remote() ] )
-    with Pool(processes=num_workers) as pool:
-        res = pool.map(worker, worker_data) 
-
-    #print('result!!!!', res)
-    # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
-    print('===== Done with pool of workers')
-
-    return GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
-                GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len)
-
-
 def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, seq_len, 
     time_limit, logdir, num_rolls_per_worker=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
 
@@ -120,7 +93,7 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
     worker_data = []
     #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
-        worker_data.append( (cem_params, horizon, planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, False ) ) # compute FEEF.
+        worker_data.append( (cem_params, horizon, planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, True ) ) # compute FEEF.
 
     #res = ray.get( [worker.remote() ] )
     with Pool(processes=num_workers) as pool:
@@ -128,6 +101,8 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
 
     res = []
     for ind, worker_output in enumerate(all_worker_outputs): 
+        print('length of worker output', len(worker_output))
+        print('what is being appended to res? ', len(worker_output[0]))
         res.append(worker_output[0])
         if ind==0:
             cem_mus = worker_output[1]  
@@ -144,15 +119,14 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
     cem_mus = cem_mus*alpha_smoothing + (1-alpha_smoothing)*cem_mus
     cem_sigmas = cem_sigmas*alpha_smoothing + (1-alpha_smoothing)*cem_sigmas
 
-    #print('result!!!!', res)
     # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
     print('===== Done with pool of workers')
 
     # get all of the feef losses aggregated across the different workers: 
     feef_losses, reward_list = [], []
     for worker_rollouts in res:
-        for ind, li in enumerate([feef_losses, reward_list]):
-            li += worker_rollouts[3+ind]
+        for ind, li in zip([3, 0], [feef_losses, reward_list]): # output order from simulate.
+            li += worker_rollouts[ind]
 
     return (cem_mus, cem_sigmas), GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
                 GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len), \
@@ -161,7 +135,6 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
 #@ray.remote
 def worker(inp): # run lots of rollouts 
     cem_params, horizon, planner_n_particles, seed, num_episodes, max_len, logdir, compute_feef = inp
-    print('worker has started')
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
             return_events=True, use_old_gym=False, joint_file_dir=True,
@@ -172,22 +145,8 @@ def worker(inp): # run lots of rollouts
             num_episode=num_episodes, seed=seed, max_len=max_len, 
             compute_feef=compute_feef), model.cem_mus, model.cem_sigmas
 
-def sprint(*args):
-    print(*args) # if python3, can do print(*args)
-    sys.stdout.flush()
 
-class Seeder:
-    def __init__(self, init_seed=0):
-        np.random.seed(init_seed)
-        self.limit = np.int32(2**31-1)
-    def next_seed(self):
-        result = np.random.randint(self.limit)
-        return result
-    def next_batch(self, batch_size):
-        result = np.random.randint(self.limit, size=batch_size).tolist()
-        return result
-
-def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, num_workers, 
+'''def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, num_workers, 
     num_trials_per_worker, num_generations, seed_start=None, time_limit=1000, use_feef=True ):
 
     population_size = num_workers*num_trials_per_worker
@@ -323,3 +282,4 @@ def train_controller(es, curr_best_ctrl_params, logdir, gamename, num_episodes, 
     #best_curr_feef = es.result[2] # best feef of the current batch
 
     return es, model_params, best_feef, best_reward
+'''

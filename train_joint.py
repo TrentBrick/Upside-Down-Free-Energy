@@ -11,7 +11,7 @@ from torchvision.utils import save_image
 import numpy as np
 import json
 from tqdm import tqdm
-from joint_utils import generate_rollouts, train_controller, generate_rollouts_using_planner
+from joint_utils import generate_rollouts_using_planner
 from controller_model import flatten_parameters
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
@@ -48,8 +48,8 @@ def main(args):
     epochs = 50
     time_limit =1000 # for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 2
-    planner_n_particles = 100
-    horizon = 15
+    planner_n_particles = 500
+    horizon = 20
 
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
@@ -238,7 +238,7 @@ def main(args):
                 optimizer.zero_grad()
                 total_loss.backward()
                 # TODO: consider adding gradient clipping like Ha.  
-                # torch.nn.utils.clip_grad_norm_(list(vae.parameters())+list(mdrnn.parameters()), 100.0)
+                torch.nn.utils.clip_grad_norm_(list(vae.parameters())+list(mdrnn.parameters()), 100.0)
                 optimizer.step()
             else:
                 with torch.no_grad():
@@ -276,8 +276,8 @@ def main(args):
     train = partial(data_pass, train=True)
     test = partial(data_pass, train=False)
 
-    # TODO: store the CEM parameters across runs. 
-    cem_params = (    )
+    # TODO: store the CEM parameters across full command line based runs
+    cem_params = ( torch.Tensor([0,0.5,0]) , torch.Tensor([0.3,0.2,0.2]) )
 
     '''# TODO: take in the final sigma from the last epoch. 
     sigma_init=0.1
@@ -301,12 +301,6 @@ def main(args):
         # TODO: dont feed in similar time sequences, have some gap between them or slicing of them.
         # TODO: get rollouts from the agent CMA-ES evaluation and use them here for training. 
         
-        # Uses Controller policy provided. 
-        '''train_dataset, test_dataset = generate_rollouts(flatten_parameters(controller.parameters()), 
-                SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
-                num_workers=args.num_workers, joint_file_dir=True, transform=None )
-                # joint_file_dir is to direct the workers to load from the joint directory which is flat.'''
-
         # Uses planning
         # TODO: Have CEM collect the best results across distributed CPUs. 
         cem_params, train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
@@ -340,6 +334,8 @@ def main(args):
         test_loss_dict['max_feef_planner'] = np.max(feef_losses)
         test_loss_dict['min_feef_planner'] = np.min(feef_losses)
 
+        print('test loss dictionary:', test_loss_dict)
+
         # checkpointing the model: 
         # needs to be here so that the policy learning workers below can load in the new parameters.
         is_best = not vae_n_mdrnn_cur_best or test_loss_dict['loss'] < vae_n_mdrnn_cur_best
@@ -371,31 +367,6 @@ def main(args):
         print('====== Done Generating VAE Samples')
 
         # TODO: generate MDRNN examples. 
-
-        # Train a policy (controller) using CMA-ES. 
-        '''# train the controller/policy using the updated VAE and MDRNN
-        es, best_params, best_feef, best_reward = train_controller(es, flatten_parameters(controller.parameters()), joint_dir, 
-            args.gamename, args.num_episodes, args.num_workers, args.num_trials_per_worker,
-            args.num_generations_per_epoch, seed_start=None, time_limit=time_limit, use_feef=use_feef )
-        print('====== Done Training Controller Samples')
-
-        controller = load_parameters(best_params, controller)
-
-        # checkpointing controller:
-        is_best = not ctrl_cur_best_rewards or ctrl_cur_best_rewards > best_reward
-        if is_best:
-            ctrl_cur_best_rewards = best_reward
-        
-        save_checkpoint({
-            "state_dict": controller.state_dict(),
-            "feef": best_feef,
-            "reward": best_reward,
-            "epoch": e}, is_best, filenames_dict['ctrl_checkpoint'],
-                        filenames_dict['ctrl_best'])
-
-        test_loss_dict['best_reward_ctrl'] = best_reward
-        test_loss_dict['best_feef_ctrl'] = best_feef
-        test_loss_dict['loss'] += best_feef'''
 
         # header at the top of logger file written once. 
         if not exists(logger_filename): 
@@ -435,10 +406,10 @@ if __name__ =='__main__':
                         help="Do not reload if specified.")
 
     # Controller training arguments
-    parser.add_argument('--num_generations_per_epoch', type=int, help='Number of generations of CMA-ES per epoch.',
-                        default=5)
-    parser.add_argument('--num_episodes', type=int, default=8 ,help='Number of samples rollouts to evaluate each agent')
-    parser.add_argument('--num_trials_per_worker', type=int, default=1, help='Population size.')
+    #parser.add_argument('--num_generations_per_epoch', type=int, help='Number of generations of CMA-ES per epoch.',
+    #                    default=5)
+    #parser.add_argument('--num_episodes', type=int, default=8 ,help='Number of samples rollouts to evaluate each agent')
+    #parser.add_argument('--num_trials_per_worker', type=int, default=1, help='Population size.')
     parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
                         default=16)
     parser.add_argument('--target_return', type=float, help='Stops once the return '
