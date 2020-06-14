@@ -59,9 +59,10 @@ def main(args):
 
     # constants
     BATCH_SIZE = 48
-    SEQ_LEN = 256
+    SEQ_LEN = 128
     epochs = 30
     conditional=True 
+    cur_best = None
 
     # Loading VAE
     vae_file = join(args.logdir, 'vae', 'best.tar')
@@ -111,10 +112,10 @@ def main(args):
     # batch size is smaller because each element is in fact 32 observations!
     train_loader = DataLoader(
         RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
-        batch_size=BATCH_SIZE, num_workers=16, shuffle=True, drop_last=True)
+        batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=True)
     test_loader = DataLoader(
-        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=10),
-        batch_size=BATCH_SIZE, num_workers=16, drop_last=True)
+        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=5),
+        batch_size=BATCH_SIZE, num_workers=10, drop_last=True)
 
     # TODO: Wasted compute. split into obs and next obs only much later!!
     def to_latent(obs, rewards):
@@ -185,8 +186,8 @@ def main(args):
                 optimizer.step()
             else:
                 with torch.no_grad():
-                    losses = get_loss(mdrnn, latent_obs, action, pres_reward, next_reward,
-                                    terminal, latent_next_obs, include_reward, include_terminal)
+                    losses = get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_reward,
+                                    terminal, include_reward, include_terminal)
 
             cum_loss += losses['loss'].item()
             cum_gmm += losses['gmm'].item()
@@ -206,9 +207,6 @@ def main(args):
 
     train = partial(data_pass, train=True, include_reward=args.include_reward, include_terminal=args.include_terminal)
     test = partial(data_pass, train=False, include_reward=args.include_reward, include_terminal=args.include_terminal)
-
-    if not cur_best:
-        cur_best = None
         
     for e in range(epochs):
         train_loss = train(e)
@@ -271,3 +269,4 @@ if __name__ == '__main__':
     parser.add_argument('--include_terminal', action='store_true',
                         help="Add a terminal modelisation term to the loss.")
     args = parser.parse_args()
+    main(args)

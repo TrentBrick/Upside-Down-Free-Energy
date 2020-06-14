@@ -1,7 +1,7 @@
 """ Joint training of  """
 import argparse
 from functools import partial
-from os.path import join, exists
+from os.path import join, exists, unlink
 from os import mkdir
 import torch
 import torch.nn.functional as f
@@ -22,8 +22,8 @@ import sys
 from data.loaders import RolloutSequenceDataset
 from models.vae import VAE
 from models.mdrnn import MDRNN, gmm_loss
-from models import Controller
-import cma
+#from models import Controller
+#import cma
 from multiprocessing import cpu_count
 from trainvae import loss_function as trainvae_loss_function
 from trainmdrnn import get_loss as trainmdrnn_loss_function
@@ -73,8 +73,7 @@ def main(args):
     # init models
     vae = VAE(3, LATENT_SIZE, conditional).to(device)
     mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5,conditional).to(device)
-    controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional).to(device)
-
+    
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
@@ -122,27 +121,22 @@ def main(args):
                         "epoch": -1}, True, filenames_dict[model_name+'_checkpoint'],
                                     filenames_dict[model_name+'_best'])
 
-        # load in the controller 
-        if use_ctrl_pretrain:
-            with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
-                ctrl_params = json.load(f)
-            print("Loading in the pretrained best controller model, its average eval score was:", ctrl_params[1])
-            controller = load_parameters(ctrl_params[0], controller)
-            ctrl_cur_best_rewards = ctrl_params[1]
+    
+    else: 
+        print('Didnt want to load in files so starting fresh by saving over these models')
 
-        else: 
-            if exists(filenames_dict['ctrl_best']): # loading in the checkpoint
-                print('loading in the best controller')
-                state = torch.load(filenames_dict['ctrl_best'], map_location={'cuda:0': str(device)})
-                ctrl_cur_best_rewards = state['reward']
-                ctrl_cur_best_feef = state['feef']
-                controller.load_state_dict(state['state_dict'])
-                print("Previous best reward was {} and best FEEF {}...".format(ctrl_cur_best_rewards, ctrl_cur_best_feef))
-                print("At epoch:", state['epoch'])
+        for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
+            save_checkpoint({
+                "state_dict": model_var.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'earlystopping': earlystopping.state_dict(),
+                "precision": None,
+                "epoch": -1}, True, filenames_dict[model_name+'_checkpoint'],
+                            filenames_dict[model_name+'_best'])
 
-    # never need gradients with controller for evo methods. 
-    # NOTE: if I stop using evolutionary approach this will need to change. 
-    controller.eval()
+        # unlinking the logger too
+        os.unlink(logger_filename)
 
     # dont need as saving the observations after their transforms in the rollout itself. 
     #transform = transforms.Lambda( lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
@@ -404,12 +398,7 @@ if __name__ =='__main__':
                         help="Do not reload if specified.")
     parser.add_argument('--no_reload', action='store_true',
                         help="Do not reload if specified.")
-
-    # Controller training arguments
-    #parser.add_argument('--num_generations_per_epoch', type=int, help='Number of generations of CMA-ES per epoch.',
-    #                    default=5)
-    #parser.add_argument('--num_episodes', type=int, default=8 ,help='Number of samples rollouts to evaluate each agent')
-    #parser.add_argument('--num_trials_per_worker', type=int, default=1, help='Population size.')
+    
     parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
                         default=16)
     parser.add_argument('--target_return', type=float, help='Stops once the return '
