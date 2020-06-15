@@ -43,7 +43,7 @@ def main(args):
     # Constants
     BATCH_SIZE = 256
     SEQ_LEN = 16 # number of sequences in a row used during training
-    epochs = 50
+    epochs = 300
     time_limit =1000 # max time limit for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 3
 
