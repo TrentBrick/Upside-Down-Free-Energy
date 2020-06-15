@@ -267,7 +267,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         new_sigmas = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top)
         self.cem_sigmas = smoothing*new_sigmas+(1-smoothing)*(self.cem_sigmas )
         
-        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.1)
+        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.01)
         #print('updated cems',self.cem_mus, self.cem_sigmas )
 
     def constrain_actions(self, out):
