@@ -62,7 +62,7 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
             # this rollout is too small so it is being ignored. 
             # getting one of the keys from the dictionary
             if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
-                print('!!!!!! Combine_worker_rollouts is ignoring rollout of length', len(rollout_data_dict[rollout_data_dict.keys()[0]]), 'for being smaller than the sequence length')
+                print('!!!!!! Combine_worker_rollouts is ignoring rollout of length', len(rollout_data_dict[list(rollout_data_dict.keys())[0]]), 'for being smaller than the sequence length')
                 continue
 
             if first_iter:
