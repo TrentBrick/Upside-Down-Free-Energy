@@ -75,7 +75,7 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
     #combo_dict = {k:torch.stack(v) for k, v in combo_dict.items()}
     return combo_dict
 
-def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, seq_len, 
+def generate_rollouts_using_planner(cem_params, horizon, num_action_repeats, planner_n_particles, seq_len, 
     time_limit, logdir, num_rolls_per_worker=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
 
     # 10% of the rollouts to use for test data. 
@@ -90,7 +90,7 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
     worker_data = []
     #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
-        worker_data.append( (cem_params, horizon, planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, True ) ) # compute FEEF.
+        worker_data.append( (cem_params, horizon, num_action_repeats, planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, True ) ) # compute FEEF.
 
     #res = ray.get( [worker.remote() ] )
     with Pool(processes=num_workers) as pool:
@@ -129,12 +129,12 @@ def generate_rollouts_using_planner(cem_params, horizon, planner_n_particles, se
 
 #@ray.remote
 def worker(inp): # run lots of rollouts 
-    cem_params, horizon, planner_n_particles, seed, num_episodes, max_len, logdir, compute_feef = inp
+    cem_params, horizon, num_action_repeats, planner_n_particles, seed, num_episodes, max_len, logdir, compute_feef = inp
     gamename = 'carracing'
     model = Models(gamename, 1000, mdir = logdir, conditional=True, 
             return_events=True, use_old_gym=False, joint_file_dir=True,
             planner_n_particles = planner_n_particles, cem_params=cem_params, 
-            horizon=horizon)
+            horizon=horizon, num_action_repeats=num_action_repeats)
 
     return model.simulate(train_mode=True, render_mode=False, 
             num_episode=num_episodes, seed=seed, max_len=max_len, 

@@ -65,7 +65,8 @@ class Models:
 
     def __init__(self, env_name, time_limit, use_old_gym=False, 
         mdir=None, return_events=False, give_models=None, conditional=True, 
-        joint_file_dir=False, planner_n_particles=100, cem_params=None, horizon=30):
+        joint_file_dir=False, planner_n_particles=100, cem_params=None, horizon=30, 
+        num_action_repeats=5):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
@@ -150,8 +151,11 @@ class Models:
                     ctrl_state['reward']))
                 self.controller.load_state_dict(ctrl_state['state_dict'])'''
 
+        self.num_action_repeats = num_action_repeats
+        # the real horizon 
         self.horizon = horizon
         self.planner_n_particles = planner_n_particles
+        
         # TODO: make an MDRNN ensemble. 
         self.mdrnn_ensemble = [self.mdrnn]
         self.ensemble_size = len(self.mdrnn_ensemble)
@@ -200,7 +204,7 @@ class Models:
         
         return action.squeeze().cpu().numpy(), next_hidden
 
-    def planner(self, latent_s, full_hidden, reward):
+    def planner(self, latent_s, full_hidden, reward, discount_factor=0.98):
         # predicts into the future up to horizon. 
         # returns the immediate action that will lead to the largest
         # cumulative reward
@@ -236,7 +240,7 @@ class Models:
                 ens_action = self.sample_cross_entropy_method() 
 
                 # store these cumulative rewards
-                cum_reward[self.ensemble_batchsize*mdrnn_ind:self.ensemble_batchsize*mdrnn_ind+self.ensemble_batchsize] += ens_reward
+                cum_reward[self.ensemble_batchsize*mdrnn_ind:self.ensemble_batchsize*mdrnn_ind+self.ensemble_batchsize] += (discount_factor**t)*ens_reward
 
                 ens_reward = ens_reward.unsqueeze(1)
 
@@ -278,7 +282,7 @@ class Models:
         self.cem_mus = smoothing*new_mu + (1-smoothing)*(self.cem_mus) 
         self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
         
-        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.1)
+        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.01)
         #print('updated cems',self.cem_mus, self.cem_sigmas )
 
     def constrain_actions(self, out):
@@ -367,26 +371,25 @@ class Models:
                         var = torch.Tensor([var])
                     rollout_dict[key].append(var.squeeze())
             #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
-            obs, reward, done, _ = self.env.step(action)
-            #print('reward recieved:', reward)
-            if self.use_old_gym:
-                self.env.viewer.window.dispatch_events()
+            for _ in range(self.num_action_repeats):
+                obs, reward, done, _ = self.env.step(action)
+                cumulative += reward
 
-            if render:
-                pass
-                #self.env.render()
+                if self.use_old_gym:
+                    self.env.viewer.window.dispatch_events()
 
-            cumulative += reward
-            if done or i > time_limit:
+                if done or i > time_limit:
                 #print('done with this simulation')
-                if self.return_events:
-                    for k,v in rollout_dict.items(): # list of tensors arrays.
-                        #print(k, v[0].shape, len(v))
-                        rollout_dict[k] = torch.stack(v)
-                    return cumulative, i, rollout_dict # passed back to simulate. 
-                else: 
-                    return cumulative, i # ending time and cum reward
-            i += 1
+                    if self.return_events:
+                        for k,v in rollout_dict.items(): # list of tensors arrays.
+                            #print(k, v[0].shape, len(v))
+                            rollout_dict[k] = torch.stack(v)
+                        return cumulative, i, rollout_dict # passed back to simulate. 
+                    else: 
+                        return cumulative, i # ending time and cum reward
+
+                i += 1
+            
 
     def importance_sampling(self, num_samps, real_obs, encoder_mu, encoder_logsigma, cond_reward):
         """

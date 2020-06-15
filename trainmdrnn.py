@@ -48,7 +48,8 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
     else:
         bce = 0
 
-    loss = (gmm + bce + mse) #/ scale
+    # adding coefficients to make them the same order of magnitude. 
+    loss = (gmm + bce + 10*mse) #/ scale
     return dict(gmm=gmm, bce=bce, mse=mse, loss=loss)
 
 def main(args):

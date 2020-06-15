@@ -50,8 +50,10 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
             print("Loading in the best controller model, its average eval score was:", ctrl_params[1])
             self.controller = load_parameters(ctrl_params[0], self.controller)
 
-        vae_file = join(directory, 'vae', 'best.tar')
-        rnn_file = join(directory, 'mdrnn', 'best.tar')
+        #vae_file = join(directory, 'vae', 'best.tar')
+        #rnn_file = join(directory, 'mdrnn', 'best.tar')
+        vae_file = join(directory, 'joint', 'pre_rep_action_vae_checkpoint.tar')
+        rnn_file = join(directory, 'joint', 'pre_rep_action_mdrnn_checkpoint.tar')
         assert exists(vae_file), "No VAE model in the directory..."
         assert exists(rnn_file), "No MDRNN model in the directory..."
 
@@ -257,11 +259,14 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
     def update_cross_entropy_method(self, first_actions, rewards):
         # for carracing we have 3 independent gaussians
-        smoothing = 0.5
+        smoothing = 0.2
         vals, inds = torch.topk(rewards, self.k_top )
         elite_actions = first_actions[inds]
-        self.cem_mus = smoothing*self.cem_mus + (1-smoothing)*(elite_actions.sum(dim=0)/self.k_top) 
-        self.cem_sigmas = smoothing*self.cem_sigmas+(1-smoothing)*(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top )
+        self.cem_mus = (1-smoothing)*smoothing*self.cem_mus + smoothing*(elite_actions.sum(dim=0)/self.k_top) 
+        
+        new_sigmas = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top)
+        self.cem_sigmas = smoothing*new_sigmas+(1-smoothing)*(self.cem_sigmas )
+        
         self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.1)
         #print('updated cems',self.cem_mus, self.cem_sigmas )
 

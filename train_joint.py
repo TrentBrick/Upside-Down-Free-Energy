@@ -27,35 +27,38 @@ from models.mdrnn import MDRNN, gmm_loss
 from multiprocessing import cpu_count
 from trainvae import loss_function as trainvae_loss_function
 from trainmdrnn import get_loss as trainmdrnn_loss_function
+from collections import OrderedDict
 
 def main(args):
 
     assert args.num_workers <= cpu_count(), "Providing too many workers!" 
 
     conditional =True
-    use_ctrl_pretrain = False # as it is not trained to be conditioned on rewards!
     make_vae_samples = True 
     # used for saving which models are the best based upon their train performance. 
     vae_n_mdrnn_cur_best=None
     ctrl_cur_best_rewards = None
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
     use_feef = False
 
-    # constants
+    include_reward = conditional # this is very important for the conditional 
+    include_terminal = False
+
+    # Constants
     BATCH_SIZE = 48
     SEQ_LEN = 128 #256
     epochs = 50
     time_limit =1000 # for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 2
+
+    # Planning values
     planner_n_particles = 500
-    horizon = 20
+    desired_horizon = 30
+    num_action_repeats = 5
+    actual_horizon = desired_horizon//num_action_repeats
 
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
-
-    include_reward = conditional # this is very important for the conditional 
-    include_terminal = False
 
     model_types = ['ctrl', 'vae', 'mdrnn']
     # Init save filenames 
@@ -79,53 +82,29 @@ def main(args):
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
     earlystopping = EarlyStopping('min', patience=30) # NOTE: this needs to be esp high as the epochs are heterogenous buffers!! not all data. 
 
-    #model_variables_dict = dict(controller=controller, vae=vae, mdrnn=mdrnn)
-    model_variables_dict_NO_CTRL = dict(vae=vae, mdrnn=mdrnn) # used for when the controller is trained and these models are provided. 
     # Loading in trained models: 
-
     if not args.no_reload:
-        for name, model_var in model_variables_dict_NO_CTRL.items():
-        # Loading from previous joint training or from all separate training
-        # TODO: enable some to come from pretraining and others to be fresh. 
-            if not args.reload_from_pretrain: # dont come from separate pretraining steps. 
-                load_file = filenames_dict[name+'_best']
-            else: 
-                load_file = join(args.logdir, name, 'best.tar')
-            if exists(load_file):
-                state = torch.load(load_file, map_location={'cuda:0': str(device)})
-                #if name != 'ctrl':
-                print("Loading model_type {} at epoch {} "
-                    "with test error {}".format(name,
-                        state['epoch'], state['precision']))
+        for model_var, name in zip([vae, mdrnn],['vae', 'mdrnn']):
+            load_file = filenames_dict[name+'_best']
+            assert exists(load_file), "Could not find file: " + load_file + " to load in!"
+            state = torch.load(load_file, map_location={'cuda:0': str(device)})
+            print("Loading model_type {} at epoch {} "
+                "with test error {}".format(name,
+                    state['epoch'], state['precision']))
 
-                model_var.load_state_dict(state['state_dict'])
+            model_var.load_state_dict(state['state_dict'])
 
-                # load in the training loop states only if all jointly trained together before
-                if not args.reload_from_pretrain and name =='mdrnn': 
-                    # this info is currently saved with the vae and mdrnn on their own pulling from mdrnn as its currently the last.
-                    print(' Loading in training state info (eg optimizer state) from last model in iter list:', name)
-                    #optimizer.load_state_dict(state["optimizer"])
-                    #scheduler.load_state_dict(state['scheduler'])
-                    #earlystopping.load_state_dict(state['earlystopping'])
-                    vae_n_mdrnn_cur_best = state['precision']
-
-            else: 
-                print('trying to load file at:', load_file, "but couldnt find it so starting fresh")
-
-                for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
-                    save_checkpoint({
-                        "state_dict": model_var.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        'scheduler': scheduler.state_dict(),
-                        'earlystopping': earlystopping.state_dict(),
-                        "precision": None,
-                        "epoch": -1}, True, filenames_dict[model_name+'_checkpoint'],
-                                    filenames_dict[model_name+'_best'])
-
-    
+            # load in the training loop states only if all jointly trained together before
+            if name =='mdrnn': 
+                # this info is currently saved with the vae and mdrnn on their own pulling from mdrnn as its currently the last.
+                print(' Loading in training state info (eg optimizer state) from last model in iter list:', name)
+                vae_n_mdrnn_cur_best = state['precision']
+                optimizer.load_state_dict(state["optimizer"])
+                #scheduler.load_state_dict(state['scheduler'])
+                #earlystopping.load_state_dict(state['earlystopping'])
+                    
     else: 
-        print('Didnt want to load in files so starting fresh by saving over these models')
-
+        print("Starting new models from scratch and removing the old logger file!")
         for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
             save_checkpoint({
                 "state_dict": model_var.state_dict(),
@@ -135,12 +114,14 @@ def main(args):
                 "precision": None,
                 "epoch": -1}, True, filenames_dict[model_name+'_checkpoint'],
                             filenames_dict[model_name+'_best'])
+                        # saves file to is best AND checkpoint
 
-        # unlinking the logger too
+        # unlinking the old logger too
         unlink(logger_filename)
-    
-    # NOTE: I am now starting with a lower learning rate. 
-    optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-4)
+
+    # NOTE: just for now because the losses to be stored are very different. 
+    vae_n_mdrnn_cur_best = None
+    unlink(logger_filename)
 
     # dont need as saving the observations after their transforms in the rollout itself. 
     #transform = transforms.Lambda( lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
@@ -230,7 +211,8 @@ def main(args):
             if train:
 
                 vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
-                total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
+                # coefficient balancing!
+                total_loss = vae_loss_dict['loss'] + 10000*mdrnn_loss_dict['loss']
 
                 # taking grad step after every batch. 
                 optimizer.zero_grad()
@@ -264,7 +246,8 @@ def main(args):
 
         # puts losses on a per element level.
         cumloss_dict = {k: (v*BATCH_SIZE) / len(loader.dataset) for k, v in cumloss_dict.items()}
-
+        # sort the order so they are added to the logger in the same order!
+        cumloss_dict = OrderedDict(sorted(cumloss_dict.items()))
         if train: 
             return cumloss_dict 
         else: 
@@ -301,8 +284,9 @@ def main(args):
         
         # Uses planning
         # TODO: Have CEM collect the best results across distributed CPUs. 
+        # each worker will load in the checkpoint model not the best model! Want to use up to date. 
         cem_params, train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
-                cem_params, horizon, planner_n_particles, 
+                cem_params, actual_horizon, num_action_repeats, planner_n_particles, 
                 SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
                 num_workers=args.num_workers, joint_file_dir=True, transform=None )
 
@@ -332,7 +316,7 @@ def main(args):
         test_loss_dict['max_feef_planner'] = np.max(feef_losses)
         test_loss_dict['min_feef_planner'] = np.min(feef_losses)
 
-        print('test loss dictionary:', test_loss_dict)
+        print('========== test loss dictionary:', test_loss_dict)
 
         # checkpointing the model. Need to checkpoint these separately!: 
         # needs to be here so that the policy learning workers below can load in the new parameters.
@@ -359,15 +343,15 @@ def main(args):
                 recon_batch = recon_batch.view(recon_batch.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                 decoder_mu = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                 to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
-                print('to save shape', to_save.shape)
+                print('Generating VAE samples of the shape:', to_save.shape)
                 save_image(to_save,
                         join(samples_dir, 'sample_' + str(e) + '.png'))
         print('====== Done Generating VAE Samples')
 
         # TODO: generate MDRNN examples. 
 
-        # header at the top of logger file written once. 
-        if not exists(logger_filename): 
+        # header at the top of logger file written once. at the start of each epoch
+        if not exists(logger_filename) or e==0: 
             header_string = ""
             for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):
                 for k in loss_dict.keys():
@@ -398,15 +382,11 @@ if __name__ =='__main__':
                         help="Where things are logged and models are loaded from.")
     parser.add_argument('--gamename', type=str, default='carracing',
                         help="What Gym environment to train in.")
-    parser.add_argument('--reload_from_pretrain', action='store_true',
-                        help="Do not reload if specified.")
     parser.add_argument('--no_reload', action='store_true',
                         help="Do not reload if specified.")
     
     parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
                         default=16)
-    parser.add_argument('--target_return', type=float, help='Stops once the return '
-                        'gets above target_return')
     parser.add_argument('--display', action='store_true', help="Use progress bars if "
                         "specified.")
     args = parser.parse_args()
