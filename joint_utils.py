@@ -15,7 +15,8 @@ from controller_model import Models, load_parameters, flatten_parameters
 from ray.util.multiprocessing import Pool
 #from multiprocessing import Pool 
 
-class GeneratedDataset(torch.utils.data.Dataset): # pylint: disable=too-few-public-methods
+class GeneratedDataset(torch.utils.data.Dataset):
+    """ """
     def __init__(self, transform, data, seq_len): 
         self._transform = transform
         self.data = data

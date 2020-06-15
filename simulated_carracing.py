@@ -21,6 +21,8 @@ import copy
 from torchvision.utils import save_image
 import time
 
+assert 'add in repeated actoins!!!!'
+
 class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attributes
     """
     Simulated Car Racing.

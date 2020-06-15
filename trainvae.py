@@ -21,7 +21,19 @@ from data.loaders import RolloutObservationDataset
 
 # Reconstruction + KL divergence losses summed over all elements and batch
 def loss_function(real_obs, enc_mu, enc_logsigma, dec_mu, dec_logsigma, kl_tolerance_scaled=None):
-    """ VAE loss function """
+    """ VAE loss function.
+    
+    :args:
+        - real_obs: 4D torch tensor (BATCH_SIZE, CHANNEL_DIM, SIZE, SIZE)
+        - encoder_mu: 2D torch tensor (BATCH_SIZE, LATENT_SIZE)
+        - enc_logsigma: 2D torch tensor (BATCH_SIZE, LATENT_SIZE)
+        - dec_mu: 2D torch tensor (BATCH_SIZE, CHANNEL_DIM*SIZE*SIZE)
+        - dec_logsigma: 2D torch tensor (BATCH_SIZE, CHANNEL_DIM*SIZE*SIZE)
+        - kl_tolerance_scaled: float. Free KL bits scaled to the size of the latent space. 
+    
+    :returns: average losses over the full batch for: 
+        - recon - KLD; recon; KLD
+     """
     
     #BCE = F.mse_loss(recon_x, x, size_average=False)
     real_obs = real_obs.view(real_obs.size(0), -1) # flattening all but the batch. 

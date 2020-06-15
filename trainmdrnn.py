@@ -9,30 +9,24 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
              include_reward = True, include_terminal = False):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 
-    """ Compute losses.
+    """ Compute MDRNN losses.
+
 
     The loss that is computed is:
     (GMMLoss(latent_next_obs, GMMPredicted) + MSE(reward, predicted_reward) +
-         BCE(terminal, logit_terminal)) / (LATENT_SIZE + 2)
-    The LATENT_SIZE + 2 factor is here to counteract the fact that the GMMLoss scales
-    approximately linearily with LATENT_SIZE. All losses are averaged both on the
-    batch and the sequence dimensions (the two first dimensions).
+         BCE(terminal, logit_terminal))
+    All losses are averaged both on the batch and the 
+    sequence dimensions (the two first dimensions).
 
     :args latent_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
     :args action: (BATCH_SIZE, SEQ_LEN, ACTION_SIZE) torch tensor
-    :args reward: (BATCH_SIZE, SEQ_LEN) torch tensor
+    :args reward: (BATCH_SIZE, SEQ_LEN, 1) torch tensor
     :args latent_next_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
 
     :returns: dictionary of losses, containing the gmm, the mse, the bce and
         the averaged loss.
     """
-    # set LSTM to batch true instead. This does not affect the loss in any other way as I mean across the seq len and batch anyways. 
-    '''latent_obs, action,\
-        reward, terminal,\
-        latent_next_obs = [arr.transpose(1, 0)
-                           for arr in [latent_obs, action,
-                                       reward, terminal,
-                                       latent_next_obs]]'''
+    
     mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, pres_reward)
     gmm = gmm_loss(latent_next_obs, mus, sigmas, logpi) # by default gives mean over all.
 
@@ -43,7 +37,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
 
     if include_terminal:
         bce = f.binary_cross_entropy_with_logits(ds, terminal)
-        
+
     else:
         bce = 0
 
@@ -55,9 +49,13 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
 
 def main(args):
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # makes including the reward a default!
+    if args.do_not_include_reward: 
+        include_reward = False
+    else: 
+        include_reward = True
 
-    assert args.include_reward==True, "check to ensure that the reward prediction is included. Comment this out if dont want it. "
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # constants
     BATCH_SIZE = 48
@@ -207,8 +205,8 @@ def main(args):
         pbar.close()
         return cum_loss * BATCH_SIZE / len(loader.dataset) # puts it on a per seq len chunk level. 
 
-    train = partial(data_pass, train=True, include_reward=args.include_reward, include_terminal=args.include_terminal)
-    test = partial(data_pass, train=False, include_reward=args.include_reward, include_terminal=args.include_terminal)
+    train = partial(data_pass, train=True, include_reward=include_reward, include_terminal=args.include_terminal)
+    test = partial(data_pass, train=False, include_reward=include_reward, include_terminal=args.include_terminal)
         
     for e in range(epochs):
         train_loss = train(e)
@@ -266,9 +264,10 @@ if __name__ == '__main__':
                         help="Where things are logged and models are loaded from.")
     parser.add_argument('--noreload', action='store_true',
                         help="Do not reload if specified.")
-    parser.add_argument('--include_reward', action='store_true',
+    parser.add_argument('--do_not_include_reward', action='store_true',
                         help="Add a reward modelisation term to the loss.")
     parser.add_argument('--include_terminal', action='store_true',
                         help="Add a terminal modelisation term to the loss.")
     args = parser.parse_args()
+
     main(args)

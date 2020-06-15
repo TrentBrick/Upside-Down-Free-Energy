@@ -1,5 +1,5 @@
 """ Joint training of the VAE and MDRNN (forward model) using 
-    CEM based probabilistic Planner """
+    CEM based probabilistic Planner. """
 import argparse
 from functools import partial
 from os.path import join, exists
@@ -24,6 +24,7 @@ from multiprocessing import cpu_count
 from trainvae import loss_function as trainvae_loss_function
 from trainmdrnn import get_loss as trainmdrnn_loss_function
 from collections import OrderedDict
+import time 
 
 def main(args):
 
@@ -56,11 +57,10 @@ def main(args):
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
 
-    model_types = ['ctrl', 'vae', 'mdrnn']
     # Init save filenames 
     joint_dir = join(args.logdir, 'joint')
     filenames_dict = {m+'_'+bc:join(joint_dir, m+'_'+bc+'.tar') for bc in ['best', 'checkpoint'] \
-                                                    for m in model_types}
+                                                    for m in ['vae', 'mdrnn']}
     # make directories if they dont exist
     samples_dir = join(joint_dir, 'samples')
     for dirr in [joint_dir, samples_dir]:
@@ -91,7 +91,8 @@ def main(args):
             model_var.load_state_dict(state['state_dict'])
 
             # load in the training loop states only if all jointly trained together before
-            if name =='mdrnn': 
+            # but if it is from given pretrained models then this should not be done. 
+            if not args.giving_pretrained and name =='mdrnn': 
                 # this info is currently saved with the vae and mdrnn on their own pulling from mdrnn as its currently the last.
                 print(' Loading in training state info (eg optimizer state) from last model in iter list:', name)
                 vae_n_mdrnn_cur_best = state['precision']
@@ -99,8 +100,11 @@ def main(args):
                 #scheduler.load_state_dict(state['scheduler'])
                 #earlystopping.load_state_dict(state['earlystopping'])
                     
+    # save init models
     else: 
         print("Starting new models from scratch and removing the old logger file!")
+        print("NB! This will overwrite the best and checkpoint models!\nSleeping for 10 seconds to allow you to change your mind...")
+        time.sleep(10.0)
         for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
             save_checkpoint({
                 "state_dict": model_var.state_dict(),
@@ -115,35 +119,40 @@ def main(args):
         # unlinking the old logger too
         unlink(logger_filename)
 
-    # NOTE: just for now because the losses to be stored are very different. 
-    vae_n_mdrnn_cur_best = None
-    #unlink(logger_filename)
-    optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-4)
-
-    # dont need as saving the observations after their transforms in the rollout itself. 
-    #transform = transforms.Lambda( lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
+    # making learning rate lower because models are already pretrained!
+    if args.giving_pretrained: 
+        optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-4)
+        vae_n_mdrnn_cur_best = None
 
     vae_output_names = ['encoder_mu', 'encoder_logsigma', 'latent_s', 'decoder_mu', 'decoder_logsigma']
 
     def run_vae(obs, rewards):
-        # TODO: update this documentation. 
-        """ Transform observations to latent space.
+        """ Use VAE to map observations to latent space.
+        Assumes that the observations have already been transformed. 
+        This is done in generate_rollouts() where the transformations are saved before
+        being passed back already. (See trainmdrnn.py for an example of 
+        the tranforms that need to be done to a *batch* of new observations 
+        from the environment)
 
-        :args obs: 5D torch tensor (BATCH_SIZE, SEQ_LEN, ACTION_SIZE, SIZE, SIZE)
+        :args: 
+            - obs: 5D torch tensor (BATCH_SIZE, SEQ_LEN, CHANNEL_DIM, SIZE, SIZE)
+            - rewards: 3D torch tensor (BATCH_SIZE, SEQ_LEN, 1)
         
-        :returns: (latent_obs, latent_next_obs)
-            - latent_obs: 4D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
+        :returns: vae_res_dict: 
+                keys are: 
+                - encoder_mu: 3D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
+                - encoder_logsigma: 3D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
+                - latent_s: 3D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
+                - decoder_mu: 3D torch tensor (BATCH_SIZE, SEQ_LEN, CHANNEL_DIM*SIZE*SIZE)
+                - decoder_logsigma: 3D torch tensor (BATCH_SIZE, SEQ_LEN, CHANNEL_DIM*SIZE*SIZE)
         """
 
-        # TODO: make this more pythonic and efficient. shouldnt have to loop over the VAE outputs. 
+        # need to loop over the batch because within it is a "batch" in the form of sequence of observations
         vae_res_dict = {n:[] for n in vae_output_names}
         for x, r in zip(obs, rewards):
 
-            # the rollout generator returns observations that have already been resized and VAE transformed
-            #x = f.upsample(x.view(-1, 3, 84, SIZE), size=IMAGE_RESIZE_DIM, 
-            #               mode='bilinear', align_corners=True)
-
             vae_outputs = vae(x, r)
+            # TODO: make this more pythonic and efficient. shouldnt have to loop over the VAE outputs. 
             for ind, n in enumerate(vae_output_names):
                 vae_res_dict[n].append(vae_outputs[ind])
 
@@ -155,20 +164,52 @@ def main(args):
 
     # Reconstruction + KL divergence losses summed over all elements and batch
     def vae_loss_function(real_obs, vae_res_dict):
-        """ VAE loss function 
-        Images (recon_x and x) are: (BATCH_SIZE, SEQ_LEN, NUM_CHANNELS, IMG_RESIZE, IMG_RESIZE)
-        mu and logsigma: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
-        treating time independently here. 
+        """ VAE loss function. Calls the function from trainvae.py.
+        Collapses the batch and time dimensions because the VAE is currently
+        time independent. Would like to test a sequential VAE at some point!
+
+        :args: 
+            - real_obs: 5D torch tensor (BATCH_SIZE, SEQ_LEN, CHANNEL_DIM, SIZE, SIZE)
+            - vae_res_dict:
+                keys are: 
+                - encoder_mu: 4D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
+                - encoder_logsigma: 4D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
+                - latent_s: 4D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
+                - decoder_mu: 4D torch tensor (BATCH_SIZE, SEQ_LEN, CHANNEL_DIM*SIZE*SIZE)
+                - decoder_logsigma: 4D torch tensor (BATCH_SIZE, SEQ_LEN, CHANNEL_DIM*SIZE*SIZE)
+
+        :returns: Dictionary of total vaeloss, recon loss and kld loss
+            - loss: float. combination of reconstruction and KLD loss. Made negative 
+                    to account for the minimization 
+            - recon: float. reconstruction loss. Computed here using a real probability distribution
+                    rather than just the MSE loss with the decoder mu as is typically done. 
+            - KLD: float. uses free bits to encourage a more expressive latent space. 
         """
 
-        # flatten the batch and seq length tensors.
+        # flatten the batch and seq length tensors together.
         flat_tensors = [ vae_res_dict[k].flatten(end_dim=1) for k in ['encoder_mu', 'encoder_logsigma', 'decoder_mu', 'decoder_logsigma']]
         vae_loss, recon, kld = trainvae_loss_function(real_obs.flatten(end_dim=1), *flat_tensors, kl_tolerance_scaled)
         
         return dict(loss=vae_loss, recon=recon, kld=kld)
 
     def data_pass(epoch, train): # pylint: disable=too-many-locals
-        """ One pass through the data """
+        """One pass through full epoch pass through the data either testing or training (with torch.no_grad()).
+        NB. One epoch here is all of the data collected from the workers using
+        the planning algorithm. 
+        This is num_workers * num_vae_mdrnn_training_rollouts_per_worker.
+
+        :args:
+            - epoch: int
+            - train: bool
+
+        :returns:
+            - cumloss_dict - All of the losses collected from this epoch. 
+                            Averaged across the batches and sequence lengths 
+                            to be on a per element basis. 
+            if test also returns: 
+                - obs[0,:,:,:,:] first batch of observations. Used to generate VAE samples
+                - reward[0,:,:] first batch of rewards. Used to generate VAE samples
+        """
         
         if train:
             loader = train_loader
@@ -182,9 +223,13 @@ def main(args):
 
         pbar = tqdm(total=len(loader.dataset), desc="Epoch {}".format(epoch))
 
+        # store all of the losses for this data pass. 
         cumloss_dict = {n:0 for n in ['loss', 'loss_vae', 'loss_mdrnn','kld', 'recon', 'gmm', 'bce', 'mse']}
 
         def forward_and_loss():
+            """ 
+            Run the VAE and MDRNNs and get return their losses. 
+            """
             # transform obs
             vae_res_dict = run_vae(obs, reward)
             vae_loss_dict = vae_loss_function(obs, vae_res_dict)
@@ -202,6 +247,7 @@ def main(args):
 
             return vae_loss_dict, mdrnn_loss_dict
 
+        # iterate through an epoch of data. 
         for i, data in enumerate(loader):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
 
@@ -257,7 +303,7 @@ def main(args):
     train = partial(data_pass, train=True)
     test = partial(data_pass, train=False)
 
-    # TODO: store the CEM parameters across full command line based runs
+    # TODO: save and load the CEM parameters across full command line based runs
     cem_params = ( torch.Tensor([0,0.8,0]) , torch.Tensor([0.3,0.2,0.2]) )
 
     ################## Main Training Loop ############################
@@ -266,20 +312,15 @@ def main(args):
         print('====== New Epoch: ',e)
         ## run the current policy with the current VAE and MDRNN
         # TODO: implement memory buffer as data doesnt need to be on policy. 
-        # TODO: sample a set of parameters from the controller rather than just using the same one.
-        print('====== Generating Rollouts to train the MDRNN and VAE') 
-        # TODO: dont feed in similar time sequences, have some gap between them or slicing of them.
-        # TODO: get rollouts from the agent CMA-ES evaluation and use them here for training. 
-        
         # Uses planning
-        # TODO: Have CEM collect the best results across distributed CPUs. 
-        # each worker will load in the checkpoint model not the best model! Want to use up to date. 
+        # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
+        print('====== Generating Rollouts to train the MDRNN and VAE') 
         cem_params, train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
                 cem_params, actual_horizon, num_action_repeats, planner_n_particles, 
                 SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
                 num_workers=args.num_workers, joint_file_dir=True, transform=None )
 
-        print('cem parameters after generating rollouts!!', cem_params)
+        print('Cem parameters after generating rollouts!!', cem_params)
 
         # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
         train_loader = DataLoader(train_dataset,
@@ -295,20 +336,17 @@ def main(args):
         print('====== Done Testing VAE and MDRNN')
         scheduler.step(test_loss_dict['loss'])
 
-        # append the planning results 
-        test_loss_dict['avg_reward_planner'] = np.mean(reward_losses)
-        test_loss_dict['std_reward_planner'] = np.std(reward_losses)
-        test_loss_dict['max_reward_planner'] = np.max(reward_losses)
-        test_loss_dict['min_reward_planner'] = np.min(reward_losses)
-        test_loss_dict['avg_feef_planner'] = np.mean(feef_losses)
-        test_loss_dict['std_feef_planner'] = np.std(feef_losses)
-        test_loss_dict['max_feef_planner'] = np.max(feef_losses)
-        test_loss_dict['min_feef_planner'] = np.min(feef_losses)
+        # append the planning results to the TEST loss dictionary. 
+        for name, var in zip(['reward_planner', 'feef_planner'], [reward_losses, feef_losses]):
+            test_loss_dict['avg_'+name] = np.mean(var)
+            test_loss_dict['std_'+name] = np.std(var)
+            test_loss_dict['max_'+name] = np.max(var)
+            test_loss_dict['min_'+name] = np.min(var)
 
-        print('========== test loss dictionary:', test_loss_dict)
+        print('========== Test Loss dictionary:', test_loss_dict)
 
-        # checkpointing the model. Need to checkpoint these separately!: 
-        # needs to be here so that the policy learning workers below can load in the new parameters.
+        # checkpointing the model. Necessary to ensure the workers load in the most up to date checkpoint.
+        # save_checkpoint function always saves a checkpoint and may also update the best. 
         is_best = not vae_n_mdrnn_cur_best or test_loss_dict['loss'] < vae_n_mdrnn_cur_best
         if is_best:
             vae_n_mdrnn_cur_best = test_loss_dict['loss']
@@ -339,7 +377,7 @@ def main(args):
 
         # TODO: generate MDRNN examples. 
 
-        # header at the top of logger file written once. at the start of each epoch
+        # Header at the top of logger file written once at the start of new training run.
         if not exists(logger_filename) or e==0: 
             header_string = ""
             for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):
@@ -372,8 +410,12 @@ if __name__ =='__main__':
     parser.add_argument('--gamename', type=str, default='carracing',
                         help="What Gym environment to train in.")
     parser.add_argument('--no_reload', action='store_true',
-                        help="Do not reload if specified.")
-    
+                        help="Won't load in models for VAE and MDRNN from the joint file. \
+                        NB. This will create new models with random inits and will overwrite \
+                        the best and checkpoints!")
+    parser.add_argument('--giving_pretrained', action='store_true',
+                        help="If pretrained models are being provided, avoids loading in an optimizer \
+                        or previous lowest loss score.")
     parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
                         default=16)
     parser.add_argument('--display', action='store_true', help="Use progress bars if "
