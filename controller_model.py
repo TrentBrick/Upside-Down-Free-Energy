@@ -282,7 +282,9 @@ class Models:
         self.cem_mus = smoothing*new_mu + (1-smoothing)*(self.cem_mus) 
         self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
         
-        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.01)
+        self.cem_sigmas[:,0] = torch.clamp(self.cem_sigmas[:,0], min=0.3)
+        self.cem_sigmas[:,1] = torch.clamp(self.cem_sigmas[:,1], min=0.2)
+        self.cem_sigmas[:,2] = torch.clamp(self.cem_sigmas[:,2], min=0.1)
         #print('updated cems',self.cem_mus, self.cem_sigmas )
 
     def constrain_actions(self, out):
