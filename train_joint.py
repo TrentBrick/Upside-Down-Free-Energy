@@ -121,7 +121,8 @@ def main(args):
 
     # NOTE: just for now because the losses to be stored are very different. 
     vae_n_mdrnn_cur_best = None
-    unlink(logger_filename)
+    #unlink(logger_filename)
+    optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-4)
 
     # dont need as saving the observations after their transforms in the rollout itself. 
     #transform = transforms.Lambda( lambda x: np.transpose(x, (0, 3, 1, 2)) / 255)
