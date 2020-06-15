@@ -40,8 +40,8 @@ def main(args):
     include_terminal = False
 
     # Constants
-    BATCH_SIZE = 64
-    SEQ_LEN = 64 # number of sequences in a row used during training
+    BATCH_SIZE = 256
+    SEQ_LEN = 16 # number of sequences in a row used during training
     epochs = 50
     time_limit =1000 # max time limit for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 3
@@ -312,6 +312,7 @@ def main(args):
         is_best = not vae_n_mdrnn_cur_best or test_loss_dict['loss'] < vae_n_mdrnn_cur_best
         if is_best:
             vae_n_mdrnn_cur_best = test_loss_dict['loss']
+            print('========== New Best for the Test Loss! Updating *MODEL_best.tar*')
         for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
             save_checkpoint({
                 "state_dict": model_var.state_dict(),
