@@ -311,7 +311,7 @@ def main(args):
         # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
         train_loader = DataLoader(train_dataset,
             batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=True)
-        test_loader = DataLoader(test_dataset,
+        test_loader = DataLoader(test_dataset, shuffle=True,
             batch_size=BATCH_SIZE, num_workers=0, drop_last=True)
         print('====== Starting Training of VAE and MDRNN')
         # train VAE and MDRNN. uses partial(data_pass)
@@ -334,7 +334,7 @@ def main(args):
 
         print('test loss dictionary:', test_loss_dict)
 
-        # checkpointing the model: 
+        # checkpointing the model. Need to checkpoint these separately!: 
         # needs to be here so that the policy learning workers below can load in the new parameters.
         is_best = not vae_n_mdrnn_cur_best or test_loss_dict['loss'] < vae_n_mdrnn_cur_best
         if is_best:

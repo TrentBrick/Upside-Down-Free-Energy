@@ -58,10 +58,7 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
 
     first_iter = True
     for worker_rollouts in inp: 
-        print('one of the worker rollouts, should be 3.', len(worker_rollouts))
         for rollout_data_dict in worker_rollouts[dim]: # this is pulling from a list!
-        
-            print('specific rollout dictionary, should be size 4', len(rollout_data_dict.keys()))
             # this rollout is too small so it is being ignored. 
             # getting one of the keys from the dictionary
             if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:

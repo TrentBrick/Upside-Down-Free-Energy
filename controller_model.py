@@ -108,7 +108,7 @@ class Models:
             # Loading world model and vae
             if joint_file_dir:
                 vae_file, rnn_file, ctrl_file = \
-                    [join(mdir, m+'_best.tar') for m in ['vae', 'mdrnn', 'ctrl']]
+                    [join(mdir, m+'_checkpoint.tar') for m in ['vae', 'mdrnn', 'ctrl']]
             else: 
                 vae_file, rnn_file, ctrl_file = \
                     [join(mdir, m, 'best.tar') for m in ['vae', 'mdrnn', 'ctrl']]
@@ -549,7 +549,7 @@ class Models:
                 
                     data_dict_list.append(data_dict)
                     if compute_feef: 
-                        feef_losses_list.append(  self.feef_loss(data_dict)  )
+                        feef_losses_list.append(  0.0 )#self.feef_loss(data_dict)  )
                     
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
