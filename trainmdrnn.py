@@ -35,21 +35,22 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
                                        latent_next_obs]]'''
     mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, pres_reward)
     gmm = gmm_loss(latent_next_obs, mus, sigmas, logpi) # by default gives mean over all.
-    # scale = LATENT_SIZE
+
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
-        #scale += 1
     else:
         mse = 0
 
     if include_terminal:
         bce = f.binary_cross_entropy_with_logits(ds, terminal)
-        #scale += 1
+        
     else:
         bce = 0
 
     # adding coefficients to make them the same order of magnitude. 
-    loss = (gmm + bce + 10*mse) #/ scale
+    mse = 10*mse
+
+    loss = (gmm + bce + mse) #/ scale
     return dict(gmm=gmm, bce=bce, mse=mse, loss=loss)
 
 def main(args):

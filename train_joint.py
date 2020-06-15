@@ -1,4 +1,5 @@
-""" Joint training of  """
+""" Joint training of the VAE and MDRNN (forward model) using 
+    CEM based probabilistic Planner """
 import argparse
 from functools import partial
 from os.path import join, exists
@@ -12,18 +13,13 @@ import numpy as np
 import json
 from tqdm import tqdm
 from joint_utils import generate_rollouts_using_planner
-from controller_model import flatten_parameters
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
 from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
-from utils.learning import EarlyStopping
-from utils.learning import ReduceLROnPlateau
-from ha_es import CMAES
+from utils.learning import EarlyStopping, ReduceLROnPlateau
 import sys
 from data.loaders import RolloutSequenceDataset
 from models.vae import VAE
 from models.mdrnn import MDRNN, gmm_loss
-#from models import Controller
-#import cma
 from multiprocessing import cpu_count
 from trainvae import loss_function as trainvae_loss_function
 from trainmdrnn import get_loss as trainmdrnn_loss_function
@@ -37,7 +33,6 @@ def main(args):
     make_vae_samples = True 
     # used for saving which models are the best based upon their train performance. 
     vae_n_mdrnn_cur_best=None
-    ctrl_cur_best_rewards = None
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     use_feef = False
 
@@ -45,16 +40,17 @@ def main(args):
     include_terminal = False
 
     # Constants
-    BATCH_SIZE = 48
-    SEQ_LEN = 128 #256
+    BATCH_SIZE = 64
+    SEQ_LEN = 64 # number of sequences in a row used during training
     epochs = 50
-    time_limit =1000 # for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 2
+    time_limit =1000 # max time limit for the rollouts generated
+    num_vae_mdrnn_training_rollouts_per_worker = 3
 
     # Planning values
     planner_n_particles = 500
     desired_horizon = 30
-    num_action_repeats = 5
+    num_action_repeats = 5 # number of times the same action is performed repeatedly. 
+    # this makes the environment accelerate by this many frames. 
     actual_horizon = desired_horizon//num_action_repeats
 
     kl_tolerance=0.5
@@ -213,7 +209,8 @@ def main(args):
 
                 vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
                 # coefficient balancing!
-                total_loss = vae_loss_dict['loss'] + 10000*mdrnn_loss_dict['loss']
+                mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
+                total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
                 # taking grad step after every batch. 
                 optimizer.zero_grad()
@@ -224,6 +221,8 @@ def main(args):
             else:
                 with torch.no_grad():
                     vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
+                    # coefficient balancing!
+                    mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
                     #total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
             # add to cumulative losses
@@ -259,18 +258,7 @@ def main(args):
     test = partial(data_pass, train=False)
 
     # TODO: store the CEM parameters across full command line based runs
-    cem_params = ( torch.Tensor([0,0.5,0]) , torch.Tensor([0.3,0.2,0.2]) )
-
-    '''# TODO: take in the final sigma from the last epoch. 
-    sigma_init=0.1
-    num_params = len( flatten_parameters(controller.parameters()) )
-    population_size = args.num_workers*args.num_trials_per_worker
-    # init here so the learning memory is retained over time. 
-    es = CMAES(num_params,
-            sigma_init=sigma_init,
-            popsize=population_size, 
-            init_params= flatten_parameters(controller.parameters()),
-            invert_reward=False)'''
+    cem_params = ( torch.Tensor([0,0.8,0]) , torch.Tensor([0.3,0.2,0.2]) )
 
     ################## Main Training Loop ############################
 
