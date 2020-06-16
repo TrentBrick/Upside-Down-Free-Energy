@@ -16,6 +16,7 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls)
 
     env = gym.make("CarRacing-v0")
     seq_len = 1000
+    # TODO: make this a command line argument in generation_script.py
     num_action_repeats = 5
     print('The action repeat number is:', num_action_repeats)
 

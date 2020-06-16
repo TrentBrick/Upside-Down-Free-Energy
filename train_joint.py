@@ -28,7 +28,7 @@ import time
 
 def main(args):
 
-    assert args.num_workers <= cpu_count(), "Providing too many workers!" 
+    assert args.num_workers <= cpu_count()-1, "Providing too many workers! Need one less than total amount." 
 
     conditional =True
     make_vae_samples = True 
