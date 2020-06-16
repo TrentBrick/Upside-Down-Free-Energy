@@ -14,8 +14,9 @@ import gym.envs.box2d
 #gym.envs.box2d.car_racing.STATE_W, gym.envs.box2d.car_racing.STATE_H = 64, 64
 
 # Hardcoded for now
-ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE =\
-    3, 32, 256, 64, 96
+NUM_IMG_CHANNELS, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE =\
+    3, 3, 32, 256, 64, 96
+NUM_GAUSSIANS_IN_MDRNN = 2
 
 # Same. used for Rollout Generator below. 
 transform = transforms.Compose([

@@ -14,7 +14,7 @@ import json
 from tqdm import tqdm
 from joint_utils import generate_rollouts_using_planner
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
-from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
+from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE, NUM_GAUSSIANS_IN_MDRNN, NUM_IMG_CHANNELS
 from utils.learning import EarlyStopping, ReduceLROnPlateau
 import sys
 from data.loaders import RolloutSequenceDataset
@@ -70,8 +70,8 @@ def main(args):
     logger_filename = join(joint_dir, 'logger.txt')
 
     # init models
-    vae = VAE(3, LATENT_SIZE, conditional).to(device)
-    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5,conditional).to(device)
+    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional).to(device)
+    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional).to(device)
     
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)

@@ -12,7 +12,7 @@ import gym.envs.box2d
 from ha_env import make_env
 from torch.distributions.normal import Normal
 from torch.distributions.categorical import Categorical
-from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
+from utils.misc import NUM_IMG_CHANNELS, NUM_GAUSSIANS_IN_MDRNN, ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
 from trainvae import loss_function as original_vae_loss_function
 
 def flatten_parameters(params):
@@ -81,24 +81,15 @@ class Models:
             self.cem_mus = cem_params[0]
             self.cem_sigmas = cem_params[1]
 
-        '''self.ensemble_batchsize = []
-        for i in range(ensemble_size):
-            self.ensemble_batchsize += [i]*indices_split
-        self.ensemble_batchsize = np.asarray(self.ensemble_batchsize)'''
-
         self.transform = transforms.Compose([
                 transforms.ToPILImage(),
                 transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
                 transforms.ToTensor()
             ])
 
-        #self.fixed_ob = pickle.load(open('notebooks/image_array.pkl', 'rb'))
-
         if give_models:
             self.vae = give_models['vae']
 
-            if 'controller' in give_models.key():
-                self.controller = give_models['controller']
             # need to load in the cell based version!
             self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(self.device)
             self.mdrnn.load_state_dict( 
@@ -120,35 +111,21 @@ class Models:
                 torch.load(fname, map_location={'cuda:0': str(self.device)})
                 for fname in (vae_file, rnn_file)]
 
-            #print('about to load in the states')
             for m, s in (('VAE', vae_state), ('MDRNN', rnn_state)):
                 print("Loading {} at epoch {} "
                     "with test loss {}".format(
                         m, s['epoch'], s['precision']))
-            #print('loading in vae from: ', vae_file, device)
-            self.vae = VAE(3, LATENT_SIZE).to(self.device)
+            print('loading in vae from:', vae_file, device)
+            self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE).to(self.device)
             self.vae.load_state_dict(vae_state['state_dict'])
 
-            #print('loading in mdrnn')
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(self.device)
+            print('loading in mdrnn from:', rnn_file, device)
+            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(self.device)
             self.mdrnn.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
 
-            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5, conditional=conditional ).to(self.device)
+            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional ).to(self.device)
             self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
-
-            #print('loadin in controller.')
-            '''if testing_old_controller: 
-                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=False).to(self.device)
-            else: 
-                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, conditional=conditional).to(self.device)
-
-            # load controller if it was previously saved
-            if exists(ctrl_file):
-                ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(self.device)})
-                print("Loading Controller with reward {}".format(
-                    ctrl_state['reward']))
-                self.controller.load_state_dict(ctrl_state['state_dict'])'''
 
         self.num_action_repeats = num_action_repeats
         # the real horizon 

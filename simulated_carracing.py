@@ -11,7 +11,7 @@ from gym import spaces
 from models.vae import VAE
 from models.mdrnn import MDRNNCell
 from models.controller import Controller
-from utils.misc import LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, ACTION_SIZE
+from utils.misc import NUM_IMG_CHANNELS, NUM_GAUSSIANS_IN_MDRNN, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, ACTION_SIZE
 import matplotlib.pyplot as plt
 import numpy as np
 from pyglet.window import key
@@ -61,7 +61,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
                                             dtype=np.uint8)
 
         # load VAE
-        self.vae = VAE(3, LATENT_SIZE)
+        self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE)
         vae_state = torch.load(vae_file, map_location=lambda storage, location: storage)
         print("Loading VAE at epoch {}, "
             "with test error {}...".format(
@@ -70,7 +70,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self._decoder = self.vae.decoder
 
         # load MDRNN
-        self._rnn = MDRNNCell(32, 3, LATENT_RECURRENT_SIZE, 5)
+        self._rnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN)
         rnn_state = torch.load(rnn_file, map_location=lambda storage, location: storage)
         print("Loading MDRNN at epoch {}, "
             "with test error {}...".format(

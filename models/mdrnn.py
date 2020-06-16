@@ -26,12 +26,10 @@ def gmm_loss(next_latents, mus, sigmas, logpi, reduce=True): # pylint: disable=t
     loss(next_latents) = - mean_{i1=0..bs1, i2=0..bs2, ...} log(
         sum_{k=1..gs} pi[i1, i2, ..., k] * N(
             next_latents[i1, i2, ..., :] | mus[i1, i2, ..., k, :], sigmas[i1, i2, ..., k, :]))
-
-    #NOTE: Trenton modified quite a bit to account for the different gaussian probs per feature. 
     """
     next_latents = next_latents.unsqueeze(-2) # to acccount for the gaussian dimension. 
     normal_dist = Normal(mus, sigmas) # for every gaussian in each latent dimension. 
-    #print(logpi.shape, mus.shape, next_latents.shape)
+    print(logpi.shape, mus.shape, next_latents.shape)
     g_log_probs = logpi + normal_dist.log_prob(next_latents) # how far off are the next obs? 
     # sum across the gaussians, need to do so in log space: 
     log_loss = - torch.logsumexp(g_log_probs, dim=-2) # now have bs1, bs2, fs. all of these are different predictions to take the mean of.   
@@ -40,7 +38,7 @@ def gmm_loss(next_latents, mus, sigmas, logpi, reduce=True): # pylint: disable=t
     if reduce: # mean across everything else to get the expectation (average) over all predictions at the seq, batch and fs levels.
         return torch.mean(log_loss)
     else: 
-        return torch.mean(log_loss, dim=-1) # mean across fs. 
+        return torch.mean(log_loss, dim=-1) # mean across fs. but preserve batch and sequence length. 
     
 class _MDRNNBase(nn.Module):
     def __init__(self, latents, actions, hiddens, gaussians, conditional):

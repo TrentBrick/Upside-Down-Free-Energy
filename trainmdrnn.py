@@ -72,7 +72,7 @@ def main(args):
         "with test error {}".format(
             state['epoch'], state['precision']))
 
-    vae = VAE(3, LATENT_SIZE, conditional=conditional).to(device)
+    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=conditional).to(device)
     vae.load_state_dict(state['state_dict'])
 
     # Loading model
@@ -86,7 +86,7 @@ def main(args):
     if not exists(rnn_dir):
         mkdir(rnn_dir)
 
-    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5, conditional=conditional ).to(device)
+    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional ).to(device)
 
     optimizer = torch.optim.Adam(mdrnn.parameters(), lr=1e-3)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
@@ -251,7 +251,7 @@ if __name__ == '__main__':
     import json
     from tqdm import tqdm
     from utils.misc import save_checkpoint
-    from utils.misc import ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
+    from utils.misc import NUM_GAUSSIANS_IN_MDRNN, NUM_IMG_CHANNELS, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE
     from utils.learning import EarlyStopping
     ## WARNING : THIS SHOULD BE REPLACED WITH PYTORCH 0.5
     from utils.learning import ReduceLROnPlateau

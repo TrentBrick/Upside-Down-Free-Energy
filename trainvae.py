@@ -13,7 +13,7 @@ from torch.distributions.normal import Normal
 from models.vae import VAE
 
 from utils.misc import save_checkpoint
-from utils.misc import LATENT_SIZE, IMAGE_RESIZE_DIM
+from utils.misc import LATENT_SIZE, IMAGE_RESIZE_DIM, NUM_IMG_CHANNELS
 ## WARNING : THIS SHOULD BE REPLACE WITH PYTORCH 0.5
 from utils.learning import EarlyStopping
 from utils.learning import ReduceLROnPlateau
@@ -94,8 +94,7 @@ def main(args):
     test_loader = torch.utils.data.DataLoader(
         dataset_test, batch_size=args.batch_size, shuffle=True, num_workers=16)
 
-
-    vae = VAE(3, LATENT_SIZE, conditional=conditional).to(device) # latent size. 
+    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=conditional).to(device) # latent size. 
     optimizer = optim.Adam(vae.parameters(), lr=0.001)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
     earlystopping = EarlyStopping('min', patience=30)
