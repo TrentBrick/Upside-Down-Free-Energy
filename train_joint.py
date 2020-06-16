@@ -255,7 +255,7 @@ def main(args):
 
                 vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
                 # coefficient balancing!
-                mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
+                mdrnn_loss_dict['loss'] = 100000*mdrnn_loss_dict['loss']
                 total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
                 # taking grad step after every batch. 
@@ -268,7 +268,7 @@ def main(args):
                 with torch.no_grad():
                     vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
                     # coefficient balancing!
-                    mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
+                    mdrnn_loss_dict['loss'] = 100000*mdrnn_loss_dict['loss']
                     #total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
             # add to cumulative losses
