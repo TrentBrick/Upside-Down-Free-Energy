@@ -10,17 +10,8 @@ from utils.misc import sample_continuous_policy
 
 def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls): # pylint: disable=R0914
     """ Generates data """
-    assert exists(data_dir), "The data directory does not exist..."
 
-    np.random.seed(rand_seed)
-
-    env = gym.make("CarRacing-v0")
-    seq_len = 1000
-    # TODO: make this a command line argument in generation_script.py
-    num_action_repeats = 5
-    print('The action repeat number is:', num_action_repeats)
-
-    for i in range(rollouts):
+    def run_rollout():
         rand_env_seed = np.random.randint(0,10000000,1)[0]
         env.seed(int(rand_env_seed))
         env.reset()
@@ -56,13 +47,29 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls)
                             rewards=np.array(r_rollout),
                             actions=np.array(a_rollout),
                             terminals=np.array(d_rollout))
-                    break
+                    return
                 
                 t += 1
 
             s_rollout += [s]
             r_rollout += [r]
             d_rollout += [done]
+
+    assert exists(data_dir), "The data directory does not exist..."
+
+    np.random.seed(rand_seed)
+
+    env = gym.make("CarRacing-v0")
+    seq_len = 1000
+    # TODO: make this a command line argument in generation_script.py
+    num_action_repeats = 5
+    print('The action repeat number is:', num_action_repeats)
+
+    for i in range(rollouts):
+        run_rollout() # calls a separate function so I can have "return"
+        # at the end rather than "break" in order to stop the rollout at the right time.
+        
+
             
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
