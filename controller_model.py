@@ -364,13 +364,15 @@ class Models:
             # using planner!
             action, hidden = self.get_action_and_transition(obs, hidden, reward)
             
+            # have this here rather than further down in order to capture the very first 
+            # observation and actions. Not sure I should though.
             if self.return_events: 
                 for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
                                         [obs, reward, action, done ]):
                     if key == 'actions' or key=='terminal':
                         var = torch.Tensor([var])
                     rollout_dict[key].append(var.squeeze())
-            #obs, reward, done = self.fixed_ob, np.random.random(1)[0], False
+
             for _ in range(self.num_action_repeats):
                 obs, reward, done, _ = self.env.step(action)
                 cumulative += reward
@@ -381,6 +383,14 @@ class Models:
                 if done or i > time_limit:
                 #print('done with this simulation')
                     if self.return_events:
+
+                        # append the very last observation: 
+                        for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
+                                        [obs, reward, action, done ]):
+                            if key == 'actions' or key=='terminal':
+                                var = torch.Tensor([var])
+                            rollout_dict[key].append(var.squeeze())
+
                         for k,v in rollout_dict.items(): # list of tensors arrays.
                             #print(k, v[0].shape, len(v))
                             rollout_dict[k] = torch.stack(v)
