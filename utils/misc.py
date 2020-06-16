@@ -16,7 +16,7 @@ import gym.envs.box2d
 # Hardcoded for now
 NUM_IMG_CHANNELS, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE =\
     3, 3, 32, 256, 64, 96
-NUM_GAUSSIANS_IN_MDRNN = 2
+NUM_GAUSSIANS_IN_MDRNN = 1
 
 # Same. used for Rollout Generator below. 
 transform = transforms.Compose([
@@ -38,11 +38,17 @@ def sample_continuous_policy(action_space, seq_len, dt):
     :returns: sequence of seq_len actions
     """
     actions = [action_space.sample()]
+    # bias towards more forward driving at the start in order to produce diverse observations. 
+    actions[0][1] = 0.8
+    # and not having the brakes on!
+    actions[0][2] = 0.0
+    print('first action being used', actions)
     for _ in range(seq_len):
         daction_dt = np.random.randn(*actions[-1].shape)
-        actions.append(
-            np.clip(actions[-1] + math.sqrt(dt) * daction_dt,
-                    action_space.low, action_space.high))
+        next_action = np.clip(actions[-1] + math.sqrt(dt) * daction_dt,
+                    action_space.low, action_space.high)
+        next_action[2] = np.clip(next_action[2], 0.0, 0.2)
+        actions.append( next_action)
     return actions
 
 def save_checkpoint(state, is_best, filename, best_filename):
@@ -96,7 +102,7 @@ def load_parameters(params, controller):
         p.data.copy_(p_0)
     return controller
 
-class RolloutGenerator(object):
+'''class RolloutGenerator(object):
     """ Utility to generate rollouts.
 
     Encapsulate everything that is needed to generate rollouts in the TRUE ENV
@@ -197,9 +203,9 @@ class RolloutGenerator(object):
 
         action = self.controller(latent_z, hidden[0])
         _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden)
-        return action.squeeze().cpu().numpy(), next_hidden
+        return action.squeeze().cpu().numpy(), next_hidden'''
 
-    def rollout(self, params, rand_env_seed, render=False):
+'''    def rollout(self, params, rand_env_seed, render=False):
         """ Execute a rollout and returns minus cumulative reward.
 
         Load :params: into the controller and execute a single rollout. This
@@ -251,7 +257,7 @@ class RolloutGenerator(object):
                     return - cumulative, rollout_dict
                 else: 
                     return - cumulative
-            i += 1
+            i += 1'''
 
 if __name__ == "__main__":
     env = gym.make("CarRacing-v0")

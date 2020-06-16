@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as f
 from torch.distributions.normal import Normal
 
-def gmm_loss(next_latents, mus, sigmas, logpi, reduce=True): # pylint: disable=too-many-arguments
+def gmm_loss(latent_deltas, mus, sigmas, logpi): # pylint: disable=too-many-arguments
     """ Computes the gmm loss.
 
     Compute minus the log probability of next_latents under the GMM model described
@@ -27,18 +27,15 @@ def gmm_loss(next_latents, mus, sigmas, logpi, reduce=True): # pylint: disable=t
         sum_{k=1..gs} pi[i1, i2, ..., k] * N(
             next_latents[i1, i2, ..., :] | mus[i1, i2, ..., k, :], sigmas[i1, i2, ..., k, :]))
     """
-    next_latents = next_latents.unsqueeze(-2) # to acccount for the gaussian dimension. 
+    latent_deltas = latent_deltas.unsqueeze(-2) # to acccount for the gaussian dimension. 
     normal_dist = Normal(mus, sigmas) # for every gaussian in each latent dimension. 
-    print(logpi.shape, mus.shape, next_latents.shape)
-    g_log_probs = logpi + normal_dist.log_prob(next_latents) # how far off are the next obs? 
+    #print('MDRNN TEST. WHAT ARE THE DIMENSIONS OF THESE????', logpi.shape, mus.shape, latent_deltas.shape)
+    g_log_probs = logpi + normal_dist.log_prob(latent_deltas) # how far off are the next obs? 
     # sum across the gaussians, need to do so in log space: 
     log_loss = - torch.logsumexp(g_log_probs, dim=-2) # now have bs1, bs2, fs. all of these are different predictions to take the mean of.   
     #print(torch.exp(logpi))
-    #print(next_latents.shape, mus.shape, sigmas.shape, g_log_probs.shape, log_loss.shape)
-    if reduce: # mean across everything else to get the expectation (average) over all predictions at the seq, batch and fs levels.
-        return torch.mean(log_loss)
-    else: 
-        return torch.mean(log_loss, dim=-1) # mean across fs. but preserve batch and sequence length. 
+    #print(latent_deltas.shape, mus.shape, sigmas.shape, g_log_probs.shape, log_loss.shape)
+    return torch.mean(log_loss)
     
 class _MDRNNBase(nn.Module):
     def __init__(self, latents, actions, hiddens, gaussians, conditional):
@@ -80,7 +77,7 @@ class MDRNN(_MDRNNBase):
             - rs: (BSIZE, SEQ_LEN) torch tensor
             - ds: (BSIZE, SEQ_LEN) torch tensor
         """
-        seq_len, bs = actions.size(0), actions.size(1)
+        batch_size, seq_len = actions.size(0), actions.size(1)
         #r = r.unsqueeze(1)
 
         #print(actions.shape, latents.shape)
@@ -94,14 +91,14 @@ class MDRNN(_MDRNNBase):
         stride = self.gaussians * self.latents # number of predictions per element.
 
         mus = gmm_outs[:, :, :stride]
-        mus = mus.view(seq_len, bs, self.gaussians, self.latents)
+        mus = mus.view(batch_size, seq_len, self.gaussians, self.latents)
 
         sigmas = gmm_outs[:, :, stride:2 * stride]
-        sigmas = sigmas.view(seq_len, bs, self.gaussians, self.latents)
+        sigmas = sigmas.view(batch_size, seq_len, self.gaussians, self.latents)
         sigmas = torch.exp(sigmas) # assuming they were logged before? 
 
         pi = gmm_outs[:, :, 2 * stride: 3 * stride ]
-        pi = pi.view(seq_len, bs, self.gaussians, self.latents)
+        pi = pi.view(batch_size, seq_len, self.gaussians, self.latents)
         logpi = f.log_softmax(pi, dim=-2) #NOTE:Check this is working as it should be!! and update in the Cell version too below!!
 
         # TODO: enable removing these channels because they are taking up space!

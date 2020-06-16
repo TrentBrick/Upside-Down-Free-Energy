@@ -14,7 +14,7 @@ import json
 from tqdm import tqdm
 from joint_utils import generate_rollouts_using_planner
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
-from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE, NUM_GAUSSIANS_IN_MDRNN, NUM_IMG_CHANNELS
+from utils.misc import ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE, NUM_GAUSSIANS_IN_MDRNN, NUM_IMG_CHANNELS
 from utils.learning import EarlyStopping, ReduceLROnPlateau
 import sys
 from data.loaders import RolloutSequenceDataset
@@ -43,7 +43,7 @@ def main(args):
     # Constants
     BATCH_SIZE = 256
     SEQ_LEN = 16 # number of sequences in a row used during training
-    epochs = 300
+    epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 3
 
@@ -76,7 +76,7 @@ def main(args):
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
-    earlystopping = EarlyStopping('min', patience=30) # NOTE: this needs to be esp high as the epochs are heterogenous buffers!! not all data. 
+    earlystopping = EarlyStopping('min', patience=100) # NOTE: this needs to be esp high as the epochs are heterogenous buffers!! not all data. 
 
     # Loading in trained models: 
     if not args.no_reload:

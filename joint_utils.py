@@ -8,7 +8,7 @@ import torch
 import torch.utils.data
 from torchvision import transforms
 import gym 
-from utils.misc import RolloutGenerator, ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
+from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
 import time
 import cma
 from controller_model import Models, load_parameters, flatten_parameters

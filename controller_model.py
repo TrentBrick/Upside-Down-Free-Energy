@@ -115,11 +115,11 @@ class Models:
                 print("Loading {} at epoch {} "
                     "with test loss {}".format(
                         m, s['epoch'], s['precision']))
-            print('loading in vae from:', vae_file, device)
+            print('loading in vae from:', vae_file, self.device)
             self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE).to(self.device)
             self.vae.load_state_dict(vae_state['state_dict'])
 
-            print('loading in mdrnn from:', rnn_file, device)
+            print('loading in mdrnn from:', rnn_file, self.device)
             self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(self.device)
             self.mdrnn.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
@@ -219,11 +219,16 @@ class Models:
                     md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
                     # get the next latent state
-                    g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
-                    which_g = g_probs.sample()
-                    mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
-                    ens_latent_s = mus_g + (sigs_g * torch.randn_like(mus_g))
+                    if NUM_GAUSSIANS_IN_MDRNN > 1:
+                        g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
+                        which_g = g_probs.sample()
+                        mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+                    else: 
+                        mus_g, sigs_g = md_mus.squeeze(), md_sigmas.squeeze()
 
+                    # predict the next latent state. 
+                    pred_latent_deltas = mus_g + (sigs_g * torch.randn_like(mus_g))
+                    ens_latent_s = ens_latent_s+pred_latent_deltas
                     ens_action = self.sample_cross_entropy_method() 
                     # store these cumulative rewards
                     all_particles_cum_rewards[start_ind:end_ind] += (discount_factor**t)*ens_reward
@@ -378,7 +383,8 @@ class Models:
                 i += 1
             
 
-    def importance_sampling(self, num_samps, real_obs, encoder_mu, encoder_logsigma, cond_reward):
+    def importance_sampling(self, num_samps, real_obs, encoder_mu, 
+        encoder_logsigma, cond_reward, delta_prediction=False, pres_latent_s=None):
         """
         Returns a full batch. 
         """
@@ -388,7 +394,12 @@ class Models:
 
         for _ in range(num_samps):
 
-            z = encoder_mu + (encoder_logsigma.exp() * torch.randn_like(encoder_mu))
+            # for the MDRNN forward predictor need this is a delta prediction
+            if delta_prediction: 
+                delta_pred = encoder_mu + (encoder_logsigma.exp() * torch.randn_like(encoder_mu))
+                z = pres_latent_s+delta_pred
+            else: 
+                z = encoder_mu + (encoder_logsigma.exp() * torch.randn_like(encoder_mu))
 
             decoder_mu, decoder_logsigma = self.vae.decoder(z, cond_reward)
 
@@ -431,15 +442,22 @@ class Models:
             # reward loss 
             log_p_r = self.reward_prior.log_prob(next_r)
 
-            g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
+            if NUM_GAUSSIANS_IN_MDRNN > 1:
+                g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
+            
+            else: 
+                mus_g, sigs_g = md_mus.squeeze(), md_sigmas.squeeze()
+
             for j in range(num_next_encoder_samps):
-                which_g = g_probs.sample()
-                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
-                #print('samples from mdrnn', mus_g.shape, sigs_g.shape)
+                if NUM_GAUSSIANS_IN_MDRNN > 1:
+                    which_g = g_probs.sample()
+                    mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+                    #print('samples from mdrnn', mus_g.shape, sigs_g.shape)
 
                 # importance sampling which has its own number of iterations: 
                 next_obs = rollout_dict['obs'][1:]
-                log_p_v = self.importance_sampling(num_importance_samps, next_obs, mus_g, torch.log(sigs_g), next_r.unsqueeze(1))
+                log_p_v = self.importance_sampling(num_importance_samps, next_obs, mus_g, torch.log(sigs_g), 
+                    next_r.unsqueeze(1), delta_prediction=True, pres_latent_s=latent_s.unsqueeze(0))
                 
                 # can sum across time with these logs. (as the batch is the different time points)
                 expected_loss += torch.sum(log_p_v+log_p_r)

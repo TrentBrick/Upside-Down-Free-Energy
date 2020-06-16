@@ -32,7 +32,7 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls)
 
             for _ in range(num_action_repeats):
                 s, r, done, _ = env.step(action)
-                env.env.viewer.window.dispatch_events() # needed for a bug in the rendering with the old gym environment.  
+                #env.env.viewer.window.dispatch_events() # needed for a bug in the rendering with the old gym environment.  
                 
                 if not dont_trim_controls:
                     s = s[:84]

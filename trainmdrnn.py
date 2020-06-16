@@ -28,7 +28,30 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
     """
     
     mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, pres_reward)
-    gmm = gmm_loss(latent_next_obs, mus, sigmas, logpi) # by default gives mean over all.
+
+    # find the delta between the next observation and the present one. 
+    latent_delta = latent_next_obs - latent_obs
+    gmm = gmm_loss(latent_delta, mus, sigmas, logpi) # by default gives mean over all.
+
+    if NUM_GAUSSIANS_IN_MDRNN > 1:
+        # another way to evaluate how close the latent delta and real delta are: 
+        
+        print('the gaussian probabilities are:', logpi[0,0,:,0].exp(), logpi[0,0,:,1].exp())
+        print('the gaussian mus are:', mus[0,0,:,0], mus[0,0,:,1])
+
+        g_probs = torch.distributions.Categorical(probs=torch.exp(logpi.squeeze()).permute(0,1,3,2))
+        which_g = g_probs.sample()
+        print('g_probs are:', which_g.shape)
+        # this is selecting where there are 4 dimensions rather than just 3. 
+        mus, sigmas = torch.gather(mus.squeeze(), 2, which_g.unsqueeze(2)).squeeze(), torch.gather(sigmas.squeeze(), 2, which_g.unsqueeze(2)).squeeze()
+    
+    else:
+        mus, sigmas = mus.squeeze(), sigmas.squeeze()
+    pred_delta_obs = mus + (sigmas.log().exp() * torch.randn_like(mus))
+    pred_latent_obs = latent_obs + pred_delta_obs
+
+    print('MSE between predicted and real latent values', 
+        f.mse_loss(latent_next_obs, pred_latent_obs))
 
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
@@ -58,8 +81,8 @@ def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # constants
-    BATCH_SIZE = 48
-    SEQ_LEN = 128
+    BATCH_SIZE = 256
+    SEQ_LEN = 16
     epochs = 30
     conditional=True 
     cur_best = None
@@ -92,7 +115,7 @@ def main(args):
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
     earlystopping = EarlyStopping('min', patience=30)
 
-    if exists(best_filename) and not args.noreload:
+    if exists(best_filename) and not args.no_reload:
         rnn_state = torch.load(best_filename)
         print("Loading MDRNN at epoch {} "
             "with test error {}".format(
@@ -115,7 +138,7 @@ def main(args):
         batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=True)
     test_loader = DataLoader(
         RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=5),
-        batch_size=BATCH_SIZE, num_workers=10, drop_last=True)
+        batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=True)
 
     # TODO: Wasted compute. split into obs and next obs only much later!!
     def to_latent(obs, rewards):
@@ -209,7 +232,9 @@ def main(args):
     test = partial(data_pass, train=False, include_reward=include_reward, include_terminal=args.include_terminal)
         
     for e in range(epochs):
+        print('========== Training run')
         train_loss = train(e)
+        print('========== Testing run')
         test_loss = test(e)
         scheduler.step(test_loss)
         earlystopping.step(test_loss)
@@ -262,7 +287,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser("MDRNN training")
     parser.add_argument('--logdir', type=str,
                         help="Where things are logged and models are loaded from.")
-    parser.add_argument('--noreload', action='store_true',
+    parser.add_argument('--no_reload', action='store_true',
                         help="Do not reload if specified.")
     parser.add_argument('--do_not_include_reward', action='store_true',
                         help="Add a reward modelisation term to the loss.")

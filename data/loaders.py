@@ -18,11 +18,13 @@ class _RolloutDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publi
             for sd in listdir(root) if isdir(join(root, sd))
             for ssd in listdir(join(root, sd))]
 
-        # last 600 files are defined as test. I guess all are totally random so it is totally fine!
+        percentage_test = 0.1
+        end_of_train_index = int(len(self._files)*percentage_test)
+
         if train:
-            self._files = self._files[:-600]
+            self._files = self._files[:end_of_train_index]
         else:
-            self._files = self._files[-600:]
+            self._files = self._files[end_of_train_index:]
 
         self._cum_size = None
         self._buffer = None
