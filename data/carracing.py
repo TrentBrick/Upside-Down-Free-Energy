@@ -16,6 +16,8 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls)
 
     env = gym.make("CarRacing-v0")
     seq_len = 1000
+    num_action_repeats = 5
+    print('The action repeat number is:', num_action_repeats)
 
     for i in range(rollouts):
         rand_env_seed = np.random.randint(0,10000000,1)[0]
@@ -35,25 +37,32 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls)
         t = 0
         while True:
             action = a_rollout[t]
-            t += 1
-            s, r, done, _ = env.step(action)
-            env.env.viewer.window.dispatch_events() # needed for a bug in the rendering. 
-            
-            if not dont_trim_controls:
-                s = s[:84]
-            
+
+            for _ in range(self.num_action_repeats):
+                s, r, done, _ = env.step(action)
+                env.env.viewer.window.dispatch_events() # needed for a bug in the rendering with the old gym environment.  
+                
+                if not dont_trim_controls:
+                    s = s[:84]
+
+                if done:
+                    s_rollout += [s]
+                    r_rollout += [r]
+                    d_rollout += [done]
+                    print("> End of rollout {}, {} frames...".format(i, len(s_rollout)))
+                    np.savez(join(data_dir, 'rollout_{}'.format(i)),
+                            observations=np.array(s_rollout),
+                            rewards=np.array(r_rollout),
+                            actions=np.array(a_rollout),
+                            terminals=np.array(d_rollout))
+                    break
+                
+                t += 1
+
             s_rollout += [s]
             r_rollout += [r]
             d_rollout += [done]
-            if done:
-                print("> End of rollout {}, {} frames...".format(i, len(s_rollout)))
-                np.savez(join(data_dir, 'rollout_{}'.format(i)),
-                         observations=np.array(s_rollout),
-                         rewards=np.array(r_rollout),
-                         actions=np.array(a_rollout),
-                         terminals=np.array(d_rollout))
-                break
-
+            
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--rollouts', type=int, help="Number of rollouts")
