@@ -78,7 +78,6 @@ class Models:
         self.time_limit = time_limit
         
         if cem_params:
-            
             self.cem_mus = cem_params[0]
             self.cem_sigmas = cem_params[1]
 
@@ -209,56 +208,58 @@ class Models:
         # returns the immediate action that will lead to the largest
         # cumulative reward
 
-        cum_reward = torch.zeros((self.planner_n_particles))
-        all_particles_first_action = []
-        
-        for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
+        #TODO: Combine current and previous CEM from last iteration. For now I am 
+        # starting from scratch each time 
+        self.cem_mus = torch.Tensor([0,0.9,0]) 
+        self.cem_sigmas = torch.Tensor([0.8,0.7,0.3])
+        cem_iters = 10
 
-            # initialize particles for a single ensemble model. 
-            ens_latent_s, ens_reward = [var.clone().repeat(self.ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, reward]]
-            hidden_0 = full_hidden[0].clone().repeat(self.ensemble_batchsize, *len(full_hidden[0].shape[1:])*[1])
-            hidden_1 = full_hidden[1].clone().repeat(self.ensemble_batchsize, *len(full_hidden[1].shape[1:])*[1])
-            ens_full_hidden = [hidden_0,hidden_1]
-            # only repeat the first dimension. 
+        for cem_iter in range(cem_iters):
 
-            # need to produce a batch of first actions here. 
-            ens_action = self.sample_cross_entropy_method() 
-
-            for t in range(self.horizon):
+            all_particles_cum_rewards = torch.zeros((self.planner_n_particles))
+            all_particles_sequential_actions = torch.zeros((self.planner_n_particles, self.horizon, self.cem_mus.shape[0]))
                 
-                md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
-                
-                # get the next latent state
-                g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
-                which_g = g_probs.sample()
-                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
-                ens_latent_s = mus_g + (sigs_g * torch.randn_like(mus_g))
+            all_particles_first_action = []
+            
+            for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
 
-                # sample actions for each particle!!! 
-                # TODO: implement CEM here: 
-                #ens_action = self.random_shooting(self.ensemble_batchsize)
+                # initialize particles for a single ensemble model. 
+                ens_latent_s, ens_reward = [var.clone().repeat(self.ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, reward]]
+                hidden_0 = full_hidden[0].clone().repeat(self.ensemble_batchsize, *len(full_hidden[0].shape[1:])*[1])
+                hidden_1 = full_hidden[1].clone().repeat(self.ensemble_batchsize, *len(full_hidden[1].shape[1:])*[1])
+                ens_full_hidden = [hidden_0,hidden_1]
+                # only repeat the first dimension. 
+
+                # indices for logging the actions and rewards during horizon planning across the ensemble. 
+                start_ind = self.ensemble_batchsize*mdrnn_ind
+                end_ind = start_dim+self.ensemble_batchsize
+
+                # need to produce a batch of first actions here. 
                 ens_action = self.sample_cross_entropy_method() 
 
-                # store these cumulative rewards
-                cum_reward[self.ensemble_batchsize*mdrnn_ind:self.ensemble_batchsize*mdrnn_ind+self.ensemble_batchsize] += (discount_factor**t)*ens_reward
+                for t in range(self.horizon):
+                    
+                    md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+                    
+                    # get the next latent state
+                    g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
+                    which_g = g_probs.sample()
+                    mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+                    ens_latent_s = mus_g + (sigs_g * torch.randn_like(mus_g))
 
-                ens_reward = ens_reward.unsqueeze(1)
+                    ens_action = self.sample_cross_entropy_method() 
+                    # store these cumulative rewards
+                    all_particles_cum_rewards[start_ind:end_ind] += (discount_factor**t)*ens_reward
+                    all_particles_sequential_actions[start_ind:end_ind, t, :] = ens_action
 
-                if t==0:
-                    # store next action to be taken
-                    all_particles_first_action.append(ens_action)
-
-        all_particles_first_action = torch.stack(all_particles_first_action).squeeze()
-
-        # update CEM parameters: 
-        # TODO: should CEM learn from all of the actions adn their rewards to go? 
-        # or only from the first actions? 
-        #print('best actions ind', all_particles_first_action.shape, cum_reward)
-        self.update_cross_entropy_method(all_particles_first_action, cum_reward)
-        #print('updated cross entropies')
+                    # unsqueeze for the next iteration. 
+                    ens_reward = ens_reward.unsqueeze(1)
+        
+            self.update_cross_entropy_method(all_particles_sequential_actions, all_particles_cum_rewards)
+        
         # choose the best next action out of all of them. 
-        best_actions_ind = torch.argmax(cum_reward)
-        best_action = all_particles_first_action[best_actions_ind]
+        best_actions_ind = torch.argmax(all_particles_cum_rewards)
+        best_action = all_particles_sequential_actions[best_actions_ind, 0, :]
         #print('best action is:', best_action)
         return best_action.unsqueeze(0)
 
@@ -271,21 +272,18 @@ class Models:
             raise NotImplementedError("The environment you are trying to use does not have random shooting actions implemented.")
         return actions
 
-    def update_cross_entropy_method(self, first_actions, rewards):
+    def update_cross_entropy_method(self, all_actions, rewards):
         # for carracing we have 3 independent gaussians
-        smoothing = 0.2
+        smoothing = 0.8
         vals, inds = torch.topk(rewards, self.k_top )
-        elite_actions = first_actions[inds]
+        elite_actions = all_actions[inds]
 
-        new_mu = elite_actions.sum(dim=0)/self.k_top
-        new_sigma = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top)
+        num_elite_actions = self.k_top*self.horizon 
+
+        new_mu = elite_actions.sum(dim=(0,1))/num_elite_actions
+        new_sigma = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=(0,1))/num_elite_actions)
         self.cem_mus = smoothing*new_mu + (1-smoothing)*(self.cem_mus) 
         self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
-        
-        self.cem_sigmas[0] = torch.clamp(self.cem_sigmas[0], min=0.3)
-        self.cem_sigmas[1] = torch.clamp(self.cem_sigmas[1], min=0.2)
-        self.cem_sigmas[2] = torch.clamp(self.cem_sigmas[2], min=0.1)
-        #print('updated cems',self.cem_mus, self.cem_sigmas )
 
     def constrain_actions(self, out):
         #print('before tanh', out)

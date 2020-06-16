@@ -21,8 +21,6 @@ import copy
 from torchvision.utils import save_image
 import time
 
-assert 'add in repeated actoins!!!!'
-
 class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attributes
     """
     Simulated Car Racing.
@@ -33,14 +31,12 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
     :args directory: directory from which the vae and mdrnn are
     loaded.
     """
-    def __init__(self, directory, real_obs=False, test_agent=False, use_planner=False):
+    def __init__(self, directory, real_obs=False, test_agent=False, use_planner=False, num_action_repeats=5):
         self.real_obs = real_obs 
         self.test_agent = test_agent
         self.use_planner = use_planner
+        self.num_action_repeats = num_action_repeats
         self.condition = True 
-
-        self.cem_mus = torch.Tensor([0,0.6,0]) 
-        self.cem_sigmas = torch.Tensor([0.3,0.5,0.1])
 
         if test_agent and not use_planner: 
 
@@ -54,8 +50,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
         #vae_file = join(directory, 'vae', 'best.tar')
         #rnn_file = join(directory, 'mdrnn', 'best.tar')
-        vae_file = join(directory, 'joint', 'pre_rep_action_vae_checkpoint.tar')
-        rnn_file = join(directory, 'joint', 'pre_rep_action_mdrnn_checkpoint.tar')
+        vae_file = join(directory, 'joint', 'vae_best.tar')
+        rnn_file = join(directory, 'joint', 'mdrnn_best.tar')
         assert exists(vae_file), "No VAE model in the directory..."
         assert exists(rnn_file), "No MDRNN model in the directory..."
 
@@ -96,7 +92,6 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
     def agent_action(self, obs, hidden, reward ):
 
-        # why is none of this batched?? Because can't run lots of environments at a single point in parallel I guess. 
         mu, logsigma = self.vae.encoder(obs)
         latent_z =  mu + logsigma.exp() * torch.randn_like(mu) 
 
@@ -120,7 +115,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
                          dtype=np.uint8))
 
     def step(self, action):
-        """ One step forward """
+        """ One step forward in the dream like environment!!! """
         with torch.no_grad():
             action = torch.Tensor(action).unsqueeze(0)
             mus, sigmas, logpi, r, d, n_h = self._rnn(action, self._lstate, self._hstate) #next_z, next_hidden)
@@ -163,79 +158,100 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.monitor.set_data(self._visual_obs)
         plt.pause(.01)
 
-    def planner(self, latent_s, full_hidden, reward, time_step):
+    def planner(self, latent_s, full_hidden, reward, time_step, starting_obs):
         # predicts into the future up to horizon. 
         # returns the immediate action that will lead to the largest
         # cumulative reward
-        horizon = 15
+
+        # reset at the start of each planning run
+        self.cem_mus = torch.Tensor([0,0.9,0]) 
+        self.cem_sigmas = torch.Tensor([0.7,0.7,0.1])
+
+        cem_iters = 10
+
+        desired_horizon = 30
+        actual_horizon = desired_horizon//self.num_action_repeats
+        self.horizon = actual_horizon
         ensemble_batchsize = 200
         self.ensemble_batchsize = ensemble_batchsize
         self.planner_n_particles = ensemble_batchsize
         self.mdrnn_ensemble = [self._rnn]
-        self.k_top = int(0.2*ensemble_batchsize)
+        self.k_top = int(0.1*ensemble_batchsize)
 
-        cum_reward = torch.zeros((self.planner_n_particles))
-        all_particles_first_action = []
+        starting_obs = starting_obs.view(starting_obs.shape[0], -1)
+        starting_obs = starting_obs.repeat(ensemble_batchsize, *len(starting_obs.shape[1:])*[1])
         all_particles_all_predicted_obs = []
+        all_particles_all_predicted_obs.append(starting_obs)
+
+        for cem_iter in range(cem_iters):
+
+            cum_reward = torch.zeros((self.planner_n_particles))
+            sequential_actions = torch.zeros((self.planner_n_particles, actual_horizon, 3))
+            
+            sequential_rewards = []
         
-        for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
+            for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
 
-            # initialize particles for a single ensemble model. 
-            ens_latent_s, ens_reward = [var.clone().repeat(ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, reward]]
-            hidden_0 = full_hidden[0].clone().repeat(ensemble_batchsize, *len(full_hidden[0].shape[1:])*[1])
-            hidden_1 = full_hidden[1].clone().repeat(ensemble_batchsize, *len(full_hidden[1].shape[1:])*[1])
-            ens_full_hidden = [hidden_0,hidden_1]
-            # only repeat the first dimension. 
-
-            # need to produce a batch of first actions here. 
-            ens_action = self.sample_cross_entropy_method() 
-
-            for t in range(horizon):
+                # initialize particles for a single ensemble model. 
                 
-                md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+                ens_latent_s, ens_reward = [var.clone().repeat(ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, reward]]
+                hidden_0 = full_hidden[0].clone().repeat(ensemble_batchsize, *len(full_hidden[0].shape[1:])*[1])
+                hidden_1 = full_hidden[1].clone().repeat(ensemble_batchsize, *len(full_hidden[1].shape[1:])*[1])
+                ens_full_hidden = [hidden_0,hidden_1]
+                # only repeat the first dimension. 
                 
-                # get the next latent state
-                g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
-                which_g = g_probs.sample()
-                mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
-                ens_latent_s = mus_g + (sigs_g * torch.randn_like(mus_g))
-
+                # need to produce a batch of first actions here. 
                 ens_action = self.sample_cross_entropy_method() 
-                #ens_action = self.random_shooting(ensemble_batchsize) 
 
-                # store these cumulative rewards
-                cum_reward[ensemble_batchsize*mdrnn_ind:ensemble_batchsize*mdrnn_ind+ensemble_batchsize] += ens_reward
+                for t in range(actual_horizon):
+                    
+                    md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+                    
+                    # get the next latent state
+                    g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
+                    which_g = g_probs.sample()
+                    mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+                    ens_latent_s = mus_g + (sigs_g * torch.randn_like(mus_g))
 
-                ens_reward = ens_reward.unsqueeze(1)
+                    ens_action = self.sample_cross_entropy_method() 
+                    
+                    #ens_action = self.random_shooting(ensemble_batchsize) 
 
-                if t==0:
-                    # store next action to be taken
-                    all_particles_first_action.append(ens_action)
+                    # store these cumulative rewards
+                    cum_reward[ensemble_batchsize*mdrnn_ind:ensemble_batchsize*mdrnn_ind+ensemble_batchsize] += ens_reward
+                    sequential_actions[ensemble_batchsize*mdrnn_ind:ensemble_batchsize*mdrnn_ind+ensemble_batchsize, t, :] = ens_action
 
-                dec_mu, dec_logsigma = self.vae.decoder( ens_latent_s, ens_reward )
-                print('appending future pred')
-                all_particles_all_predicted_obs.append( dec_mu )
+                    ens_reward = ens_reward.unsqueeze(1)
 
-        all_particles_first_action = torch.stack(all_particles_first_action).squeeze()
+                    if cem_iter==(cem_iters-1):
+                        dec_mu, dec_logsigma = self.vae.decoder( ens_latent_s, ens_reward )
+                        all_particles_all_predicted_obs.append( dec_mu )
+                        sequential_rewards.append(ens_reward)
 
-        all_particles_all_predicted_obs = torch.stack(all_particles_all_predicted_obs)
+            # update these after going through each ensemble. 
+            self.update_cross_entropy_method(sequential_actions, cum_reward)
+            print('DURING ITER', cem_iter ,'new cem params:::', self.cem_mus, self.cem_sigmas)
 
-        print('all predicted obs', all_particles_all_predicted_obs.shape)
-        all_particles_all_predicted_obs = all_particles_all_predicted_obs.permute(1,0,2)
-        # update CEM parameters: 
-        # TODO: should CEM learn from all of the actions adn their rewards to go? 
-        # or only from the first actions? 
-        #print('best actions ind', all_particles_first_action.shape, cum_reward)
+        sequential_rewards = torch.stack(sequential_rewards).squeeze().permute(1,0)
+        all_particles_all_predicted_obs = torch.stack(all_particles_all_predicted_obs).permute(1,0,2)
 
-        self.update_cross_entropy_method(all_particles_first_action, cum_reward)
-
-        print('new cem params', self.cem_mus, self.cem_sigmas)
+        print('AFTER ALL ITERS: new cem params', self.cem_mus, self.cem_sigmas)
 
         #print('updated cross entropies')
         # choose the best next action out of all of them. 
         best_actions_ind = torch.argmax(cum_reward)
         worst_actions_ind = torch.argmin(cum_reward)
-        best_action = all_particles_first_action[best_actions_ind]
+
+        best_action = sequential_actions[best_actions_ind,0, :]
+
+        best_rewards_seq = sequential_rewards[best_actions_ind]
+        worst_rewards_seq = sequential_rewards[worst_actions_ind]
+
+        print('best sequential actions', sequential_actions[best_actions_ind] )
+        print('worst sequential actions', sequential_actions[worst_actions_ind] )
+
+        print('best rewards seq', best_rewards_seq)
+        print('worst rewards seq', worst_rewards_seq)
 
         sequence_best_pred_obs = all_particles_all_predicted_obs[best_actions_ind]
         sequence_worst_pred_obs = all_particles_all_predicted_obs[worst_actions_ind]
@@ -259,18 +275,22 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         actions = self.constrain_actions(actions)
         return actions
 
-    def update_cross_entropy_method(self, first_actions, rewards):
+    def update_cross_entropy_method(self, all_actions, rewards):
         # for carracing we have 3 independent gaussians
-        smoothing = 0.2
+        smoothing = 0.5
         vals, inds = torch.topk(rewards, self.k_top )
-        elite_actions = first_actions[inds]
-        self.cem_mus = (1-smoothing)*smoothing*self.cem_mus + smoothing*(elite_actions.sum(dim=0)/self.k_top) 
+        elite_actions = all_actions[inds]
+
+        num_elite_actions = self.k_top*self.horizon 
+
+        new_mu = elite_actions.sum(dim=(0,1))/num_elite_actions
+        new_sigma = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=(0,1))/num_elite_actions)
+        self.cem_mus = smoothing*new_mu + (1-smoothing)*(self.cem_mus) 
+        self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
         
-        new_sigmas = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=0)/self.k_top)
-        self.cem_sigmas = smoothing*new_sigmas+(1-smoothing)*(self.cem_sigmas )
-        
-        self.cem_sigmas = torch.clamp(self.cem_sigmas, min=0.01)
-        #print('updated cems',self.cem_mus, self.cem_sigmas )
+        #self.cem_sigmas[0] = torch.clamp(self.cem_sigmas[0], min=0.3)
+        #self.cem_sigmas[1] = torch.clamp(self.cem_sigmas[1], min=0.2)
+        #self.cem_sigmas[2] = torch.clamp(self.cem_sigmas[2], min=0.1)
 
     def constrain_actions(self, out):
         #print('before tanh', out)
@@ -281,18 +301,16 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         return out
 
     def random_shooting(self, batch_size):
-        
         out = torch.distributions.Uniform(-1,1).sample((batch_size, 3))
         out = self.constrain_actions(out)
-        
         return out
-
 
 if __name__ == '__main__':
     # argument parsing
     parser = argparse.ArgumentParser()
     parser.add_argument('--logdir', type=str, help='Directory from which MDRNN and VAE are '
                         'retrieved.')
+    parser.add_argument('--num_action_repeats', type=int, default=5, help='Number of times action is repeated.')
     parser.add_argument('--real_obs', action='store_true',
                     help="Use the real observations not dream ones")
     parser.add_argument('--test_agent', action='store_true',
@@ -377,7 +395,7 @@ if __name__ == '__main__':
                 transforms.ToTensor()
             ])
 
-        agent_class = SimulatedCarracing( args.logdir, args.real_obs, args.test_agent, args.use_planner)
+        agent_class = SimulatedCarracing( args.logdir, args.real_obs, args.test_agent, args.use_planner, args.num_action_repeats)
 
     cum_reward = 0
     t = 0
@@ -390,36 +408,48 @@ if __name__ == '__main__':
                 with torch.no_grad():
 
                     obs_t = obs[:84, :, :]
-
                     obs_t = transform(obs_t).unsqueeze(0).to('cpu')
 
                     if args.use_planner: 
-
                         reward = torch.Tensor([reward]).unsqueeze(0)
-
                         mu, logsigma = agent_class.vae.encoder(obs_t, reward)
                         latent_z =  mu + logsigma.exp() * torch.randn_like(mu) 
-
-                        action = agent_class.planner(latent_z, hidden, reward, t)
-
+                        action = agent_class.planner(latent_z, hidden, reward, t, obs_t)
                         _, _, _, _, _, hidden = agent_class._rnn(action, latent_z, hidden, reward)
                         action = action.squeeze().cpu().numpy()
-
                     else:  
                         action, hidden = agent_class.agent_action(obs_t, hidden, reward)
 
-            print(action)
-            obs, reward, done, _ = env.step(action)
+            for _ in range(args.num_action_repeats):
+                print(action)
+                # this is the real environment. 
+                obs, reward, done, _ = env.step(action)
+                cum_reward += reward
+                t+=1
+
+                if done:
+                    print(cum_reward)
+                    break
+
             monitor.set_data(obs)
 
         else:
-            print(action)
-            _, reward, done = env.step(action)
+            # dream like state using environment made by the simulated agent! 
+            for _ in range(args.num_action_repeats):
+                print(action)
+                # simulated environment. 
+                _, reward, done, = env.step(action)
+                cum_reward += reward
+                t+=1
+
+                if done:
+                    print(cum_reward)
+                    break
+
         env.render()
         #time.sleep(5)
-        cum_reward += reward
+        
         print('time step of simulation', t)
-        t+=1
-        if done:
-            print(cum_reward)
-            break
+        print('=============================')
+        
+        

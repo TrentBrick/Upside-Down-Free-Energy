@@ -315,12 +315,16 @@ def main(args):
         # Uses planning
         # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
         print('====== Generating Rollouts to train the MDRNN and VAE') 
+        # NOTE: currently I am updating the CEM parameters here across iterations but I am not actually using this. 
+        # they are being reset in the planner() function in controller_model.py each new plan generated.
+        # NOTE: If I did update this, I would need to account for the fact that updates should occur between planning steps.
+        # but aggregating across runs across workers doesnt really make much sense. Should never just do this. 
         cem_params, train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
                 cem_params, actual_horizon, num_action_repeats, planner_n_particles, 
                 SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
                 num_workers=args.num_workers, joint_file_dir=True, transform=None )
 
-        print('Cem parameters after generating rollouts!!', cem_params)
+        print('CEM parameters averaged across workers after generating rollouts ***used for the last action in the plans***!', cem_params)
 
         # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
         train_loader = DataLoader(train_dataset,
