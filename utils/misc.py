@@ -16,7 +16,7 @@ from torch.distributions.categorical import Categorical
 
 # Hardcoded for now
 NUM_IMG_CHANNELS, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE =\
-    3, 3, 32, 256, 64, 96
+    3, 3, 32, 512, 64, 96
 NUM_GAUSSIANS_IN_MDRNN = 1
 
 # Same. used for Rollout Generator below. 
