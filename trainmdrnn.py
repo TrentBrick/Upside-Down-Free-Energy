@@ -374,7 +374,7 @@ def main(args):
 
                 #######################
 
-                memory_adapt_period = 5
+                memory_adapt_period = 10
 
                 ##################
                 print('using full RNN!!!')
