@@ -104,8 +104,8 @@ def load_parameters(params, controller):
     return controller
 
 def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, return_chosen_mus_n_sigs=False):
-
     if NUM_GAUSSIANS_IN_MDRNN > 1:
+        assert len(mus.shape) == len(latent_s.shape)+1, "Need shape of latent to be one more than sufficient stats! Shape of mus and then latents."+str(mus.shape)+' '+str(latent_s.shape)
         if len(logpi.shape) == 3: 
             g_probs = Categorical(probs=torch.exp(logpi.squeeze()).permute(0,2,1))
             which_g = g_probs.sample()
@@ -126,6 +126,7 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, return_chosen_mus_n_sigs=F
 
     # predict the next latent state. 
     pred_latent_deltas = mus + (sigmas * torch.randn_like(mus))
+    print('size of predicted deltas and real', pred_latent_deltas.shape, latent_s.shape)
     latent_s = latent_s+pred_latent_deltas
 
     if return_chosen_mus_n_sigs: 

@@ -2,11 +2,12 @@
 
 # rest of imports are at the bottom. This ensures they are only
 # imported if this file is run directly. 
-from models.mdrnn import MDRNN, gmm_loss
+from models.mdrnn import MDRNN, gmm_loss, MDRNNCell
 import torch.nn.functional as f
 from utils.misc import sample_mdrnn_latent
 
-def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_reward, terminal,
+
+def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward, terminal,
              include_reward = True, include_terminal = False):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 
@@ -28,7 +29,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
         the averaged loss.
     """
     
-    mus, sigmas, logpi, rs, ds = mdrnn(action, latent_obs, pres_reward)
+    mus, sigmas, logpi, rs, ds = mdrnn(pres_action, latent_obs, pres_reward)
 
     # find the delta between the next observation and the present one. 
     latent_delta = latent_next_obs - latent_obs
@@ -38,6 +39,8 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
 
     print('MSE between predicted and real latent values', 
         f.mse_loss(latent_next_obs, pred_latent_obs))
+
+    print('shapes of the rewards', rs.shape, next_reward.squeeze().shape)
 
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
@@ -69,9 +72,14 @@ def main(args):
     # constants
     BATCH_SIZE = 256
     SEQ_LEN = 16
-    epochs = 30
+    epochs = 300
     conditional=True 
     cur_best = None
+    make_mdrnn_samples = True 
+
+    samples_dir = join(args.logdir, 'mdrnn', 'samples')
+    if not exists(samples_dir):
+        mkdir(samples_dir)
 
     # Loading VAE
     vae_file = join(args.logdir, 'vae', 'best.tar')
@@ -112,6 +120,17 @@ def main(args):
         scheduler.load_state_dict(rnn_state['scheduler'])
         earlystopping.load_state_dict(rnn_state['earlystopping'])
 
+    if make_mdrnn_samples:
+        mdrnn_cell = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(device)
+        if exists(best_filename) and not args.no_reload:
+            mdrnn_cell.load_state_dict( 
+                {k.strip('_l0'): v for k, v in rnn_state["state_dict"].items()})
+
+        transform_for_mdrnn_samples = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
+            transforms.ToTensor(),
+            ])
 
     # Data Loading. Cant use previous transform directly as it is a seq len sized batch of observations!!
     transform = transforms.Lambda(
@@ -120,11 +139,11 @@ def main(args):
     # note that the buffer sizes are very small. and batch size is even smaller.
     # batch size is smaller because each element is in fact 32 observations!
     train_loader = DataLoader(
-        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
-        batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=True)
+        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=3), #30
+        batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
     test_loader = DataLoader(
-        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=5),
-        batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=True)
+        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=1), #5
+        batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
 
     # TODO: Wasted compute. split into obs and next obs only much later!!
     def to_latent(obs, rewards):
@@ -180,12 +199,13 @@ def main(args):
             #split into previous and next observations:
             latent_next_obs = latent_obs[:,1:,:].clone() #possible BUG: need to ensure these tensors are different to each other. Tensors arent being modified though so should be ok? Test it anyways.
             latent_obs = latent_obs[:,:-1,:]
-
             next_reward = reward[:, 1:].clone()
             pres_reward = reward[:, :-1]
-            
+            #next_action = action[:, 1:].clone()
+            pres_action = action[:, :-1]
+
             if train:
-                losses = get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_reward,
+                losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward,
                                 terminal, include_reward, include_terminal)
 
                 optimizer.zero_grad()
@@ -195,7 +215,7 @@ def main(args):
                 optimizer.step()
             else:
                 with torch.no_grad():
-                    losses = get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_reward,
+                    losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward,
                                     terminal, include_reward, include_terminal)
 
             cum_loss += losses['loss'].item()
@@ -212,7 +232,10 @@ def main(args):
                                     gmm=cum_gmm / LATENT_SIZE / (i + 1), mse=cum_mse / (i + 1)))
             pbar.update(BATCH_SIZE)
         pbar.close()
-        return cum_loss * BATCH_SIZE / len(loader.dataset) # puts it on a per seq len chunk level. 
+        if train: 
+            return cum_loss * BATCH_SIZE / len(loader.dataset) # puts it on a per seq len chunk level. 
+        else: 
+            return cum_loss * BATCH_SIZE / len(loader.dataset), obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]
 
     train = partial(data_pass, train=True, include_reward=include_reward, include_terminal=args.include_terminal)
     test = partial(data_pass, train=False, include_reward=include_reward, include_terminal=args.include_terminal)
@@ -221,7 +244,7 @@ def main(args):
         print('========== Training run')
         train_loss = train(e)
         print('========== Testing run')
-        test_loss = test(e)
+        test_loss, last_test_observations, last_test_pres_rewards, last_test_next_rewards, last_test_latent_pres_obs, last_test_latent_next_obs, last_test_pres_action = test(e)
         scheduler.step(test_loss)
         earlystopping.step(test_loss)
 
@@ -246,6 +269,176 @@ def main(args):
             "epoch": e}, is_best, checkpoint_filename,
                         best_filename)
 
+        # generate examples of MDRNN
+        if make_mdrnn_samples: 
+            with torch.no_grad():
+
+                # update MDRNN with the new samples: 
+                # TODO: would this update have happened by default?? 
+                mdrnn_cell.load_state_dict( 
+                    {k.strip('_l0'): v for k, v in mdrnn.state_dict().items()})
+
+                # vae of one in the future
+                decoder_mu, decoder_logsigma = vae.decoder(last_test_latent_next_obs, last_test_next_rewards)
+                real_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+                
+                # unsqueeze all to make a batch.
+                # predict MDRNN one into the future
+                print('shape of actions going into mdrnn', last_test_pres_action.shape)
+                mus, sigmas, logpi, rs, ds = mdrnn(last_test_pres_action.unsqueeze(0), last_test_latent_pres_obs.unsqueeze(0), last_test_pres_rewards.unsqueeze(0))
+                # squeeze just the first dimension!
+                mus, sigmas, logpi, rs, ds = [var.squeeze(0) for var in [mus, sigmas, logpi, rs, ds]]
+                print('MDRNN Debugger shouldnt have batch dimensions. :', mus.shape, sigmas.shape, logpi.shape)
+                
+                print('Eval of MDRNN: Real rewards and latent squeezed or not? :', last_test_next_rewards.squeeze(), last_test_next_rewards.shape, last_test_latent_pres_obs.shape)
+                print('Predicted Rewards:', rs, rs.shape)
+                
+                pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, last_test_latent_pres_obs)
+
+                print('shape of pred latent obs', pred_latent_obs.shape )
+
+                # squeeze it back again:
+                decoder_mu, decoder_logsigma = vae.decoder(pred_latent_obs, rs.unsqueeze(1))
+                print('shape of decoder mu', decoder_mu.shape)
+                pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+                
+                # need to transform the last_test_observations here: 
+                # real observations of everything one into the future. 
+                last_test_observations = last_test_observations[1:, :, :, :]
+                # THIS IS ONLY NEEDED HERE, NOT IN JOINT TRAINING AS IN JOINT ALL THE TRANSFORMS HAVE
+                # ALREADY OCCURED. 
+                last_test_observations = last_test_observations.permute(0,2,3,1) * 255
+                last_test_observations = last_test_observations.cpu().numpy().astype(np.uint8)
+                trans_imgs = []
+                for i in range(last_test_observations.shape[0]):
+                    trans_imgs.append( transform_for_mdrnn_samples(last_test_observations[i,:,:,:]) )
+                last_test_observations = torch.stack(trans_imgs)
+
+                print('trying to save all out', last_test_observations.shape, 
+                    real_next_vae_decoded_observation.shape, 
+                    pred_next_vae_decoded_observation.shape )
+
+                to_save = torch.cat([last_test_observations, 
+                    real_next_vae_decoded_observation.cpu(), 
+                    pred_next_vae_decoded_observation.cpu()], dim=0)
+
+                print('Generating MDRNN samples of the shape:', to_save.shape)
+                save_image(to_save,
+                        join(samples_dir, 'next_pred_sample_' + str(e) + '.png'))
+
+                ##################
+                print('predicting the next observation using the full RNN!!!!!!!!!!')
+
+                # Generating multistep predictions from the first latent. 
+                horizon_pred_obs = []
+                mse_losses = []
+                # first latent state. straight from the VAE. 
+                
+                horizon_next_hidden = [
+                    torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
+                    for _ in range(2)]
+    
+                for t in range(SEQ_LEN):
+                    next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
+                    horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
+                    horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
+
+                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                    md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
+                                horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
+                    horizon_next_reward = horizon_next_reward.unsqueeze(0)
+                    print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
+                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                    
+                    # mse between this and the real one. 
+                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
+                    
+                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.squeeze(0), horizon_next_reward.squeeze(0))
+                    print('shape of decoder mu', decoder_mu.shape)
+                    pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+                    horizon_pred_obs.append(pred_next_vae_decoded_observation)
+
+                print('===== MSE losses between horizon prediction and real', mse_losses)
+
+                horizon_pred_obs_given_next = torch.stack(horizon_pred_obs).squeeze()
+
+                #######################
+
+                ##################
+                print('using full RNN!!!')
+
+                # Generating multistep predictions from the first latent. 
+                horizon_pred_obs = []
+                mse_losses = []
+                # first latent state. straight from the VAE. 
+                horizon_next_latent_state = last_test_latent_pres_obs[0].unsqueeze(0).unsqueeze(0)
+                horizon_next_reward = last_test_pres_rewards[0].unsqueeze(0).unsqueeze(0)
+                horizon_next_hidden = [
+                    torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
+                    for _ in range(2)]
+    
+                for t in range(SEQ_LEN):
+                    next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
+                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                    md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
+                                horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
+                    horizon_next_reward = horizon_next_reward.unsqueeze(0)
+                    print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
+                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                    
+                    # mse between this and the real one. 
+                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
+                    
+                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.squeeze(0), horizon_next_reward.squeeze(0))
+                    print('shape of decoder mu', decoder_mu.shape)
+                    pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+                    horizon_pred_obs.append(pred_next_vae_decoded_observation)
+
+                print('===== MSE losses between horizon prediction and real', mse_losses)
+
+                horizon_pred_obs_full_based = torch.stack(horizon_pred_obs).squeeze()
+
+                #######################
+
+                # Generating multistep predictions from the first latent. 
+                horizon_pred_obs = []
+                mse_losses = []
+                # first latent state. straight from the VAE. 
+                horizon_next_latent_state = last_test_latent_pres_obs[0].unsqueeze(0)
+                horizon_next_reward = last_test_pres_rewards[0].unsqueeze(0)
+                horizon_next_hidden = [
+                    torch.zeros(1, LATENT_RECURRENT_SIZE).to(device)
+                    for _ in range(2)]
+                for t in range(SEQ_LEN):
+                    next_action = last_test_pres_action[t].unsqueeze(0)
+                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                    md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn_cell(next_action, 
+                                horizon_next_latent_state, horizon_next_hidden, horizon_next_reward)
+                    horizon_next_reward = horizon_next_reward.unsqueeze(0)
+                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                    
+                    # mse between this and the real one. 
+                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
+                    
+                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward)
+                    print('shape of decoder mu', decoder_mu.shape)
+                    pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+                    horizon_pred_obs.append(pred_next_vae_decoded_observation)
+
+                print('===== MSE losses between horizon prediction and real', mse_losses)
+
+                horizon_pred_obs_cell_based = torch.stack(horizon_pred_obs).squeeze()
+
+                to_save = torch.cat([last_test_observations, real_next_vae_decoded_observation.cpu(), horizon_pred_obs_given_next.cpu(),
+                    horizon_pred_obs_cell_based.cpu(), horizon_pred_obs_full_based.cpu()], dim=0)
+
+                print('Generating MDRNN samples of the shape:', to_save.shape)
+                save_image(to_save,
+                        join(samples_dir, 'horizon_pred_sample_' + str(e) + '.png'))
+
         if earlystopping.stop:
             print("End of Training because of early stopping at epoch {}".format(e))
             break
@@ -258,6 +451,7 @@ if __name__ == '__main__':
     import torch
     from torch.utils.data import DataLoader
     from torchvision import transforms
+    from torchvision.utils import save_image
     import numpy as np
     import json
     from tqdm import tqdm

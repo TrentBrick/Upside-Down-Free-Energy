@@ -61,7 +61,7 @@ class MDRNN(_MDRNNBase):
         else: 
             self.rnn = nn.LSTM(latents + actions, hiddens, batch_first=True)
 
-    def forward(self, actions, latents, r): # pylint: disable=arguments-differ
+    def forward(self, actions, latents, r, last_hidden=None): # pylint: disable=arguments-differ
         """ MULTI STEPS forward.
 
         :args actions: (BSIZE, SEQ_LEN, ACTION_SIZE) torch tensor
@@ -85,7 +85,11 @@ class MDRNN(_MDRNNBase):
             ins = torch.cat([actions, latents, r], dim=-1)
         else: 
             ins = torch.cat([actions, latents], dim=-1)
-        outs, _ = self.rnn(ins)
+
+        if last_hidden:
+            outs, last_hidden = self.rnn(ins, last_hidden)
+        else: 
+            outs, _ = self.rnn(ins)
         gmm_outs = self.gmm_linear(outs)
 
         stride = self.gaussians * self.latents # number of predictions per element.
@@ -106,7 +110,10 @@ class MDRNN(_MDRNNBase):
 
         ds = gmm_outs[:, :, -1]
 
-        return mus, sigmas, logpi, rs, ds
+        if last_hidden:
+            return mus, sigmas, logpi, rs, ds, last_hidden
+        else: 
+            return mus, sigmas, logpi, rs, ds
 
 class MDRNNCell(_MDRNNBase):
     """ MDRNN model for one step forward """

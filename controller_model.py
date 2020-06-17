@@ -91,7 +91,7 @@ class Models:
             self.vae = give_models['vae']
 
             # need to load in the cell based version!
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(self.device)
+            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(self.device)
             self.mdrnn.load_state_dict( 
                 {k.strip('_l0'): v for k, v in give_models['mdrnn'].state_dict.items()})
 

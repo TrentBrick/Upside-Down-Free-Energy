@@ -39,7 +39,7 @@ class GeneratedDataset(torch.utils.data.Dataset):
         obs_data = self.data['obs'][rollout_index][seq_index:seq_index + self._seq_len + 1]
         if self._transform:
             obs_data = self._transform(obs_data.astype(np.float32))
-        action = self.data['actions'][rollout_index][seq_index+1:seq_index + self._seq_len + 1]
+        action = self.data['actions'][rollout_index][seq_index:seq_index + self._seq_len + 1]
         #action = action.astype(np.float32)
         reward, terminal = [self.data[key][rollout_index][seq_index:
                                       seq_index + self._seq_len + 1]#.astype(np.float32)
