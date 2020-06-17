@@ -139,10 +139,10 @@ def main(args):
     # note that the buffer sizes are very small. and batch size is even smaller.
     # batch size is smaller because each element is in fact 32 observations!
     train_loader = DataLoader(
-        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=3), #30
+        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
         batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
     test_loader = DataLoader(
-        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=1), #5
+        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=5),
         batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
 
     # TODO: Wasted compute. split into obs and next obs only much later!!
