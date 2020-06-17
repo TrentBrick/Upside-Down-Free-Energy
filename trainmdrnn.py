@@ -446,8 +446,8 @@ def main(args):
 
                     if t< memory_adapt_period:
                         # giving the real observation still 
-                        horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
-                        horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
+                        horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0)
+                        horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0)
 
                 print('===== MSE losses between horizon prediction and real', mse_losses)
 
