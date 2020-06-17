@@ -280,6 +280,19 @@ def main(args):
 
         # generate examples of MDRNN
         if make_mdrnn_samples: 
+
+            # need to restrict the data to a random segment. Important in cases where 
+            # sequence length is too long
+            start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
+            end_sample_ind = start_mdrnn_example_ind+example_length
+
+            # ensuring this is the same length as everything else. 
+            last_test_observations = last_test_observations[1:, :, :, :]
+            last_test_observations, \
+            last_test_pres_rewards, last_test_next_rewards, \
+            last_test_latent_pres_obs, last_test_latent_next_obs, \
+            last_test_pres_action = [var[start_sample_ind:end_sample_ind] for var in for_mdrnn_sampling]
+
             with torch.no_grad():
 
                 # update MDRNN with the new samples: 
@@ -312,8 +325,6 @@ def main(args):
                 pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                 
                 # need to transform the last_test_observations here: 
-                # real observations of everything one into the future. 
-                last_test_observations = last_test_observations[1:, :, :, :]
                 # THIS IS ONLY NEEDED HERE, NOT IN JOINT TRAINING AS IN JOINT ALL THE TRANSFORMS HAVE
                 # ALREADY OCCURED. 
                 last_test_observations = last_test_observations.permute(0,2,3,1) * 255

@@ -58,7 +58,9 @@ def main(args):
     actual_horizon = desired_horizon//num_action_repeats
 
     # for plotting example horizons:
-    memory_adapt_period = SEQ_LEN - actual_horizon
+    example_length = 16
+    assert example_length<= SEQ_LEN, "Example length must be smaller."
+    memory_adapt_period = example_length - actual_horizon
 
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
@@ -356,13 +358,7 @@ def main(args):
         train_loss_dict = train(e)
         print('====== Done Training VAE and MDRNN')
         # returns the last ones in order to produce samples!
-        test_loss_dict, for_mdrnn_sampling = test(e)
-
-        last_test_observations, \
-        last_test_pres_rewards, last_test_next_rewards, \
-        last_test_latent_pres_obs, last_test_latent_next_obs, \
-        last_test_pres_action = for_mdrnn_sampling
-
+        test_loss_dict, for_vae_n_mdrnn_sampling = test(e)
         print('====== Done Testing VAE and MDRNN')
         scheduler.step(test_loss_dict['loss'])
 
@@ -392,6 +388,20 @@ def main(args):
                             filenames_dict[model_name+'_best'])
         print('====== Done Saving VAE and MDRNN')
 
+        if make_vae_samples or make_mdrnn_samples:
+
+            # need to restrict the data to a random segment. Important in cases where 
+            # sequence length is too long
+            start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
+            end_sample_ind = start_mdrnn_example_ind+example_length
+
+            # ensuring this is the same length as everything else. 
+            last_test_observations = last_test_observations[1:, :, :, :]
+            last_test_observations, \
+            last_test_pres_rewards, last_test_next_rewards, \
+            last_test_latent_pres_obs, last_test_latent_next_obs, \
+            last_test_pres_action = [var[start_sample_ind:end_sample_ind] for var in for_mdrnn_sampling]
+
         # generating and saving VAE samples
         if make_vae_samples:
             with torch.no_grad():
@@ -400,7 +410,7 @@ def main(args):
                 recon_batch = decoder_mu + (decoder_logsigma.exp() * torch.randn_like(decoder_mu))
                 recon_batch = recon_batch.view(recon_batch.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                 decoder_mu = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-                to_save = torch.cat([last_test_observations[1:, :, :, :].cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
+                to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
                 print('Generating VAE samples of the shape:', to_save.shape)
                 save_image(to_save,
                         join(samples_dir, 'vae_sample_' + str(e) + '.png'))
@@ -430,8 +440,6 @@ def main(args):
                 print('shape of decoder mu', decoder_mu.shape)
                 pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                 
-                # real observations of everything one into the future. 
-                last_test_observations = last_test_observations[1:, :, :, :]
                 print('trying to save all out', last_test_observations.shape, 
                     real_next_vae_decoded_observation.shape, 
                     pred_next_vae_decoded_observation.shape )
@@ -441,6 +449,7 @@ def main(args):
                 print('Generating MDRNN samples of the shape:', to_save.shape)
                 save_image(to_save,
                         join(samples_dir, 'mdrnn_next_pred_sample_' + str(e) + '.png'))
+                
                 ################## Predicting next observation using the full RNN
                 # Generating multistep predictions from the first latent. 
                 horizon_pred_obs = []
@@ -472,6 +481,7 @@ def main(args):
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
                 print('===== MSE losses between horizon prediction and real', mse_losses)
                 horizon_pred_obs_given_next = torch.stack(horizon_pred_obs).squeeze()
+                
                 ##################
                 # Generating multistep predictions from the first latent. 
                 horizon_pred_obs = []
@@ -512,7 +522,7 @@ def main(args):
 
                 print('Generating MDRNN samples of the shape:', to_save.shape)
                 save_image(to_save,
-                        join(samples_dir, 'horizon_pred_sample_' + str(e) + '.png'))
+                        join(samples_dir, 'mdrnn_horizon_pred_sample_' + str(e) + '.png'))
 
         # Header at the top of logger file written once at the start of new training run.
         if not exists(logger_filename) or e==0: 
