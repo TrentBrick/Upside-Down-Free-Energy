@@ -98,7 +98,7 @@ def main(args):
     checkpoint_filename = join(rnn_dir, 'checkpoint.tar')
     logger_filename = join(rnn_dir, 'logger.json')
 
-    logger = {k:[] for k in ['train_loss','test_loss']}
+    logger = {typee+'_'+k:[] for k in ['loss','gmm', 'mse'] for typee in ['train','test']}
 
     if not exists(rnn_dir):
         mkdir(rnn_dir)
@@ -232,24 +232,33 @@ def main(args):
                                     gmm=cum_gmm / LATENT_SIZE / (i + 1), mse=cum_mse / (i + 1)))
             pbar.update(BATCH_SIZE)
         pbar.close()
+        cum_losses = []
+        for c in  [cum_loss, cum_gmm, cum_mse]:
+            cum_losses.append( (c * BATCH_SIZE) / len(loader.dataset) )
         if train: 
-            return cum_loss * BATCH_SIZE / len(loader.dataset) # puts it on a per seq len chunk level. 
+            return cum_losses # puts it on a per seq len chunk level. 
         else: 
-            return cum_loss * BATCH_SIZE / len(loader.dataset), obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]
+            return cum_losses, obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]
 
     train = partial(data_pass, train=True, include_reward=include_reward, include_terminal=args.include_terminal)
     test = partial(data_pass, train=False, include_reward=include_reward, include_terminal=args.include_terminal)
         
     for e in range(epochs):
         print('========== Training run')
-        train_loss = train(e)
+        train_losses = train(e)
         print('========== Testing run')
-        test_loss, last_test_observations, last_test_pres_rewards, last_test_next_rewards, last_test_latent_pres_obs, last_test_latent_next_obs, last_test_pres_action = test(e)
+        test_losses, last_test_observations, last_test_pres_rewards, last_test_next_rewards, last_test_latent_pres_obs, last_test_latent_next_obs, last_test_pres_action = test(e)
+        train_loss = train_losses[0]
+        test_loss = test_losses[0]
         scheduler.step(test_loss)
         earlystopping.step(test_loss)
 
         logger['train_loss'].append(train_loss)
+        logger['train_gmm'].append(train_losses[1])
+        logger['train_mse'].append(train_losses[2])
         logger['test_loss'].append(test_loss)
+        logger['test_gmm'].append(test_losses[1])
+        logger['test_mse'].append(test_losses[2])
 
         # write out the logger. 
         with open(logger_filename, "w") as file:
@@ -365,6 +374,8 @@ def main(args):
 
                 #######################
 
+                memory_adapt_period = 5
+
                 ##################
                 print('using full RNN!!!')
 
@@ -395,6 +406,11 @@ def main(args):
                     print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
+
+                    if t< memory_adapt_period:
+                        # giving the real observation still 
+                        horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
+                        horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
 
                 print('===== MSE losses between horizon prediction and real', mse_losses)
 
@@ -427,6 +443,11 @@ def main(args):
                     print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
+
+                    if t< memory_adapt_period:
+                        # giving the real observation still 
+                        horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
+                        horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
 
                 print('===== MSE losses between horizon prediction and real', mse_losses)
 
