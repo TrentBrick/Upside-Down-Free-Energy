@@ -4,6 +4,7 @@
 # imported if this file is run directly. 
 from models.mdrnn import MDRNN, gmm_loss
 import torch.nn.functional as f
+from utils.misc import sample_mdrnn_latent
 
 def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_reward, terminal,
              include_reward = True, include_terminal = False):
@@ -33,22 +34,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, action, pres_reward, next_rewar
     latent_delta = latent_next_obs - latent_obs
     gmm = gmm_loss(latent_delta, mus, sigmas, logpi) # by default gives mean over all.
 
-    if NUM_GAUSSIANS_IN_MDRNN > 1:
-        # another way to evaluate how close the latent delta and real delta are: 
-        
-        print('the gaussian probabilities are:', logpi[0,0,:,0].exp(), logpi[0,0,:,1].exp())
-        print('the gaussian mus are:', mus[0,0,:,0], mus[0,0,:,1])
-
-        g_probs = torch.distributions.Categorical(probs=torch.exp(logpi.squeeze()).permute(0,1,3,2))
-        which_g = g_probs.sample()
-        print('g_probs are:', which_g.shape)
-        # this is selecting where there are 4 dimensions rather than just 3. 
-        mus, sigmas = torch.gather(mus.squeeze(), 2, which_g.unsqueeze(2)).squeeze(), torch.gather(sigmas.squeeze(), 2, which_g.unsqueeze(2)).squeeze()
-    
-    else:
-        mus, sigmas = mus.squeeze(), sigmas.squeeze()
-    pred_delta_obs = mus + (sigmas.log().exp() * torch.randn_like(mus))
-    pred_latent_obs = latent_obs + pred_delta_obs
+    pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, latent_obs)
 
     print('MSE between predicted and real latent values', 
         f.mse_loss(latent_next_obs, pred_latent_obs))

@@ -8,6 +8,7 @@ import numpy as np
 from models import MDRNNCell, VAE, Controller
 import gym
 import gym.envs.box2d
+from torch.distributions.categorical import Categorical
 
 # A bit dirty: manually change size of car racing env
 # BUG: this makes the images very grainy!!!
@@ -101,6 +102,39 @@ def load_parameters(params, controller):
     for p, p_0 in zip(controller.parameters(), params):
         p.data.copy_(p_0)
     return controller
+
+def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, return_chosen_mus_n_sigs=False):
+
+    if NUM_GAUSSIANS_IN_MDRNN > 1:
+        if len(logpi.shape) == 3: 
+            g_probs = Categorical(probs=torch.exp(logpi.squeeze()).permute(0,2,1))
+            which_g = g_probs.sample()
+            mus, sigmas = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+        elif len(logpi.shape) == 4:
+            g_probs = torch.distributions.Categorical(probs=torch.exp(logpi.squeeze()).permute(0,1,3,2))
+            which_g = g_probs.sample()
+            print('how are the gaussian probabilities distributed??', logpi[0,0,:,0].exp(), logpi[0,0,:,1].exp())
+            print('the gaussian mus are:', mus[0,0,:,0], mus[0,0,:,1])
+            print('g_probs are:', which_g.shape)
+            # this is selecting where there are 4 dimensions rather than just 3. 
+            mus, sigmas = torch.gather(mus.squeeze(), 2, which_g.unsqueeze(2)).squeeze(), torch.gather(sigmas.squeeze(), 2, which_g.unsqueeze(2)).squeeze()
+        else:
+            print('size of mus and sigmas is neither 3D nor 4D.')
+            raise ValueError
+    else: 
+        mus, sigmas = mus.squeeze(), sigmas.squeeze()
+
+    # predict the next latent state. 
+    pred_latent_deltas = mus + (sigmas * torch.randn_like(mus))
+    latent_s = latent_s+pred_latent_deltas
+
+    if return_chosen_mus_n_sigs: 
+        return latent_s, mus, sigmas
+    else: 
+        return latent_s 
+
+
+
 
 '''class RolloutGenerator(object):
     """ Utility to generate rollouts.

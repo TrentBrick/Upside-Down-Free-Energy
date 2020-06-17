@@ -20,6 +20,7 @@ from controller_model import load_parameters
 import copy 
 from torchvision.utils import save_image
 import time
+from utils.misc import sample_mdrnn_latent
 
 class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attributes
     """
@@ -120,17 +121,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
             action = torch.Tensor(action).unsqueeze(0)
             mus, sigmas, logpi, r, d, n_h = self._rnn(action, self._lstate, self._hstate) #next_z, next_hidden)
 
-            if NUM_GAUSSIANS_IN_MDRNN > 1:
-                g_probs = Categorical(probs=torch.exp(logpi).permute(0,2,1))
-                which_g = g_probs.sample()
-                mus_g, sigs_g = torch.gather(mus.squeeze(), 0, which_g), torch.gather(sigmas.squeeze(), 0, which_g)
-            #print(mus_g.shape)
-            else: 
-                mus_g, sigs_g = md_mus.squeeze(), md_sigmas.squeeze()
-
-            
-            pred_deltas = mus_g + sigs_g * torch.randn_like(mus_g)
-            next_z = pred_deltas+self._lstate
+            next_z =  sample_mdrnn_latent(mus, sigmas, logpi, self._lstate)
 
             #mu, sigma, pi, r, d, n_h = self._rnn(action, self._lstate, self._hstate)
             #pi = pi.squeeze()
@@ -214,15 +205,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
                     md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
                     # get the next latent state
-                    if NUM_GAUSSIANS_IN_MDRNN > 1:
-                        g_probs = Categorical(probs=torch.exp(md_logpi.squeeze()).permute(0,2,1))
-                        which_g = g_probs.sample()
-                        mus_g, sigs_g = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
-                    else: 
-                        mus_g, sigs_g = md_mus.squeeze(), md_sigmas.squeeze()
                     
-                    delta_preds = mus_g + (sigs_g * torch.randn_like(mus_g))
-                    ens_latent_s = ens_latent_s+delta_preds
+                    ens_latent_s =  sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
 
                     ens_action = self.sample_cross_entropy_method() 
                     

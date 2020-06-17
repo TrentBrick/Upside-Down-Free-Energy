@@ -28,7 +28,7 @@ import time
 
 def main(args):
 
-    assert args.num_workers <= cpu_count()-1, "Providing too many workers! Need one less than total amount." 
+    assert args.num_workers <= cpu_count(), "Providing too many workers! Need one less than total amount." 
 
     conditional =True
     make_vae_samples = True 
@@ -101,10 +101,10 @@ def main(args):
                 #earlystopping.load_state_dict(state['earlystopping'])
                     
     # save init models
-    else: 
-        print("Starting new models from scratch and removing the old logger file!")
-        print("NB! This will overwrite the best and checkpoint models!\nSleeping for 10 seconds to allow you to change your mind...")
-        time.sleep(10.0)
+    if args.no_reload or args.giving_pretrained: 
+        print("Overwriting checkpoint because pretrained models or no reload was called and removing the old logger file!")
+        print("NB! This will overwrite the best and checkpoint models!\nSleeping for 5 seconds to allow you to change your mind...")
+        time.sleep(5.0)
         for model_var, model_name in zip([vae, mdrnn],['vae', 'mdrnn']):
             save_checkpoint({
                 "state_dict": model_var.state_dict(),
@@ -117,7 +117,8 @@ def main(args):
                         # saves file to is best AND checkpoint
 
         # unlinking the old logger too
-        unlink(logger_filename)
+        if exists(logger_filename):
+            unlink(logger_filename)
 
     # making learning rate lower because models are already pretrained!
     if args.giving_pretrained: 
@@ -290,6 +291,8 @@ def main(args):
             pbar.update(BATCH_SIZE)
         pbar.close()
 
+        print('we have obs here', obs.shape)
+
         # puts losses on a per element level.
         cumloss_dict = {k: (v*BATCH_SIZE) / len(loader.dataset) for k, v in cumloss_dict.items()}
         # sort the order so they are added to the logger in the same order!
@@ -328,9 +331,9 @@ def main(args):
 
         # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
         train_loader = DataLoader(train_dataset,
-            batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=True)
+            batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
         test_loader = DataLoader(test_dataset, shuffle=True,
-            batch_size=BATCH_SIZE, num_workers=0, drop_last=True)
+            batch_size=BATCH_SIZE, num_workers=0, drop_last=False)
         print('====== Starting Training of VAE and MDRNN')
         # train VAE and MDRNN. uses partial(data_pass)
         train_loss_dict = train(e)
