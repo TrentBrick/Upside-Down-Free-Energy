@@ -63,10 +63,10 @@ testing_old_controller = False
 
 class Models:
 
-    def __init__(self, env_name, time_limit, use_old_gym=False, 
+    def __init__(self, env_name, time_limit=1000, use_old_gym=False, 
         mdir=None, return_events=False, give_models=None, conditional=True, 
-        joint_file_dir=False, planner_n_particles=100, cem_params=None, horizon=30, 
-        num_action_repeats=5):
+        joint_file_dir=False, planner_n_particles=100, horizon=30, 
+        num_action_repeats=5, init_cem_params=None, cem_iters=10, discount_factor=0.90):
         """ Build vae, rnn, controller and environment. """
 
         #self.env = gym.make('CarRacing-v0')
@@ -76,10 +76,6 @@ class Models:
         self.device = 'cpu' #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
-        
-        if cem_params:
-            self.cem_mus = cem_params[0]
-            self.cem_sigmas = cem_params[1]
 
         self.transform = transforms.Compose([
                 transforms.ToPILImage(),
@@ -124,12 +120,16 @@ class Models:
             self.mdrnn.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
 
-            
-
         self.num_action_repeats = num_action_repeats
         # the real horizon 
         self.horizon = horizon
         self.planner_n_particles = planner_n_particles
+
+        if init_cem_params:
+            self.init_cem_mus = init_cem_params[0]
+            self.init_cem_sigmas = init_cem_params[1]
+        self.cem_iters = cem_iters 
+        self.discount_factor = discount_factor
         
         # TODO: make an MDRNN ensemble. 
         self.mdrnn_ensemble = [self.mdrnn]
@@ -179,18 +179,16 @@ class Models:
         
         return action.squeeze().cpu().numpy(), next_hidden
 
-    def planner(self, latent_s, full_hidden, reward, discount_factor=0.98):
+    def planner(self, latent_s, full_hidden, reward, discount_factor=0.90):
         # predicts into the future up to horizon. 
         # returns the immediate action that will lead to the largest
         # cumulative reward
 
-        #TODO: Combine current and previous CEM from last iteration. For now I am 
-        # starting from scratch each time 
-        self.cem_mus = torch.Tensor([0,0.9,0]) 
-        self.cem_sigmas = torch.Tensor([0.8,0.7,0.3])
-        cem_iters = 10
+        # starting CEM from scratch each time 
+        self.cem_mus = self.init_cem_mus.clone()
+        self.cem_sigmas = self.init_cem_sigmas.clone()
 
-        for cem_iter in range(cem_iters):
+        for cem_iter in range(self.cem_iters):
 
             all_particles_cum_rewards = torch.zeros((self.planner_n_particles))
             all_particles_sequential_actions = torch.zeros((self.planner_n_particles, self.horizon, self.cem_mus.shape[0]))
@@ -222,7 +220,7 @@ class Models:
 
                     ens_action = self.sample_cross_entropy_method() 
                     # store these cumulative rewards
-                    all_particles_cum_rewards[start_ind:end_ind] += (discount_factor**t)*ens_reward
+                    all_particles_cum_rewards[start_ind:end_ind] += (self.discount_factor**t)*ens_reward
                     all_particles_sequential_actions[start_ind:end_ind, t, :] = ens_action
 
                     # unsqueeze for the next iteration. 

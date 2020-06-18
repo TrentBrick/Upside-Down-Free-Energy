@@ -1,4 +1,6 @@
-
+""" 
+Useful utilities for Joint Training.  
+"""
 import numpy as np
 import sys 
 from os.path import join, exists
@@ -16,7 +18,22 @@ from ray.util.multiprocessing import Pool
 #from multiprocessing import Pool 
 
 class GeneratedDataset(torch.utils.data.Dataset):
-    """ """
+    """ This dataset is inspired by those from dataset/loaders.py but it 
+    doesn't need to apply any transformations to the data or load in any 
+    files.
+
+    :args:
+        - transform: any tranforms desired. Currently these are done by each rollout
+        and sent back to avoid performing redundant transforms.
+        - data: a dictionary containing a list of Pytorch Tensors. 
+                Each element of the list corresponds to a separate full rollout.
+                Each full rollout has its first dimension corresponding to time. 
+        - seq_len: desired length of rollout sequences. Anything shorter must have 
+        already been dropped. (currently done in 'combine_worker_rollouts()')
+
+    :returns:
+        - a subset of length 'seq_len' from one of the rollouts with all of its relevant features.
+    """
     def __init__(self, transform, data, seq_len): 
         self._transform = transform
         self.data = data
@@ -26,57 +43,72 @@ class GeneratedDataset(torch.utils.data.Dataset):
 
         # set the cum size tracker by iterating through the data:
         for d in self.data['terminal']:
-            #print(d, 'whats being added to cum size')
             self._cum_size += [self._cum_size[-1] +
                                    (len(d)-self._seq_len)]
 
     def __getitem__(self, i): # kind of like the modulo operator but within rollouts of batch size. 
         # binary search through cum_size
         rollout_index = bisect(self._cum_size, i) - 1 # because it finds the index to the right of the element. 
-        # within a specific rollout. will linger on one rollout for a while
+        # within a specific rollout. will linger on one rollout for a while iff random sampling not used. 
         seq_index = i - self._cum_size[rollout_index] # references the previous file length. so normalizes to within this file's length. 
         
         obs_data = self.data['obs'][rollout_index][seq_index:seq_index + self._seq_len + 1]
         if self._transform:
             obs_data = self._transform(obs_data.astype(np.float32))
         action = self.data['actions'][rollout_index][seq_index:seq_index + self._seq_len + 1]
-        #action = action.astype(np.float32)
         reward, terminal = [self.data[key][rollout_index][seq_index:
-                                      seq_index + self._seq_len + 1]#.astype(np.float32)
+                                      seq_index + self._seq_len + 1]
                             for key in ('rewards', 'terminal')]
-        # this transform is already being done and saved. 
-        #reward = np.expand_dims(reward, 1)
         return obs_data, action, reward.unsqueeze(1), terminal
         
     def __len__(self):
         return self._cum_size[-1]
 
 def combine_worker_rollouts(inp, seq_len, dim=1):
-    """Combine data across the workers and their rollouts (making each rollout a separate batch)
-    I currently only care about the data_dict_list. This is a list of each rollout: 
-    each one has the dictionary keys: 'obs', 'rewards', 'actions', 'terminal'"""
-    print('RUNNING COMBINE WORKER')
+    """Combine data across the workers and their rollouts (making each rollout a separate element in a batch)
+    
+    :args:
+        - inp: list. containing outputs of each worker. Assumes that each worker output inside this list is itself a list (or tuple)
+        - seq_len: int. given to ensure each rollout is equal to or longer. 
+        - dim: int. for a given worker, the element in its returned list that corresponds to the rollouts to be combined.
 
+    :returns:
+        - dictionary of rollouts organized by element type (eg. actions, pixel based observations). 
+            Each dictionary key corresponds to a list of full rollouts. 
+            Each full rollout has its first dimension corresponding to time. 
+    """
+    
+    print('RUNNING COMBINE WORKER')
     first_iter = True
+    # iterate through the worker outputs. 
     for worker_rollouts in inp: 
+        # iterate through each of the rollouts within the list of rollouts inside this worker.
         for rollout_data_dict in worker_rollouts[dim]: # this is pulling from a list!
-            # this rollout is too small so it is being ignored. 
-            # getting one of the keys from the dictionary
             if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
+                # this rollout is too small so it is being ignored. 
+                # getting one of the keys from the dictionary in a dict agnostic way.
+                # NOTE: assumes that all keys in the dictionary correspond to lists of the same length
                 print('!!!!!! Combine_worker_rollouts is ignoring rollout of length', len(rollout_data_dict[list(rollout_data_dict.keys())[0]]), 'for being smaller than the sequence length')
                 continue
 
             if first_iter:
+                # init the combo dictionary with lists for each key. 
                 combo_dict = {k:[v] for k, v in rollout_data_dict.items()} 
                 first_iter = False
             else: 
+                # append items to the list for each key
                 for k, v in combo_dict.items():
                     v.append(rollout_data_dict[k])
 
     return combo_dict
 
-def generate_rollouts_using_planner(cem_params, horizon, num_action_repeats, planner_n_particles, seq_len, 
-    time_limit, logdir, num_rolls_per_worker=2, num_workers=16, transform=None, joint_file_dir=True): # this makes 32 pieces of data.
+def generate_rollouts_using_planner(horizon, num_action_repeats, planner_n_particles, 
+    seq_len, time_limit, logdir, init_cem_params, cem_iters, discount_factor, 
+    num_rolls_per_worker=2, num_workers=16, compute_feef=True): # this makes 32 pieces of data.
+
+    """ Uses ray.util.multiprocessing Pool to create workers that each run environment rollouts using 
+    planning with CEM (Cross Entropy Method). Each worker passes back 
+    """
 
     # 10% of the rollouts to use for test data. 
     ten_perc = np.floor(num_workers*0.1)
@@ -90,29 +122,13 @@ def generate_rollouts_using_planner(cem_params, horizon, num_action_repeats, pla
     worker_data = []
     #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
-        worker_data.append( (cem_params, horizon, num_action_repeats, planner_n_particles, rand_ints[i], num_rolls_per_worker, time_limit, logdir, True ) ) # compute FEEF.
+        worker_data.append( (time_limit, horizon, num_action_repeats, 
+            planner_n_particles, init_cem_params, cem_iters, discount_factor,
+            rand_ints[i], num_rolls_per_worker, 
+            time_limit, logdir, compute_feef ) )
 
-    #res = ray.get( [worker.remote() ] )
     with Pool(processes=num_workers) as pool:
-        all_worker_outputs = pool.map(worker, worker_data) 
-
-    res = []
-    for ind, worker_output in enumerate(all_worker_outputs): 
-        res.append(worker_output[0])
-        if ind==0:
-            cem_mus = worker_output[1]  
-            cem_sigmas = worker_output[2]
-        else:
-            cem_mus += worker_output[1] 
-            cem_sigmas += worker_output[2]
-    # averaging across the workers for the new CEM parameters. 
-    cem_mus /= num_workers
-    cem_sigmas /= num_workers
-
-    # cem_smoothing: 
-    alpha_smoothing=0.2
-    cem_mus = cem_mus*alpha_smoothing + (1-alpha_smoothing)*cem_params[0]
-    cem_sigmas = cem_sigmas*alpha_smoothing + (1-alpha_smoothing)*cem_params[1]
+        res = pool.map(worker, worker_data) 
 
     # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
     print('===== Done with pool of workers')
@@ -125,20 +141,24 @@ def generate_rollouts_using_planner(cem_params, horizon, num_action_repeats, pla
 
     print("Number of rollouts being given to test:", len(res[ninety_perc:]))
 
-    return (cem_mus, cem_sigmas), \
-                combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), \
+    return combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), \
                 combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), \
                 feef_losses, reward_list
 
 #@ray.remote
 def worker(inp): # run lots of rollouts 
-    cem_params, horizon, num_action_repeats, planner_n_particles, seed, num_episodes, max_len, logdir, compute_feef = inp
+    time_limit, horizon, num_action_repeats, \
+        planner_n_particles, init_cem_params, \
+        cem_iters, discount_factor, seed, num_episodes, \
+        max_len, logdir, compute_feef = inp
     gamename = 'carracing'
-    model = Models(gamename, 1000, mdir = logdir, conditional=True, 
+    model = Models(gamename, time_limit=1000, mdir = logdir, conditional=True, 
             return_events=True, use_old_gym=False, joint_file_dir=True,
-            planner_n_particles = planner_n_particles, cem_params=cem_params, 
-            horizon=horizon, num_action_repeats=num_action_repeats)
+            planner_n_particles = planner_n_particles, 
+            horizon=horizon, num_action_repeats=num_action_repeats,
+            init_cem_params=init_cem_params, cem_iters=cem_iters, 
+            discount_factor=discount_factor)
 
     return model.simulate(train_mode=True, render_mode=False, 
             num_episode=num_episodes, seed=seed, max_len=max_len, 
-            compute_feef=compute_feef), model.cem_mus, model.cem_sigmas
+            compute_feef=compute_feef)

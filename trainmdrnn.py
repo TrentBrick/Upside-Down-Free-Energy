@@ -190,7 +190,9 @@ def main(args):
             mdrnn.eval()
             loader = test_loader
 
-        loader.dataset.load_next_buffer()
+        if epoch !=0:
+            # else has already loaded one in on init
+            loader.dataset.load_next_buffer()
 
         cum_loss = 0
         cum_gmm = 0
@@ -248,7 +250,8 @@ def main(args):
         if train: 
             return cum_losses # puts it on a per seq len chunk level. 
         else: 
-            return cum_losses, obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]
+            for_mdrnn_sampling = [obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]]
+            return cum_losses, for_mdrnn_sampling
 
     train = partial(data_pass, train=True, include_reward=include_reward, include_terminal=args.include_terminal)
     test = partial(data_pass, train=False, include_reward=include_reward, include_terminal=args.include_terminal)
@@ -257,7 +260,7 @@ def main(args):
         print('========== Training run')
         train_losses = train(e)
         print('========== Testing run')
-        test_losses, last_test_observations, last_test_pres_rewards, last_test_next_rewards, last_test_latent_pres_obs, last_test_latent_next_obs, last_test_pres_action = test(e)
+        test_losses, for_mdrnn_sampling = test(e)
         train_loss = train_losses[0]
         test_loss = test_losses[0]
         scheduler.step(test_loss)
@@ -297,14 +300,7 @@ def main(args):
             end_sample_ind = start_sample_ind+example_length
 
             # ensuring this is the same length as everything else. 
-            last_test_observations = last_test_observations[1:, :, :, :]
-
-            
-
-            for_mdrnn_sampling = (last_test_observations, \
-            last_test_pres_rewards, last_test_next_rewards, \
-            last_test_latent_pres_obs, last_test_latent_next_obs, \
-            last_test_pres_action)
+            for_mdrnn_sampling[0] = for_mdrnn_sampling[0][1:, :, :, :]
 
             last_test_observations, \
             last_test_pres_rewards, last_test_next_rewards, \

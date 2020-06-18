@@ -1,5 +1,7 @@
-""" Joint training of the VAE and MDRNN (forward model) using 
-    CEM based probabilistic Planner. """
+""" 
+Joint training of the VAE and MDRNN (forward model) using 
+CEM based probabilistic Planner. 
+"""
 import argparse
 from functools import partial
 from os.path import join, exists
@@ -31,37 +33,46 @@ def main(args):
 
     assert args.num_workers <= cpu_count(), "Providing too many workers! Need one less than total amount." 
 
-    conditional =True
-    make_vae_samples = True 
-    make_mdrnn_samples=True
+    condition_on_rewards =True
+    make_vae_samples, make_mdrnn_samples = True, True
     # used for saving which models are the best based upon their train performance. 
     vae_n_mdrnn_cur_best=None
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_feef = False
-    use_training_buffer=True
+    use_feef = True # NOTE: currently not actually computing it inside of simulate!!!!
 
-    include_reward = conditional # this is very important for the conditional 
+    include_reward = condition_on_rewards # has the MDRNN return rewards. this is very important for the conditioning on rewards 
     include_terminal = False
     
     # Constants
-    BATCH_SIZE = 1024 # larger than currently have a buffer for. 
-    # this should be very close to the actual planning horizon that
-    SEQ_LEN = 199 # number of sequences in a row used during training
+    BATCH_SIZE = 32
+    SEQ_LEN = 100 # number of sequences in a row used during training
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 3
 
     # Planning values
-    planner_n_particles = 100
+    planner_n_particles = 700
     desired_horizon = 30
     num_action_repeats = 5 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
     actual_horizon = desired_horizon//num_action_repeats
+    discount_factor = 0.90
+    init_cem_params = ( torch.Tensor([0,0.7,0]), torch.Tensor([0.5,0.7,0.3]) )
+    cem_iters = 7
 
     # for plotting example horizons:
     example_length = 16
     assert example_length<= SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - actual_horizon
+
+    # memory buffer:
+    # making a memory buffer for previous rollouts too. 
+    # buffer contains a dictionary full of tensors. 
+    use_training_buffer=True
+    num_new_rollouts = args.num_workers*num_vae_mdrnn_training_rollouts_per_worker
+    num_prev_epochs_to_store = 4
+    # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
+    max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
 
     kl_tolerance=0.5
     kl_tolerance_scaled = torch.Tensor([kl_tolerance*LATENT_SIZE]).to(device)
@@ -84,8 +95,8 @@ def main(args):
     logger_filename = join(joint_dir, 'logger.txt')
 
     # init models
-    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional).to(device)
-    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional).to(device)
+    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, condition_on_rewards).to(device)
+    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, condition_on_rewards).to(device)
     
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
@@ -221,9 +232,15 @@ def main(args):
             - cumloss_dict - All of the losses collected from this epoch. 
                             Averaged across the batches and sequence lengths 
                             to be on a per element basis. 
-            if test also returns: 
-                - obs[0,:,:,:,:] first batch of observations. Used to generate VAE samples
-                - reward[0,:,:] first batch of rewards. Used to generate VAE samples
+            if test also returns information used to generate the VAE and MDRNN samples
+            these are useful for evaluating performance: 
+                - first in the batch of:
+                    - obs[0,:,:,:,:]
+                    - pres_reward[0,:,:] 
+                    - next_reward[0,:,:]
+                    - latent_obs[0,:,:]
+                    - latent_next_obs[0,:,:]
+                    - pres_action[0,:,:]
         """
         
         if train:
@@ -243,7 +260,7 @@ def main(args):
 
         def forward_and_loss(return_for_vae_n_mdrnn_sampling=False):
             """ 
-            Run the VAE and MDRNNs and get return their losses. 
+            Run the VAE and MDRNNs and return their losses. 
             """
             # transform obs
             vae_res_dict = run_vae(obs, reward)
@@ -263,7 +280,7 @@ def main(args):
                                 terminal, include_reward, include_terminal )
 
             if return_for_vae_n_mdrnn_sampling: 
-                for_vae_n_mdrnn_sampling = (obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:])
+                for_vae_n_mdrnn_sampling = [obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]]
                 return vae_loss_dict, mdrnn_loss_dict, for_vae_n_mdrnn_sampling
             else: 
                 return vae_loss_dict, mdrnn_loss_dict
@@ -273,7 +290,6 @@ def main(args):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
 
             if train:
-
                 vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
                 # coefficient balancing!
                 mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
@@ -292,17 +308,17 @@ def main(args):
                     mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
                     #total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
-            # add to cumulative losses
+            # add results from each batch to cumulative losses
             for k in cumloss_dict.keys():
                 for loss_dict in [vae_loss_dict, mdrnn_loss_dict]:
                     if k in loss_dict.keys():
                         cumloss_dict[k] += loss_dict[k].item() if hasattr(loss_dict[k], 'item') else \
                                                 loss_dict[k]
-            # separate vae and mdrnn losses: 
+            # store separately vae and mdrnn losses: 
             cumloss_dict['loss_vae'] += vae_loss_dict['loss'].item()
             cumloss_dict['loss_mdrnn'] += mdrnn_loss_dict['loss'].item()
 
-            # TODO: make this much more modular. 
+            # Display training progress bar with current losses
             postfix_str = ""
             for k,v in cumloss_dict.items():
                 v = v / (i + 1)
@@ -310,8 +326,6 @@ def main(args):
             pbar.set_postfix_str(postfix_str)
             pbar.update(BATCH_SIZE)
         pbar.close()
-
-        print('we have obs here', obs.shape)
 
         # puts losses on a per element level.
         cumloss_dict = {k: (v*BATCH_SIZE) / len(loader.dataset) for k, v in cumloss_dict.items()}
@@ -326,42 +340,26 @@ def main(args):
     train = partial(data_pass, train=True)
     test = partial(data_pass, train=False)
 
-    # TODO: save and load the CEM parameters across full command line based runs
-    cem_params = ( torch.Tensor([0,0.8,0]) , torch.Tensor([0.3,0.2,0.2]) )
-
-    # making a memory buffer for previous rollouts too. 
-    # If I store 200 rollouts in here. with 16 workers and 3 rollouts 
-    # each time that is 4 epochs. worth of worker results. 
-    # buffer contains a dictionary full of tensors. 
-    num_new_rollouts = args.num_workers*num_vae_mdrnn_training_rollouts_per_worker
-    num_prev_epochs_to_store = 4
-    # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
-    max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
-
     ################## Main Training Loop ############################
 
     for e in range(epochs):
         print('====== New Epoch: ',e)
         ## run the current policy with the current VAE and MDRNN
-        # TODO: implement memory buffer as data doesnt need to be on policy. 
-        # Uses planning
+
         # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
         print('====== Generating Rollouts to train the MDRNN and VAE') 
-        # NOTE: currently I am updating the CEM parameters here across iterations but I am not actually using this. 
-        # they are being reset in the planner() function in controller_model.py each new plan generated.
-        # NOTE: If I did update this, I would need to account for the fact that updates should occur between planning steps.
-        # but aggregating across runs across workers doesnt really make much sense. Should never just do this. 
-        cem_params, train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
-                cem_params, actual_horizon, num_action_repeats, planner_n_particles, 
-                SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
-                num_workers=args.num_workers, joint_file_dir=True, transform=None )
+        train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
+                actual_horizon, num_action_repeats, planner_n_particles, 
+                SEQ_LEN, time_limit, joint_dir, init_cem_params, cem_iters, discount_factor,
+                 num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
+                num_workers=args.num_workers, compute_feef=use_feef )
 
-        if use_training_buffer: 
+        if use_training_buffer:
             if e==0:
                 # init buffers
                 buffer_train_data = train_data
                 buffer_index = len(train_data['terminal'])
-            else: 
+            else:
                 curr_buffer_size = len(buffer_train_data['terminal'])
                 length_data_added = len(train_data['terminal'])
                 # dict agnostic length checker::: len(buffer_train_data[list(buffer_train_data.keys())[0]])
@@ -370,7 +368,8 @@ def main(args):
                     print('growing buffer')
                     for k, v in buffer_train_data.items():
                         #buffer_train_data[k] = np.concatenate([v, train_data[k]], axis=0)
-                        buffer_train_data[k] = torch.cat([v, train_data[k]], dim=0)
+                        buffer_train_data[k] += train_data[k]
+                        #buffer_train_data[k] = torch.cat([v, train_data[k]], dim=0)
                     print('new buffer size', len(buffer_train_data['terminal']))
                     buffer_index += length_data_added
                     #if now exceeded buffer size: 
@@ -400,16 +399,16 @@ def main(args):
                         buffer_index = buffer_index % max_buffer_size
 
             print('epoch', e, 'size of buffer', len(buffer_train_data['terminal']), 'buffer index', buffer_index)
-
         else: 
             buffer_train_data = train_data
 
-        print('CEM parameters averaged across workers after generating rollouts ***used for the last action in the plans***!', cem_params)
-
+        # NOTE: currently not applying any transformations as saving those that happen when the 
+        # rollouts are actually generated. 
         train_dataset = GeneratedDataset(None, buffer_train_data, SEQ_LEN)
         test_dataset = GeneratedDataset(None, test_data, SEQ_LEN)
-        # TODO: set number of workers higher. Doesnt matter much as already have tensors ready. 
-        # and before it was clashing with the ray data loaders. 
+        # TODO: set number of workers higher. Here it doesn;t matter much as already have tensors ready. 
+        # (dont need any loading or tranformations) 
+        # and before these workers were clashing with the ray workers for generating rollouts. 
         train_loader = DataLoader(train_dataset,
             batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
         test_loader = DataLoader(test_dataset, shuffle=True,
@@ -456,13 +455,14 @@ def main(args):
             start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
             end_sample_ind = start_sample_ind+example_length
 
-            # ensuring this is the same length as everything else. 
-            last_test_observations = last_test_observations[1:, :, :, :]
+            # ensuring that the last_test_observations are the same length as everything else. 
+            # and one into the future. 
+            for_vae_n_mdrnn_sampling[0] = for_vae_n_mdrnn_sampling[0][1:, :, :, :]
             
             last_test_observations, \
             last_test_pres_rewards, last_test_next_rewards, \
             last_test_latent_pres_obs, last_test_latent_next_obs, \
-            last_test_pres_action = [var[start_sample_ind:end_sample_ind+1] for var in for_vae_n_mdrnn_sampling]
+            last_test_pres_action = [var[start_sample_ind:end_sample_ind] for var in for_vae_n_mdrnn_sampling]
 
         # generating and saving VAE samples
         if make_vae_samples:
@@ -476,6 +476,7 @@ def main(args):
                 print('Generating VAE samples of the shape:', to_save.shape)
                 save_image(to_save,
                         join(samples_dir, 'vae_sample_' + str(e) + '.png'))
+        
         print('====== Done Generating VAE Samples')
 
         # Generate MDRNN examples. 
@@ -505,7 +506,7 @@ def main(args):
                 print('trying to save all out', last_test_observations.shape, 
                     real_next_vae_decoded_observation.shape, 
                     pred_next_vae_decoded_observation.shape )
-                to_save = torch.cat([last_test_observations, 
+                to_save = torch.cat([last_test_observations.cpu(), 
                     real_next_vae_decoded_observation.cpu(), 
                     pred_next_vae_decoded_observation.cpu()], dim=0)
                 print('Generating MDRNN samples of the shape:', to_save.shape)
@@ -516,6 +517,10 @@ def main(args):
                 # Generating multistep predictions from the first latent. 
                 horizon_pred_obs = []
                 mse_losses = [] 
+                print('device is:', device)
+                print(real_next_vae_decoded_observation.device, pred_next_vae_decoded_observation.device)
+                print(last_test_observations.device)
+                print(last_test_pres_action.device, last_test_latent_pres_obs.device)
                 horizon_next_hidden = [
                     torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
                     for _ in range(2)]
@@ -578,7 +583,7 @@ def main(args):
                 print('===== MSE losses between horizon prediction and real', mse_losses)
                 horizon_pred_obs_full_based = torch.stack(horizon_pred_obs).squeeze()
 
-                to_save = torch.cat([last_test_observations, real_next_vae_decoded_observation.cpu(), 
+                to_save = torch.cat([last_test_observations.cpu(), real_next_vae_decoded_observation.cpu(), 
                     horizon_pred_obs_given_next.cpu(),
                     horizon_pred_obs_full_based.cpu()], dim=0)
 
