@@ -70,12 +70,21 @@ def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # constants
-    BATCH_SIZE = 256
-    SEQ_LEN = 16
+    BATCH_SIZE = 1024
+    SEQ_LEN = 199
     epochs = 300
     conditional=True 
     cur_best = None
     make_mdrnn_samples = True 
+
+    desired_horizon = 30
+    num_action_repeats = 5 # number of times the same action is performed repeatedly. 
+    # this makes the environment accelerate by this many frames. 
+    actual_horizon = desired_horizon//num_action_repeats
+    # for plotting example horizons:
+    example_length = 16
+    assert example_length<= SEQ_LEN, "Example length must be smaller."
+    memory_adapt_period = example_length - actual_horizon
 
     samples_dir = join(args.logdir, 'mdrnn', 'samples')
     if not exists(samples_dir):
@@ -139,13 +148,12 @@ def main(args):
     # note that the buffer sizes are very small. and batch size is even smaller.
     # batch size is smaller because each element is in fact 32 observations!
     train_loader = DataLoader(
-        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=30),
+        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=200),
         batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
     test_loader = DataLoader(
         RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=5),
         batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
 
-    # TODO: Wasted compute. split into obs and next obs only much later!!
     def to_latent(obs, rewards):
         """ Transform observations to latent space.
 
@@ -192,6 +200,8 @@ def main(args):
         pbar = tqdm(total=len(loader.dataset), desc="Epoch {}".format(epoch))
         for i, data in enumerate(loader):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
+
+            print('===== obs shape is:', obs.shape)
 
             # transform obs
             latent_obs = to_latent(obs, reward)
@@ -284,10 +294,18 @@ def main(args):
             # need to restrict the data to a random segment. Important in cases where 
             # sequence length is too long
             start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
-            end_sample_ind = start_mdrnn_example_ind+example_length
+            end_sample_ind = start_sample_ind+example_length
 
             # ensuring this is the same length as everything else. 
             last_test_observations = last_test_observations[1:, :, :, :]
+
+            
+
+            for_mdrnn_sampling = (last_test_observations, \
+            last_test_pres_rewards, last_test_next_rewards, \
+            last_test_latent_pres_obs, last_test_latent_next_obs, \
+            last_test_pres_action)
+
             last_test_observations, \
             last_test_pres_rewards, last_test_next_rewards, \
             last_test_latent_pres_obs, last_test_latent_next_obs, \
@@ -358,7 +376,7 @@ def main(args):
                     torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
                     for _ in range(2)]
     
-                for t in range(SEQ_LEN):
+                for t in range(example_length):
                     next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
                     horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
                     horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
@@ -383,10 +401,6 @@ def main(args):
 
                 horizon_pred_obs_given_next = torch.stack(horizon_pred_obs).squeeze()
 
-                #######################
-
-                memory_adapt_period = 10
-
                 ##################
                 print('using full RNN!!!')
 
@@ -400,7 +414,7 @@ def main(args):
                     torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
                     for _ in range(2)]
     
-                for t in range(SEQ_LEN):
+                for t in range(example_length):
                     next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
                     print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
@@ -438,7 +452,7 @@ def main(args):
                 horizon_next_hidden = [
                     torch.zeros(1, LATENT_RECURRENT_SIZE).to(device)
                     for _ in range(2)]
-                for t in range(SEQ_LEN):
+                for t in range(example_length):
                     next_action = last_test_pres_action[t].unsqueeze(0)
                     print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn_cell(next_action, 

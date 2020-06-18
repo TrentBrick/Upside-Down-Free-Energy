@@ -126,7 +126,7 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, return_chosen_mus_n_sigs=F
 
     # predict the next latent state. 
     pred_latent_deltas = mus + (sigmas * torch.randn_like(mus))
-    print('size of predicted deltas and real', pred_latent_deltas.shape, latent_s.shape)
+    #print('size of predicted deltas and real', pred_latent_deltas.shape, latent_s.shape)
     latent_s = latent_s+pred_latent_deltas
 
     if return_chosen_mus_n_sigs: 

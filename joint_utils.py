@@ -125,8 +125,9 @@ def generate_rollouts_using_planner(cem_params, horizon, num_action_repeats, pla
 
     print("Number of rollouts being given to test:", len(res[ninety_perc:]))
 
-    return (cem_mus, cem_sigmas), GeneratedDataset(transform, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), seq_len),  \
-                GeneratedDataset(transform, combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), seq_len), \
+    return (cem_mus, cem_sigmas), \
+                combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), \
+                combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), \
                 feef_losses, reward_list
 
 #@ray.remote

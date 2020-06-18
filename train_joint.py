@@ -12,7 +12,7 @@ from torchvision.utils import save_image
 import numpy as np
 import json
 from tqdm import tqdm
-from joint_utils import generate_rollouts_using_planner
+from joint_utils import generate_rollouts_using_planner, GeneratedDataset
 from utils.misc import save_checkpoint, load_parameters, flatten_parameters
 from utils.misc import ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE, NUM_GAUSSIANS_IN_MDRNN, NUM_IMG_CHANNELS
 from utils.learning import EarlyStopping, ReduceLROnPlateau
@@ -38,20 +38,21 @@ def main(args):
     vae_n_mdrnn_cur_best=None
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     use_feef = False
+    use_training_buffer=True
 
     include_reward = conditional # this is very important for the conditional 
     include_terminal = False
     
     # Constants
-    BATCH_SIZE = 256
+    BATCH_SIZE = 1024 # larger than currently have a buffer for. 
     # this should be very close to the actual planning horizon that
-    SEQ_LEN = 16 # number of sequences in a row used during training
+    SEQ_LEN = 199 # number of sequences in a row used during training
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
     num_vae_mdrnn_training_rollouts_per_worker = 3
 
     # Planning values
-    planner_n_particles = 1000
+    planner_n_particles = 100
     desired_horizon = 30
     num_action_repeats = 5 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
@@ -240,7 +241,7 @@ def main(args):
         # store all of the losses for this data pass. 
         cumloss_dict = {n:0 for n in ['loss', 'loss_vae', 'loss_mdrnn','kld', 'recon', 'gmm', 'bce', 'mse']}
 
-        def forward_and_loss(return_for_mdrnn_sampling=False):
+        def forward_and_loss(return_for_vae_n_mdrnn_sampling=False):
             """ 
             Run the VAE and MDRNNs and get return their losses. 
             """
@@ -261,9 +262,9 @@ def main(args):
                                 pres_reward, next_reward,
                                 terminal, include_reward, include_terminal )
 
-            if return_for_mdrnn_sampling: 
-                for_mdrnn_sampling = (obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:])
-                return vae_loss_dict, mdrnn_loss_dict, for_mdrnn_sampling
+            if return_for_vae_n_mdrnn_sampling: 
+                for_vae_n_mdrnn_sampling = (obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:])
+                return vae_loss_dict, mdrnn_loss_dict, for_vae_n_mdrnn_sampling
             else: 
                 return vae_loss_dict, mdrnn_loss_dict
 
@@ -286,7 +287,7 @@ def main(args):
                 optimizer.step()
             else:
                 with torch.no_grad():
-                    vae_loss_dict, mdrnn_loss_dict, for_mdrnn_sampling = forward_and_loss(return_for_mdrnn_sampling = True)
+                    vae_loss_dict, mdrnn_loss_dict, for_vae_n_mdrnn_sampling = forward_and_loss(return_for_vae_n_mdrnn_sampling = True)
                     # coefficient balancing!
                     mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
                     #total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
@@ -319,7 +320,7 @@ def main(args):
         if train: 
             return cumloss_dict 
         else: 
-            return cumloss_dict, for_mdrnn_sampling
+            return cumloss_dict, for_vae_n_mdrnn_sampling
             # return the last observation and reward to generate the VAE examples. 
 
     train = partial(data_pass, train=True)
@@ -327,6 +328,15 @@ def main(args):
 
     # TODO: save and load the CEM parameters across full command line based runs
     cem_params = ( torch.Tensor([0,0.8,0]) , torch.Tensor([0.3,0.2,0.2]) )
+
+    # making a memory buffer for previous rollouts too. 
+    # If I store 200 rollouts in here. with 16 workers and 3 rollouts 
+    # each time that is 4 epochs. worth of worker results. 
+    # buffer contains a dictionary full of tensors. 
+    num_new_rollouts = args.num_workers*num_vae_mdrnn_training_rollouts_per_worker
+    num_prev_epochs_to_store = 4
+    # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
+    max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
 
     ################## Main Training Loop ############################
 
@@ -341,14 +351,65 @@ def main(args):
         # they are being reset in the planner() function in controller_model.py each new plan generated.
         # NOTE: If I did update this, I would need to account for the fact that updates should occur between planning steps.
         # but aggregating across runs across workers doesnt really make much sense. Should never just do this. 
-        cem_params, train_dataset, test_dataset, feef_losses, reward_losses = generate_rollouts_using_planner( 
+        cem_params, train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
                 cem_params, actual_horizon, num_action_repeats, planner_n_particles, 
                 SEQ_LEN, time_limit, joint_dir, num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
                 num_workers=args.num_workers, joint_file_dir=True, transform=None )
 
+        if use_training_buffer: 
+            if e==0:
+                # init buffers
+                buffer_train_data = train_data
+                buffer_index = len(train_data['terminal'])
+            else: 
+                curr_buffer_size = len(buffer_train_data['terminal'])
+                length_data_added = len(train_data['terminal'])
+                # dict agnostic length checker::: len(buffer_train_data[list(buffer_train_data.keys())[0]])
+                if curr_buffer_size < max_buffer_size:
+                    # grow the buffer
+                    print('growing buffer')
+                    for k, v in buffer_train_data.items():
+                        #buffer_train_data[k] = np.concatenate([v, train_data[k]], axis=0)
+                        buffer_train_data[k] = torch.cat([v, train_data[k]], dim=0)
+                    print('new buffer size', len(buffer_train_data['terminal']))
+                    buffer_index += length_data_added
+                    #if now exceeded buffer size: 
+                    if buffer_index>max_buffer_size:
+                        max_buffer_size=buffer_index
+                        buffer_index = 0
+                else: 
+                    # buffer is max size. Rewrite the correct index.
+                    if buffer_index > max_buffer_size-length_data_added:
+                        print('looping!')
+                        # going to go over so needs to loop around. 
+                        amount_pre_loop = max_buffer_size-buffer_index
+                        amount_post_loop = length_data_added-amount_pre_loop
+
+                        for k in buffer_train_data.keys():
+                            buffer_train_data[k][buffer_index:] = train_data[k][:amount_pre_loop]
+
+                        for k in buffer_train_data.keys():
+                            buffer_train_data[k][:amount_post_loop] = train_data[k][amount_pre_loop:]
+                        buffer_index = amount_post_loop
+                    else: 
+                        print('clean add')
+                        for k in buffer_train_data.keys():
+                            buffer_train_data[k][buffer_index:buffer_index+length_data_added] = train_data[k]
+                        # update the index. 
+                        buffer_index += length_data_added
+                        buffer_index = buffer_index % max_buffer_size
+
+            print('epoch', e, 'size of buffer', len(buffer_train_data['terminal']), 'buffer index', buffer_index)
+
+        else: 
+            buffer_train_data = train_data
+
         print('CEM parameters averaged across workers after generating rollouts ***used for the last action in the plans***!', cem_params)
 
-        # TODO: ensure these workers are freed up after the vae/mdrnn training is Done. 
+        train_dataset = GeneratedDataset(None, buffer_train_data, SEQ_LEN)
+        test_dataset = GeneratedDataset(None, test_data, SEQ_LEN)
+        # TODO: set number of workers higher. Doesnt matter much as already have tensors ready. 
+        # and before it was clashing with the ray data loaders. 
         train_loader = DataLoader(train_dataset,
             batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
         test_loader = DataLoader(test_dataset, shuffle=True,
@@ -393,14 +454,15 @@ def main(args):
             # need to restrict the data to a random segment. Important in cases where 
             # sequence length is too long
             start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
-            end_sample_ind = start_mdrnn_example_ind+example_length
+            end_sample_ind = start_sample_ind+example_length
 
             # ensuring this is the same length as everything else. 
             last_test_observations = last_test_observations[1:, :, :, :]
+            
             last_test_observations, \
             last_test_pres_rewards, last_test_next_rewards, \
             last_test_latent_pres_obs, last_test_latent_next_obs, \
-            last_test_pres_action = [var[start_sample_ind:end_sample_ind] for var in for_mdrnn_sampling]
+            last_test_pres_action = [var[start_sample_ind:end_sample_ind+1] for var in for_vae_n_mdrnn_sampling]
 
         # generating and saving VAE samples
         if make_vae_samples:
@@ -459,7 +521,7 @@ def main(args):
                     for _ in range(2)]
                 # TODO: convert to all in one go for speed up at some point
                 # this could be done all in one go but I used code from single iterations during debugging. 
-                for t in range(SEQ_LEN):
+                for t in range(example_length):
                     next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
                     horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
                     horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
@@ -493,7 +555,7 @@ def main(args):
                     torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
                     for _ in range(2)]
     
-                for t in range(SEQ_LEN):
+                for t in range(example_length):
                     next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
                     print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 

@@ -19,7 +19,7 @@ class _RolloutDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publi
             for ssd in listdir(join(root, sd))]
 
         percentage_test = 0.1
-        end_of_train_index = int(len(self._files)*percentage_test)
+        end_of_train_index = len(self._files) - int(len(self._files)*percentage_test)
 
         if train:
             self._files = self._files[:end_of_train_index]
