@@ -182,8 +182,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
         for cem_iter in range(cem_iters):
 
-            cum_reward = torch.zeros((self.planner_n_particles))
-            sequential_actions = torch.zeros((self.planner_n_particles, actual_horizon, 3))
+            all_particles_cum_rewards = torch.zeros((self.planner_n_particles))
+            all_particles_sequential_actions = torch.zeros((self.planner_n_particles, actual_horizon, 3))
             
             sequential_rewards = []
         
@@ -200,22 +200,32 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
                 # need to produce a batch of first actions here. 
                 ens_action = self.sample_cross_entropy_method() 
 
-                for t in range(actual_horizon):
+                all_particles_cum_rewards[start_ind:end_ind] += ens_reward.squeeze()
+
+                # indices for logging the actions and rewards during horizon planning across the ensemble. 
+                start_ind = ensemble_batchsize*mdrnn_ind
+                end_ind = start_ind+ensemble_batchsize
+
+                # need to produce a batch of first actions here. 
+                ens_action = self.sample_cross_entropy_method() 
+
+                all_particles_cum_rewards[start_ind:end_ind] += ens_reward.squeeze()
+                all_particles_sequential_actions[start_ind:end_ind, 0, :] = ens_action
+
+                for t in range(1, actual_horizon):
                     
                     md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
                     # get the next latent state
-                    
                     ens_latent_s =  sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
 
                     ens_action = self.sample_cross_entropy_method() 
                     
-                    #ens_action = self.random_shooting(ensemble_batchsize) 
+                    # store these cumulative rewards and action
+                    all_particles_cum_rewards[start_ind:end_ind] += (self.discount_factor**t)*ens_reward
+                    all_particles_sequential_actions[start_ind:end_ind, t, :] = ens_action
 
-                    # store these cumulative rewards
-                    cum_reward[ensemble_batchsize*mdrnn_ind:ensemble_batchsize*mdrnn_ind+ensemble_batchsize] += ens_reward
-                    sequential_actions[ensemble_batchsize*mdrnn_ind:ensemble_batchsize*mdrnn_ind+ensemble_batchsize, t, :] = ens_action
-
+                    # unsqueeze for the next iteration. 
                     ens_reward = ens_reward.unsqueeze(1)
 
                     if cem_iter==(cem_iters-1):
@@ -224,7 +234,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
                         sequential_rewards.append(ens_reward)
 
             # update these after going through each ensemble. 
-            self.update_cross_entropy_method(sequential_actions, cum_reward)
+            self.update_cross_entropy_method(all_particles_sequential_actions, all_particles_cum_rewards)
             print('DURING ITER', cem_iter ,'new cem params:::', self.cem_mus, self.cem_sigmas)
 
         sequential_rewards = torch.stack(sequential_rewards).squeeze().permute(1,0)
@@ -234,16 +244,16 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
         #print('updated cross entropies')
         # choose the best next action out of all of them. 
-        best_actions_ind = torch.argmax(cum_reward)
-        worst_actions_ind = torch.argmin(cum_reward)
+        best_actions_ind = torch.argmax(all_particles_cum_rewards)
+        worst_actions_ind = torch.argmin(all_particles_cum_rewards)
 
-        best_action = sequential_actions[best_actions_ind,0, :]
+        best_action = all_particles_sequential_actions[best_actions_ind,0, :]
 
         best_rewards_seq = sequential_rewards[best_actions_ind]
         worst_rewards_seq = sequential_rewards[worst_actions_ind]
 
-        print('best sequential actions', sequential_actions[best_actions_ind] )
-        print('worst sequential actions', sequential_actions[worst_actions_ind] )
+        print('best sequential actions', all_particles_sequential_actions[best_actions_ind] )
+        print('worst sequential actions', all_particles_sequential_actions[worst_actions_ind] )
 
         print('best rewards seq', best_rewards_seq)
         print('worst rewards seq', worst_rewards_seq)
@@ -259,8 +269,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         save_image(sequence_worst_pred_obs,
                         'exp_dir/simulation/samples/worst_sample_' + str(time_step) + '.png')
 
-        print('predicted reward of best particle', torch.max(cum_reward))
-        print('predicted reward of worst particle', torch.min(cum_reward))
+        print('predicted reward of best particle', torch.max(all_particles_cum_rewards))
+        print('predicted reward of worst particle', torch.min(all_particles_cum_rewards))
         #print('best action is:', best_action)
         return best_action.unsqueeze(0)
 
@@ -272,7 +282,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
     def update_cross_entropy_method(self, all_actions, rewards):
         # for carracing we have 3 independent gaussians
-        smoothing = 0.5
+        smoothing = 0.8
         vals, inds = torch.topk(rewards, self.k_top )
         elite_actions = all_actions[inds]
 
@@ -282,10 +292,6 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         new_sigma = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=(0,1))/num_elite_actions)
         self.cem_mus = smoothing*new_mu + (1-smoothing)*(self.cem_mus) 
         self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
-        
-        #self.cem_sigmas[0] = torch.clamp(self.cem_sigmas[0], min=0.3)
-        #self.cem_sigmas[1] = torch.clamp(self.cem_sigmas[1], min=0.2)
-        #self.cem_sigmas[2] = torch.clamp(self.cem_sigmas[2], min=0.1)
 
     def constrain_actions(self, out):
         #print('before tanh', out)

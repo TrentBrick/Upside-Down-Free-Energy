@@ -550,13 +550,19 @@ def main(args):
                 horizon_pred_obs = []
                 mse_losses = []
                 # first latent state. straight from the VAE. 
-                horizon_next_latent_state = last_test_latent_pres_obs[0].unsqueeze(0).unsqueeze(0)
-                horizon_next_reward = last_test_pres_rewards[0].unsqueeze(0).unsqueeze(0)
+                #horizon_next_latent_state = last_test_latent_pres_obs[0].unsqueeze(0).unsqueeze(0)
+                #horizon_next_reward = last_test_pres_rewards[0].unsqueeze(0).unsqueeze(0)
                 horizon_next_hidden = [
                     torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
                     for _ in range(2)]
     
                 for t in range(example_length):
+
+                    if t< memory_adapt_period:
+                        # giving the real observation still 
+                        horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
+                        horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
+
                     next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
                     print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
@@ -572,10 +578,7 @@ def main(args):
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
 
-                    if t< memory_adapt_period:
-                        # giving the real observation still 
-                        horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
-                        horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
+                    
                 print('===== MSE losses between horizon prediction and real', mse_losses)
                 horizon_pred_obs_full_based = torch.stack(horizon_pred_obs).squeeze()
 
