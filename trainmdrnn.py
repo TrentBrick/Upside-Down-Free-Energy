@@ -40,8 +40,6 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_
     print('MSE between predicted and real latent values', 
         f.mse_loss(latent_next_obs, pred_latent_obs))
 
-    print('shapes of the rewards', rs.shape, next_reward.squeeze().shape)
-
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
     else:

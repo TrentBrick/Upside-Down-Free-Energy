@@ -192,8 +192,6 @@ class Models:
 
             all_particles_cum_rewards = torch.zeros((self.planner_n_particles))
             all_particles_sequential_actions = torch.zeros((self.planner_n_particles, self.horizon, self.cem_mus.shape[0]))
-                
-            all_particles_first_action = []
             
             for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
 
@@ -211,7 +209,10 @@ class Models:
                 # need to produce a batch of first actions here. 
                 ens_action = self.sample_cross_entropy_method() 
 
-                for t in range(self.horizon):
+                all_particles_cum_rewards[start_ind:end_ind] += ens_reward.squeeze()
+                all_particles_sequential_actions[start_ind:end_ind, 0, :] = ens_action
+
+                for t in range(1, self.horizon):
                     
                     md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
@@ -219,7 +220,8 @@ class Models:
                     ens_latent_s = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
 
                     ens_action = self.sample_cross_entropy_method() 
-                    # store these cumulative rewards
+
+                    # store these cumulative rewards and action
                     all_particles_cum_rewards[start_ind:end_ind] += (self.discount_factor**t)*ens_reward
                     all_particles_sequential_actions[start_ind:end_ind, t, :] = ens_action
 

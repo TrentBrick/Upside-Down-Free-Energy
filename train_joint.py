@@ -517,10 +517,6 @@ def main(args):
                 # Generating multistep predictions from the first latent. 
                 horizon_pred_obs = []
                 mse_losses = [] 
-                print('device is:', device)
-                print(real_next_vae_decoded_observation.device, pred_next_vae_decoded_observation.device)
-                print(last_test_observations.device)
-                print(last_test_pres_action.device, last_test_latent_pres_obs.device)
                 horizon_next_hidden = [
                     torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
                     for _ in range(2)]
