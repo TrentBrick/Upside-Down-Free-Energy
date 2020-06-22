@@ -40,7 +40,7 @@ def sample_continuous_policy(action_space, seq_len, dt):
     """
     actions = [action_space.sample()]
     # bias towards more forward driving at the start in order to produce diverse observations. 
-    actions[0][1] = 0.8
+    actions[0][1] = 0.9
     # and not having the brakes on!
     actions[0][2] = 0.0
     print('first action being used', actions)

@@ -237,7 +237,7 @@ if __name__ == "__main__":
     parser.add_argument('--nosamples', action='store_true',
                         help='Does not save samples during training if specified')
 
-
     args = parser.parse_args()
+    main(args)
 
 
