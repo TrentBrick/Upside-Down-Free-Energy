@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pyglet.window import key
 import json 
-from controller_model import load_parameters
 import copy 
 from torchvision.utils import save_image
 import time
@@ -49,8 +48,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
             print("Loading in the best controller model, its average eval score was:", ctrl_params[1])
             self.controller = load_parameters(ctrl_params[0], self.controller)
 
-        vae_file = join(directory, 'vae', 'best.tar')
-        rnn_file = join(directory, 'mdrnn', 'best.tar')
+        #vae_file = join(directory, 'vae', 'best.tar')
+        #rnn_file = join(directory, 'mdrnn', 'best.tar')
         #vae_file = join(directory, 'joint', 'vae_best.tar')
         #rnn_file = join(directory, 'joint', 'mdrnn_best.tar')
         assert exists(vae_file), "No VAE model in the directory..."

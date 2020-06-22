@@ -55,7 +55,7 @@ def main(args):
     desired_horizon = 30
     num_action_repeats = 5 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
-    actual_horizon = desired_horizon//num_action_repeats
+    actual_horizon = (desired_horizon//num_action_repeats)+1
     discount_factor = 0.90
     init_cem_params = ( torch.Tensor([0,0.7,0]), torch.Tensor([0.5,0.7,0.3]) )
     cem_iters = 7

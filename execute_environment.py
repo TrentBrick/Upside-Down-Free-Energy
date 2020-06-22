@@ -15,53 +15,7 @@ from utils.misc import NUM_IMG_CHANNELS, NUM_GAUSSIANS_IN_MDRNN, ACTION_SIZE, LA
 from trainvae import loss_function as original_vae_loss_function
 from utils.misc import sample_mdrnn_latent
 
-def flatten_parameters(params):
-    """ Flattening parameters.
-
-    :args params: generator of parameters (as returned by module.parameters())
-
-    :returns: flattened parameters (i.e. one tensor of dimension 1 with all
-        parameters concatenated)
-    """
-    return torch.cat([p.detach().view(-1) for p in params], dim=0).cpu().numpy()
-
-def unflatten_parameters(params, example, device):
-    """ Unflatten parameters.
-
-    :args params: parameters as a single 1D np array
-    :args example: generator of parameters (as returned by module.parameters()),
-        used to reshape params
-    :args device: where to store unflattened parameters
-
-    :returns: unflattened parameters
-    """
-    params = torch.Tensor(params).to(device) # why werent these put on the device earlier? 
-    idx = 0
-    unflattened = []
-    for e_p in example:
-        # makes a list of parameters in the same format and shape as the network. 
-        unflattened += [params[idx:idx + e_p.numel()].view(e_p.size())]
-        idx += e_p.numel()
-    return unflattened
-
-def load_parameters(params, controller):
-    """ Load flattened parameters into controller.
-
-    :args params: parameters as a single 1D np array
-    :args controller: module in which params is loaded
-    """
-    proto = next(controller.parameters())
-    params = unflatten_parameters(
-        params, controller.parameters(), proto.device) # dont see the need to pass the device here only to put them into it later. 
-
-    for p, p_0 in zip(controller.parameters(), params):
-        p.data.copy_(p_0)
-
-    return controller
-
-testing_old_controller = False
-
-class Models:
+class EnvSimulator:
 
     def __init__(self, env_name, time_limit=1000, use_old_gym=False, 
         mdir=None, return_events=False, give_models=None, conditional=True, 
@@ -207,23 +161,20 @@ class Models:
                 end_ind = start_ind+self.ensemble_batchsize
 
                 # need to produce a batch of first actions here. 
-                ens_action = self.sample_cross_entropy_method() 
+                #ens_action = self.sample_cross_entropy_method() 
+                #all_particles_sequential_actions[start_ind:end_ind, 0, :] = ens_action
 
-                all_particles_cum_rewards[start_ind:end_ind] += ens_reward.squeeze()
-                all_particles_sequential_actions[start_ind:end_ind, 0, :] = ens_action
+                for t in range(0, self.horizon):
 
-                for t in range(1, self.horizon):
-                    
+                    ens_action = self.sample_cross_entropy_method() 
                     md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
                     # predict the next latent state
                     ens_latent_s = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
 
-                    ens_action = self.sample_cross_entropy_method() 
-
                     # store these cumulative rewards and action
-                    all_particles_cum_rewards[start_ind:end_ind] += (self.discount_factor**t)*ens_reward
                     all_particles_sequential_actions[start_ind:end_ind, t, :] = ens_action
+                    all_particles_cum_rewards[start_ind:end_ind] += (self.discount_factor**t)*ens_reward
 
                     # unsqueeze for the next iteration. 
                     ens_reward = ens_reward.unsqueeze(1)
@@ -254,16 +205,17 @@ class Models:
         num_elite_actions = self.k_top*self.horizon 
 
         new_mu = elite_actions.sum(dim=(0,1))/num_elite_actions
-        new_sigma = torch.sqrt(torch.sum( (elite_actions - self.cem_mus)**2, dim=(0,1))/num_elite_actions)
+        new_sigma = torch.sqrt(torch.sum( (elite_actions - new_mu)**2, dim=(0,1))/num_elite_actions)
         self.cem_mus = smoothing*new_mu + (1-smoothing)*(self.cem_mus) 
         self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
 
     def constrain_actions(self, out):
-        #print('before tanh', out)
-        out = torch.tanh(out)
-        out[:,1] = (out[:,1]+1)/2.0 # this converts tanh to sigmoid
-        out[:,2] = torch.clamp(out[:,2], min=0.0, max=1.0)
-        #print('after all processing', out)
+        if self.env_name=='carracing':
+            out[:,0] = torch.clamp(out[:,0], min=-1.0, max=1.0)
+            out[:,1] = torch.clamp(out[:,1], min=0.0, max=1.0)
+            out[:,2] = torch.clamp(out[:,2], min=0.0, max=1.0)
+        else:
+            raise NotImplementedError("The environment you are trying to use does not have constrain actions implemented.")
         return out
 
     def random_shooting(self, batch_size):

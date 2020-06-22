@@ -5,15 +5,13 @@ import numpy as np
 import sys 
 from os.path import join, exists
 from os import mkdir, unlink, listdir, getpid
-from bisect import bisect
 import torch
 import torch.utils.data
 from torchvision import transforms
 import gym 
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
 import time
-import cma
-from controller_model import Models, load_parameters, flatten_parameters
+from execute_environment import EnvSimulator
 from ray.util.multiprocessing import Pool
 #from multiprocessing import Pool 
 
@@ -152,7 +150,7 @@ def worker(inp): # run lots of rollouts
         cem_iters, discount_factor, seed, num_episodes, \
         max_len, logdir, compute_feef = inp
     gamename = 'carracing'
-    model = Models(gamename, time_limit=1000, mdir = logdir, conditional=True, 
+    model = EnvSimulator(gamename, time_limit=1000, mdir = logdir, conditional=True, 
             return_events=True, use_old_gym=False, joint_file_dir=True,
             planner_n_particles = planner_n_particles, 
             horizon=horizon, num_action_repeats=num_action_repeats,
