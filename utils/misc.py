@@ -103,7 +103,7 @@ def load_parameters(params, controller):
         p.data.copy_(p_0)
     return controller
 
-def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, return_chosen_mus_n_sigs=False):
+def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False , return_chosen_mus_n_sigs=False):
     if NUM_GAUSSIANS_IN_MDRNN > 1:
         assert len(mus.shape) == len(latent_s.shape)+1, "Need shape of latent to be one more than sufficient stats! Shape of mus and then latents."+str(mus.shape)+' '+str(latent_s.shape)
         if len(logpi.shape) == 3: 
@@ -125,9 +125,12 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, return_chosen_mus_n_sigs=F
         mus, sigmas = mus.squeeze(), sigmas.squeeze()
 
     # predict the next latent state. 
-    pred_latent_deltas = mus + (sigmas * torch.randn_like(mus))
+    pred_latent = mus + (sigmas * torch.randn_like(mus))
     #print('size of predicted deltas and real', pred_latent_deltas.shape, latent_s.shape)
-    latent_s = latent_s+pred_latent_deltas
+    if no_delta:
+        latent_s = pred_latent
+    else:
+        latent_s = latent_s+pred_latent
 
     if return_chosen_mus_n_sigs: 
         return latent_s, mus, sigmas

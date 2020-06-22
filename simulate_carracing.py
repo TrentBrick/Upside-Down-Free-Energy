@@ -388,6 +388,8 @@ if __name__ == '__main__':
                 transforms.ToTensor()
             ])
 
+    sim_rewards = []
+
     while True:
         if args.real_obs:
             
@@ -421,6 +423,17 @@ if __name__ == '__main__':
                 obs, reward, done, _ = env.step(action)
                 cum_reward += reward
                 t+=1
+
+                print(sim_rewards)
+                if len(sim_rewards) <30:
+                    sim_rewards.append(reward)
+                else: 
+                    sim_rewards.pop(0)
+                    sim_rewards.append(reward)
+                    print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
+                    if round(sum(sim_rewards), 3) == -3.0:
+                        print('we have equality!!!')
+                        break 
 
                 if done:
                     print(cum_reward)

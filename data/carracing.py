@@ -25,6 +25,7 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls)
         s_rollout = []
         r_rollout = []
         d_rollout = []
+        sim_rewards = []
 
         t = 0
         while True:
@@ -36,6 +37,16 @@ def generate_data(rollouts, data_dir, noise_type, rand_seed, dont_trim_controls)
                 
                 if not dont_trim_controls:
                     s = s[:84]
+
+                # this ends the rollout early. 
+                if len(sim_rewards) <30:
+                    sim_rewards.append(r)
+                else: 
+                    sim_rewards.pop(0)
+                    sim_rewards.append(r)
+                    #print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
+                    if round(sum(sim_rewards), 3) == -3.0:
+                        done=True 
 
                 if done:
                     s_rollout += [s]

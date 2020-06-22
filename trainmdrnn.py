@@ -432,8 +432,6 @@ def main(args):
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
 
-                    
-
                 print('===== MSE losses between horizon prediction and real', mse_losses)
 
                 horizon_pred_obs_full_based = torch.stack(horizon_pred_obs).squeeze()
