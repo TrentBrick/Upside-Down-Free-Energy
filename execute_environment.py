@@ -150,12 +150,12 @@ class EnvSimulator:
             for mdrnn_ind, mdrnn_boot in enumerate(self.mdrnn_ensemble):
 
                 # initialize particles for a single ensemble model. 
+                # only repeat the first dimension. 
                 ens_latent_s, ens_reward = [var.clone().repeat(self.ensemble_batchsize, *len(var.shape[1:])*[1]) for var in [latent_s, reward]]
                 hidden_0 = full_hidden[0].clone().repeat(self.ensemble_batchsize, *len(full_hidden[0].shape[1:])*[1])
                 hidden_1 = full_hidden[1].clone().repeat(self.ensemble_batchsize, *len(full_hidden[1].shape[1:])*[1])
                 ens_full_hidden = [hidden_0,hidden_1]
-                # only repeat the first dimension. 
-
+                
                 # indices for logging the actions and rewards during horizon planning across the ensemble. 
                 start_ind = self.ensemble_batchsize*mdrnn_ind
                 end_ind = start_ind+self.ensemble_batchsize
@@ -166,6 +166,7 @@ class EnvSimulator:
 
                 for t in range(0, self.horizon):
 
+                    # sample an action and reward.
                     ens_action = self.sample_cross_entropy_method() 
                     md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
@@ -190,16 +191,14 @@ class EnvSimulator:
     def sample_cross_entropy_method(self):
         actions = Normal(self.cem_mus, self.cem_sigmas).sample([self.ensemble_batchsize])
         # constrain these actions:
-        if self.env_name=='carracing':
-            actions = self.constrain_actions(actions)
-        else:
-            raise NotImplementedError("The environment you are trying to use does not have random shooting actions implemented.")
+        actions = self.constrain_actions(actions)
+        
         return actions
 
     def update_cross_entropy_method(self, all_actions, rewards):
         # for carracing we have 3 independent gaussians
         smoothing = 0.8
-        vals, inds = torch.topk(rewards, self.k_top )
+        vals, inds = torch.topk(rewards, self.k_top, sorted=False )
         elite_actions = all_actions[inds]
 
         num_elite_actions = self.k_top*self.horizon 

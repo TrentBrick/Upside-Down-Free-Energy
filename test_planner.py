@@ -79,6 +79,7 @@ def constrain_actions(out):
 
 optimal_actions = [ torch.Tensor([0.9, 0.8,0.6]), 
                     torch.Tensor([0.4, 0.9,0.1]),
+                    torch.Tensor([0.6, 0.7,0.2]),
                     torch.Tensor([-0.2, 0.6,0.4]),
                     torch.Tensor([0.4, 0.4,0.95]),
                     torch.Tensor([0.4, 0.4,0.95]),
@@ -100,7 +101,7 @@ cem_mus, cem_sigmas = init_cem_params[0], init_cem_params[1]
 horizon = 3
 cem_iters =30
 planner_n_particles = 2000
-discount_factor=1.0
+discount_factor=0.3
 k_top = int(planner_n_particles*0.1)
 
 # test if the planner is working

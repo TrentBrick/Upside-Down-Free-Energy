@@ -39,8 +39,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.condition = True 
 
         if test_agent and not use_planner: 
-
-            # load in controller: 
+            # load in controller trained using CMA-ES.: 
             self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing', condition=self.condition).to('cpu')
             
             with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
@@ -48,8 +47,8 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
             print("Loading in the best controller model, its average eval score was:", ctrl_params[1])
             self.controller = load_parameters(ctrl_params[0], self.controller)
 
-        #vae_file = join(directory, 'vae', 'best.tar')
-        #rnn_file = join(directory, 'mdrnn', 'best.tar')
+        vae_file = join(directory, 'vae', 'best.tar')
+        rnn_file = join(directory, 'mdrnn', 'best.tar')
         #vae_file = join(directory, 'joint', 'vae_best.tar')
         #rnn_file = join(directory, 'joint', 'mdrnn_best.tar')
         assert exists(vae_file), "No VAE model in the directory..."
@@ -184,7 +183,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         for cem_iter in range(cem_iters):
 
             all_particles_cum_rewards = torch.zeros((self.planner_n_particles))
-            all_particles_sequential_actions = torch.zeros((self.planner_n_particles, actual_horizon+1, 3))
+            all_particles_sequential_actions = torch.zeros((self.planner_n_particles, actual_horizon, 3))
             
             sequential_rewards = []
         
@@ -202,20 +201,14 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
                 start_ind = ensemble_batchsize*mdrnn_ind
                 end_ind = start_ind+ensemble_batchsize
 
-                # need to produce a batch of first actions here. 
-                ens_action = self.sample_cross_entropy_method() 
+                for t in range(0, actual_horizon):
 
-                all_particles_cum_rewards[start_ind:end_ind] += ens_reward.squeeze()
-                all_particles_sequential_actions[start_ind:end_ind, 0, :] = ens_action
-
-                for t in range(1, actual_horizon+1):
-                    
+                    # need to produce a batch of first actions here. 
+                    ens_action = self.sample_cross_entropy_method() 
                     md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
                     # get the next latent state
                     ens_latent_s =  sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
-
-                    ens_action = self.sample_cross_entropy_method() 
                     
                     # store these cumulative rewards and action
                     all_particles_cum_rewards[start_ind:end_ind] += (self.discount_factor**t)*ens_reward
@@ -280,7 +273,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
     def update_cross_entropy_method(self, all_actions, rewards):
         # for carracing we have 3 independent gaussians
         smoothing = 0.8
-        vals, inds = torch.topk(rewards, self.k_top )
+        vals, inds = torch.topk(rewards, self.k_top, sorted=False )
         elite_actions = all_actions[inds]
 
         num_elite_actions = self.k_top*self.horizon 
@@ -291,11 +284,9 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
 
     def constrain_actions(self, out):
-        #print('before tanh', out)
-        out = torch.tanh(out)
-        out[:,1] = (out[:,1]+1)/2.0 # this converts tanh to sigmoid
+        out[:,0] = torch.clamp(out[:,0], min=-1.0, max=1.0)
+        out[:,1] = torch.clamp(out[:,1], min=0.0, max=1.0)
         out[:,2] = torch.clamp(out[:,2], min=0.0, max=1.0)
-        #print('after all processing', out)
         return out
 
     def random_shooting(self, batch_size):
@@ -308,7 +299,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--logdir', type=str, help='Directory from which MDRNN and VAE are '
                         'retrieved.')
-    parser.add_argument('--num_action_repeats', type=int, default=3, help='Number of times action is repeated.')
+    parser.add_argument('--num_action_repeats', type=int, default=5, help='Number of times action is repeated.')
     parser.add_argument('--real_obs', action='store_true',
                     help="Use the real observations not dream ones")
     parser.add_argument('--test_agent', action='store_true',
@@ -416,7 +407,7 @@ if __name__ == '__main__':
                         _, _, _, _, _, hidden = agent_class.rnn(action, latent_z, hidden, reward)
                         
                         print('t is:', t)
-                        if t == 30:
+                        if t == 60:
                             print('saving out the latent state and hidden')
                             pickle.dump((latent_z, hidden),open('latent_and_hidden_starters.pkl' ,'wb'))
 
@@ -440,9 +431,6 @@ if __name__ == '__main__':
         else:
             # dream like state using environment made by the simulated agent! 
             start_dream_state = 20
-            #if t< start_dream_state:
-
-            #    pass
 
             '''# priming the latent and hidden states!!! 
             
