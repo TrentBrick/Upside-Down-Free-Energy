@@ -275,11 +275,12 @@ def main(args):
 
             pres_action = action[:, :-1]
 
-            mdrnn_loss_dict = trainmdrnn_loss_function(mdrnn, latent_obs, latent_next_obs, pres_action, 
+            mdrnn_loss_dict = trainmdrnn_loss_function(mdrnn, latent_obs,
+                                latent_next_obs, pres_action,
                                 pres_reward, next_reward,
-                                terminal, include_reward, include_terminal )
+                                terminal, include_reward, include_terminal)
 
-            if return_for_vae_n_mdrnn_sampling: 
+            if return_for_vae_n_mdrnn_sampling:
                 for_vae_n_mdrnn_sampling = [obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]]
                 return vae_loss_dict, mdrnn_loss_dict, for_vae_n_mdrnn_sampling
             else: 
