@@ -45,7 +45,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
     print('MSE between predicted and real latent values', 
         f.mse_loss(latent_next_obs, pred_latent_obs))
 
-    over_shoot_losses = 0
+    overshoot_losses = 0
     if include_overshoot:
         # latent overshooting: 
         overshooting_horizon = 6
@@ -71,10 +71,10 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                 # get next latent observation
                 pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
                 # log this one
-                pred_reward = pred_reward.squeeze()
                 overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
+                pred_reward = pred_reward.squeeze()
                 reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
-                over_shoot_losses+= overshoot_loss+(mse_coef*reward_loss)
+                overshoot_losses += overshoot_loss+(mse_coef*reward_loss)
                 pred_reward = pred_reward.unsqueeze(1).unsqueeze(2)
                 pred_latent_obs = pred_latent_obs.unsqueeze(1)
             
@@ -92,15 +92,15 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
     # adding coefficients to make them the same order of magnitude. 
     mse = mse_coef*mse
 
-    loss = (gmm + bce + mse + over_shoot_losses) #/ scale
-    return dict(gmm=gmm, bce=bce, mse=mse, overshoot=over_shoot_losses, loss=loss)
+    loss = (gmm + bce + mse + overshoot_losses) #/ scale
+    return dict(gmm=gmm, bce=bce, mse=mse, overshoot=overshoot_losses, loss=loss)
 
 def main(args):
 
     # makes including the reward a default!
     if args.do_not_include_reward: 
         include_reward = False
-    else: 
+    else:
         include_reward = True
 
     if args.do_not_include_overshoot: 
@@ -204,7 +204,7 @@ def main(args):
             - latent_obs: 4D torch tensor (BATCH_SIZE, SEQ_LEN, LATENT_SIZE)
         """
         with torch.no_grad():
-            # obs shape is: [48, 257, 3, 84, 96] currently. this means each batch when we loop over and use
+            # eg obs shape is: [48, 257, 3, 84, 96]. this means each batch when we loop over and use
             # the seq len as the batch is 257 long!
         
             latent_obs = []
@@ -257,21 +257,26 @@ def main(args):
             pres_reward = reward[:, :-1]
             #next_action = action[:, 1:].clone()
             pres_action = action[:, :-1]
+            next_terminal = terminal[:,1:]
 
             if train:
-                losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward,
-                                terminal, device, include_reward=include_reward, include_terminal=include_terminal, 
+                losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, 
+                                pres_reward, next_reward,
+                                next_terminal, device, include_reward=include_reward, 
+                                include_terminal=include_terminal, 
                                 include_overshoot=include_overshoot)
 
                 optimizer.zero_grad()
                 losses['loss'].backward()
                 # gradient clipping! From Ha. 
-                torch.nn.utils.clip_grad_norm_(mdrnn.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(mdrnn.parameters(), 1000.0)
                 optimizer.step()
             else:
                 with torch.no_grad():
-                    losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward,
-                                    terminal, device,include_reward=include_reward, include_terminal=include_terminal, 
+                    losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, 
+                                    pres_reward, next_reward,
+                                    next_terminal, device, include_reward=include_reward, 
+                                    include_terminal=include_terminal, 
                                     include_overshoot=include_overshoot)
 
             cum_loss += losses['loss'].item()
@@ -291,11 +296,12 @@ def main(args):
                                     gmm=cum_gmm / LATENT_SIZE / (i + 1), 
                                     mse=cum_mse / (i + 1),
                                     bce=cum_bce / (i + 1) ))
+
             pbar.update(BATCH_SIZE)
         pbar.close()
         cum_losses = []
         for c in  [cum_loss, cum_gmm, cum_mse, cum_overshoot]:
-            cum_losses.append( (c * BATCH_SIZE) / len(loader.dataset) )
+            cum_losses.append( (c * latent_obs.shape[0]) / len(loader.dataset) )
         if train: 
             return cum_losses # puts it on a per seq len chunk level. 
         else: 
@@ -332,7 +338,6 @@ def main(args):
         if is_best:
             cur_best = test_loss
         
-        # TODO: Do I want checkpointing every epoch? How long does saving take? 
         save_checkpoint({
             "state_dict": mdrnn.state_dict(),
             "optimizer": optimizer.state_dict(),
