@@ -34,14 +34,21 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
     """
 
     mse_coef = 100
+    deterministic = True
     
     mus, sigmas, logpi, rs, ds = mdrnn(pres_action, latent_obs, pres_reward)
 
     # find the delta between the next observation and the present one. 
     latent_delta = latent_next_obs - latent_obs
-    gmm = gmm_loss(latent_delta, mus, sigmas, logpi) # by default gives mean over all.
-
-    pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, latent_obs)
+    
+    if deterministic: 
+        gmm = f.mse_loss(latent_delta, mus))
+        pred_latent_obs = mus + latent_obs
+        print('deterministic outputs', mus.shape, pred_latent_obs.shape, latent_obs.shape)
+    else: 
+        gmm = gmm_loss(latent_delta, mus, sigmas, logpi) # by default gives mean over all.
+        pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, latent_obs)
+    
     print('MSE between predicted and real latent values', 
         f.mse_loss(latent_next_obs, pred_latent_obs))
 
@@ -69,7 +76,10 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                 mus, sigmas, logpi, pred_reward, ds, next_hidden = mdrnn(pres_action[:, t, :].unsqueeze(1), 
                                     pred_latent_obs, pred_reward, last_hidden=next_hidden)
                 # get next latent observation
-                pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
+                if deterministic: 
+                    pred_latent_obs = mus + latent_obs
+                else: 
+                    pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
                 # log this one
                 overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
                 pred_reward = pred_reward.squeeze()
