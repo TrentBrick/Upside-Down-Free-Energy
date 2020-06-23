@@ -69,7 +69,7 @@ def main(args):
 
     # constants
     BATCH_SIZE = 1024
-    SEQ_LEN = 199
+    SEQ_LEN = 11
     epochs = 300
     conditional=True 
     cur_best = None
@@ -80,8 +80,8 @@ def main(args):
     # this makes the environment accelerate by this many frames. 
     actual_horizon = desired_horizon//num_action_repeats
     # for plotting example horizons:
-    example_length = 16
-    assert example_length<= SEQ_LEN, "Example length must be smaller."
+    example_length = 10
+    assert example_length< SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - actual_horizon
 
     samples_dir = join(args.logdir, 'mdrnn', 'samples')
