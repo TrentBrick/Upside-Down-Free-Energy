@@ -278,7 +278,7 @@ def main(args):
             mdrnn_loss_dict = trainmdrnn_loss_function(mdrnn, latent_obs,
                                 latent_next_obs, pres_action,
                                 pres_reward, next_reward,
-                                terminal, include_reward, include_terminal)
+                                terminal, device, include_reward, include_terminal)
 
             if return_for_vae_n_mdrnn_sampling:
                 for_vae_n_mdrnn_sampling = [obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]]

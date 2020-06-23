@@ -7,12 +7,12 @@ import torch.nn.functional as f
 from utils.misc import sample_mdrnn_latent
 
 
-def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward, terminal,
-             include_reward = True, include_terminal = False):
+def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, 
+             next_reward, terminal, device,
+             include_reward = True, include_overshoot=True, include_terminal = False):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 
     """ Compute MDRNN losses.
-
 
     The loss that is computed is:
     (GMMLoss(latent_next_obs, GMMPredicted) + MSE(reward, predicted_reward) +
@@ -20,14 +20,19 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_
     All losses are averaged both on the batch and the 
     sequence dimensions (the two first dimensions).
 
-    :args latent_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
-    :args action: (BATCH_SIZE, SEQ_LEN, ACTION_SIZE) torch tensor
-    :args reward: (BATCH_SIZE, SEQ_LEN, 1) torch tensor
-    :args latent_next_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
-
+    :args: 
+        - latent_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
+        - latent_next_obs: (BATCH_SIZE, SEQ_LEN, LATENT_SIZE) torch tensor
+        - pres_action: (BATCH_SIZE, SEQ_LEN, ACTION_SIZE) torch tensor
+        - pres_reward: (BATCH_SIZE, SEQ_LEN, 1) torch tensor
+        - next_reward: (BATCH_SIZE, SEQ_LEN, 1) torch tensor
+        - terminal: (BATCH_SIZE, SEQ_LEN, 1) torch tensor
+    
     :returns: dictionary of losses, containing the gmm, the mse, the bce and
         the averaged loss.
     """
+
+    mse_coef = 100
     
     mus, sigmas, logpi, rs, ds = mdrnn(pres_action, latent_obs, pres_reward)
 
@@ -36,10 +41,41 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_
     gmm = gmm_loss(latent_delta, mus, sigmas, logpi) # by default gives mean over all.
 
     pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, latent_obs)
-
     print('MSE between predicted and real latent values', 
         f.mse_loss(latent_next_obs, pred_latent_obs))
 
+    over_shoot_losses = 0
+    if include_overshoot:
+        # latent overshooting: 
+        overshooting_horizon = 6
+        min_memory_adapt_period= 4 # for zero indexing
+        stop_ind = latent_obs.shape[1] - overshooting_horizon
+        for i in range(min_memory_adapt_period, stop_ind):
+
+            next_hidden = [
+                        torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
+                        for _ in range(2)]
+
+            #memory adapt up to this point. 
+            _, _, _, _, _, next_hidden = mdrnn(pres_action[:, :i, :], 
+                                    latent_obs[:, :i, :], pres_reward[:, :i, :], 
+                                    last_hidden=next_hidden)
+
+            pred_latent_obs, pred_reward = latent_obs[:, i, :].unsqueeze(1), \
+                                            pres_reward[:, i, :].unsqueeze(1)
+
+            for t in range(i, i+overshooting_horizon):
+                print('indices are:', i, t)
+                mus, sigmas, logpi, pred_reward, ds, next_hidden = mdrnn(pres_action[:, t, :].unsqueeze(1), 
+                                    pred_latent_obs, pred_reward, last_hidden=next_hidden)
+                # get next latent observation
+                pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
+                # log this one
+                overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
+                reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
+                over_shoot_losses+= overshoot_loss+(mse_coef*reward_loss)
+                pred_reward = pred_reward.unsqueeze(1)
+            
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
     else:
@@ -52,10 +88,10 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_
         bce = 0
 
     # adding coefficients to make them the same order of magnitude. 
-    mse = 100*mse
+    mse = mse_coef*mse
 
-    loss = (gmm + bce + mse) #/ scale
-    return dict(gmm=gmm, bce=bce, mse=mse, loss=loss)
+    loss = (gmm + bce + mse + over_shoot_losses) #/ scale
+    return dict(gmm=gmm, bce=bce, mse=mse, overshoot=over_shoot_losses, loss=loss)
 
 def main(args):
 
@@ -196,6 +232,7 @@ def main(args):
         cum_gmm = 0
         cum_bce = 0
         cum_mse = 0
+        cum_overshoot = 0
 
         pbar = tqdm(total=len(loader.dataset), desc="Epoch {}".format(epoch))
         for i, data in enumerate(loader):
@@ -216,7 +253,7 @@ def main(args):
 
             if train:
                 losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward,
-                                terminal, include_reward, include_terminal)
+                                terminal, device, include_reward, include_terminal)
 
                 optimizer.zero_grad()
                 losses['loss'].backward()
@@ -235,15 +272,19 @@ def main(args):
             # nice. this is better than a try statement and all on one line!
             cum_mse += losses['mse'].item() if hasattr(losses['mse'], 'item') else \
                 losses['mse']
+            cum_overshoot += losses['overshoot'].item() if hasattr(losses['overshoot'], 'item') else \
+                losses['overshoot']
 
             pbar.set_postfix_str("loss={loss:10.6f} bce={bce:10.6f} "
                                 "gmm={gmm:10.6f} mse={mse:10.6f}".format(
-                                    loss=cum_loss / (i + 1), bce=cum_bce / (i + 1),
-                                    gmm=cum_gmm / LATENT_SIZE / (i + 1), mse=cum_mse / (i + 1)))
+                                    loss=cum_loss / (i + 1), 
+                                    overshoot=cum_overshoot / (i + 1),
+                                    gmm=cum_gmm / LATENT_SIZE / (i + 1), mse=cum_mse / (i + 1)),
+                                    bce=cum_bce / (i + 1))
             pbar.update(BATCH_SIZE)
         pbar.close()
         cum_losses = []
-        for c in  [cum_loss, cum_gmm, cum_mse]:
+        for c in  [cum_loss, cum_gmm, cum_mse, cum_overshoot]:
             cum_losses.append( (c * BATCH_SIZE) / len(loader.dataset) )
         if train: 
             return cum_losses # puts it on a per seq len chunk level. 
@@ -267,9 +308,11 @@ def main(args):
         logger['train_loss'].append(train_loss)
         logger['train_gmm'].append(train_losses[1])
         logger['train_mse'].append(train_losses[2])
+        logger['train_overshoot'].append(train_losses[3])
         logger['test_loss'].append(test_loss)
         logger['test_gmm'].append(test_losses[1])
         logger['test_mse'].append(test_losses[2])
+        logger['test_overshoot'].append(test_losses[3])
 
         # write out the logger. 
         with open(logger_filename, "w") as file:

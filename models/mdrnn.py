@@ -34,7 +34,7 @@ def gmm_loss(latent_deltas, mus, sigmas, logpi): # pylint: disable=too-many-argu
     # sum across the gaussians, need to do so in log space: 
     log_loss = - torch.logsumexp(g_log_probs, dim=-2) # now have bs1, bs2, fs. all of these are different predictions to take the mean of.   
     #print(torch.exp(logpi))
-    #print(latent_deltas.shape, mus.shape, sigmas.shape, g_log_probs.shape, log_loss.shape)
+    print('gmm loss', latent_deltas.shape, mus.shape, sigmas.shape, g_log_probs.shape, log_loss.shape)
     return torch.mean(log_loss)
     
 class _MDRNNBase(nn.Module):
