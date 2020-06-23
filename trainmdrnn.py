@@ -71,8 +71,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                 # get next latent observation
                 pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
                 # log this one
-                if len(pred_reward.shape)>1:
-                    pred_reward = pred_reward.squeeze()
+                pred_reward = pred_reward.squeeze()
                 overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
                 reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
                 over_shoot_losses+= overshoot_loss+(mse_coef*reward_loss)
@@ -532,7 +531,7 @@ def main(args):
                 horizon_pred_obs_cell_based = torch.stack(horizon_pred_obs).squeeze()
 
                 to_save = torch.cat([last_test_observations, real_next_vae_decoded_observation.cpu(), horizon_pred_obs_given_next.cpu(),
-                    horizon_pred_obs_cell_based.cpu(), horizon_pred_obs_full_based.cpu()], dim=0)
+                    horizon_pred_obs_full_based.cpu(), horizon_pred_obs_cell_based.cpu() ], dim=0)
 
                 print('Generating MDRNN samples of the shape:', to_save.shape)
                 save_image(to_save,
