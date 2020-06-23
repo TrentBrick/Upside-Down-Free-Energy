@@ -71,7 +71,8 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                 # get next latent observation
                 pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
                 # log this one
-                pred_reward = pred_reward.squeeze()
+                if len(pred_reward.shape)>1:
+                    pred_reward = pred_reward.squeeze()
                 overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
                 reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
                 over_shoot_losses+= overshoot_loss+(mse_coef*reward_loss)
@@ -157,7 +158,7 @@ def main(args):
 
     optimizer = torch.optim.Adam(mdrnn.parameters(), lr=1e-3)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
-    earlystopping = EarlyStopping('min', patience=30)
+    earlystopping = EarlyStopping('min', patience=100)
 
     if exists(best_filename) and not args.no_reload:
         rnn_state = torch.load(best_filename)
@@ -192,7 +193,7 @@ def main(args):
         RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, buffer_size=200),
         batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
     test_loader = DataLoader(
-        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=5),
+        RolloutSequenceDataset('datasets/carracing', SEQ_LEN, transform, train=False, buffer_size=20),
         batch_size=BATCH_SIZE, num_workers=10, shuffle=True, drop_last=False)
 
     def to_latent(obs, rewards):
