@@ -386,7 +386,7 @@ def main(args):
                     mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
                     
                     print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
-                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.unsqueeze(0), horizon_next_reward.squeeze(0))
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.squeeze(0), horizon_next_reward.squeeze(0))
                     print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
@@ -426,11 +426,11 @@ def main(args):
                     # mse between this and the real one. 
                     mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
                     
-                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    #horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
                     
                     print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
-                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward.squeeze(0))
-                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.squeeze(0), horizon_next_reward.squeeze(0))
+                    #horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
                     print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
@@ -466,7 +466,7 @@ def main(args):
                     
                     # mse between this and the real one. 
                     mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
-                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    #horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
                     print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
                     decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward)
                     print('shape of decoder mu', decoder_mu.shape)

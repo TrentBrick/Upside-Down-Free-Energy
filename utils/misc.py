@@ -103,7 +103,7 @@ def load_parameters(params, controller):
         p.data.copy_(p_0)
     return controller
 
-def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=True, return_chosen_mus_n_sigs=False):
+def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_chosen_mus_n_sigs=False):
     if NUM_GAUSSIANS_IN_MDRNN > 1:
         assert len(mus.shape) == len(latent_s.shape)+1, "Need shape of latent to be one more than sufficient stats! Shape of mus and then latents."+str(mus.shape)+' '+str(latent_s.shape)
         if len(logpi.shape) == 3: 
