@@ -240,10 +240,12 @@ def main(args):
         cum_bce = 0
         cum_mse = 0
         cum_overshoot = 0
-
+        num_rollouts_shown = 0
         pbar = tqdm(total=len(loader.dataset), desc="Epoch {}".format(epoch))
         for i, data in enumerate(loader):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
+            cur_batch_size = terminal.shape[0]
+            num_rollouts_shown+= cur_batch_size
 
             print('===== obs shape is:', obs.shape)
 
@@ -297,11 +299,11 @@ def main(args):
                                     mse=cum_mse / (i + 1),
                                     bce=cum_bce / (i + 1) ))
 
-            pbar.update(BATCH_SIZE)
+            pbar.update(cur_batch_size)
         pbar.close()
         cum_losses = []
         for c in  [cum_loss, cum_gmm, cum_mse, cum_overshoot]:
-            cum_losses.append( (c * latent_obs.shape[0]) / len(loader.dataset) )
+            cum_losses.append( (c/num_rollouts_shown)/SEQ_LEN )
         if train: 
             return cum_losses # puts it on a per seq len chunk level. 
         else: 
