@@ -22,9 +22,9 @@ class _RolloutDataset(torch.utils.data.Dataset): # pylint: disable=too-few-publi
         end_of_train_index = len(self._files) - int(len(self._files)*percentage_test)
 
         if train:
-            self._files = self._files[:5] #[:end_of_train_index]
+            self._files = self._files[:end_of_train_index]#[:5] #[:end_of_train_index]
         else:
-            self._files = self._files[:5] #[end_of_train_index:]
+            self._files = self._files[end_of_train_index:]#[:5] #[end_of_train_index:]
 
         self._cum_size = None
         self._buffer = None

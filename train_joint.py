@@ -287,8 +287,11 @@ def main(args):
                 return vae_loss_dict, mdrnn_loss_dict
 
         # iterate through an epoch of data. 
+        num_rollouts_shown = 0
         for i, data in enumerate(loader):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
+            cur_batch_size = terminal.shape[0]
+            num_rollouts_shown+= cur_batch_size
 
             if train:
                 vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
@@ -313,7 +316,7 @@ def main(args):
             for k in cumloss_dict.keys():
                 for loss_dict in [vae_loss_dict, mdrnn_loss_dict]:
                     if k in loss_dict.keys():
-                        cumloss_dict[k] += loss_dict[k].item() if hasattr(loss_dict[k], 'item') else \
+                        cumloss_dict[k] += loss_dict[k].item()*cur_batch_size if hasattr(loss_dict[k], 'item') else \
                                                 loss_dict[k]
             # store separately vae and mdrnn losses: 
             cumloss_dict['loss_vae'] += vae_loss_dict['loss'].item()
@@ -325,11 +328,11 @@ def main(args):
                 v = v / (i + 1)
                 postfix_str+= k+'='+str(round(v,4))+', '
             pbar.set_postfix_str(postfix_str)
-            pbar.update(BATCH_SIZE)
+            pbar.update(cur_batch_size)
         pbar.close()
 
-        # puts losses on a per element level.
-        cumloss_dict = {k: (v*BATCH_SIZE) / len(loader.dataset) for k, v in cumloss_dict.items()}
+        # puts losses on a per element level. independent of batch sizes and seq lengths.
+        cumloss_dict = {k: (v/num_rollouts_shown)/SEQ_LEN for k, v in cumloss_dict.items()}
         # sort the order so they are added to the logger in the same order!
         cumloss_dict = OrderedDict(sorted(cumloss_dict.items()))
         if train: 
