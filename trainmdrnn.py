@@ -6,10 +6,11 @@ from models.mdrnn import MDRNN, gmm_loss, MDRNNCell
 import torch.nn.functional as f
 from utils.misc import sample_mdrnn_latent
 
-
-def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, 
+def get_loss(mdrnn, latent_obs, latent_next_obs, 
+             pres_action, pres_reward, 
              next_reward, terminal, device,
-             include_reward = True, include_overshoot=True, include_terminal = False):
+             include_reward = True, include_overshoot=True, 
+             include_terminal = False):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 
     """ Compute MDRNN losses.
@@ -53,7 +54,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward,
         for i in range(min_memory_adapt_period, stop_ind):
 
             next_hidden = [
-                        torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
+                        torch.zeros(1, latent_obs.shape[0], LATENT_RECURRENT_SIZE).to(device)
                         for _ in range(2)]
 
             #memory adapt up to this point. 
@@ -65,16 +66,17 @@ def get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward,
                                             pres_reward[:, i, :].unsqueeze(1)
 
             for t in range(i, i+overshooting_horizon):
-                print('indices are:', i, t)
                 mus, sigmas, logpi, pred_reward, ds, next_hidden = mdrnn(pres_action[:, t, :].unsqueeze(1), 
                                     pred_latent_obs, pred_reward, last_hidden=next_hidden)
                 # get next latent observation
                 pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
                 # log this one
+                pred_reward = pred_reward.squeeze()
                 overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
                 reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
                 over_shoot_losses+= overshoot_loss+(mse_coef*reward_loss)
-                pred_reward = pred_reward.unsqueeze(1)
+                pred_reward = pred_reward.unsqueeze(1).unsqueeze(2)
+                pred_latent_obs = pred_latent_obs.unsqueeze(1)
             
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
@@ -101,11 +103,16 @@ def main(args):
     else: 
         include_reward = True
 
+    if args.do_not_include_overshoot: 
+        include_overshoot=False
+    else:
+        include_overshoot=True 
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # constants
     BATCH_SIZE = 1024
-    SEQ_LEN = 11
+    SEQ_LEN = 12
     epochs = 300
     conditional=True 
     cur_best = None
@@ -116,7 +123,7 @@ def main(args):
     # this makes the environment accelerate by this many frames. 
     actual_horizon = desired_horizon//num_action_repeats
     # for plotting example horizons:
-    example_length = 10
+    example_length = 11
     assert example_length< SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - actual_horizon
 
@@ -141,7 +148,7 @@ def main(args):
     checkpoint_filename = join(rnn_dir, 'checkpoint.tar')
     logger_filename = join(rnn_dir, 'logger.json')
 
-    logger = {typee+'_'+k:[] for k in ['loss','gmm', 'mse'] for typee in ['train','test']}
+    logger = {typee+'_'+k:[] for k in ['loss','gmm', 'mse', 'overshoot'] for typee in ['train','test']}
 
     if not exists(rnn_dir):
         mkdir(rnn_dir)
@@ -253,7 +260,8 @@ def main(args):
 
             if train:
                 losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward,
-                                terminal, device, include_reward, include_terminal)
+                                terminal, device, include_reward=include_reward, include_terminal=include_terminal, 
+                                include_overshoot=include_overshoot)
 
                 optimizer.zero_grad()
                 losses['loss'].backward()
@@ -263,7 +271,8 @@ def main(args):
             else:
                 with torch.no_grad():
                     losses = get_loss(mdrnn, latent_obs, latent_next_obs, pres_action, pres_reward, next_reward,
-                                    terminal, include_reward, include_terminal)
+                                    terminal, device,include_reward=include_reward, include_terminal=include_terminal, 
+                                    include_overshoot=include_overshoot)
 
             cum_loss += losses['loss'].item()
             cum_gmm += losses['gmm'].item()
@@ -275,12 +284,13 @@ def main(args):
             cum_overshoot += losses['overshoot'].item() if hasattr(losses['overshoot'], 'item') else \
                 losses['overshoot']
 
-            pbar.set_postfix_str("loss={loss:10.6f} bce={bce:10.6f} "
-                                "gmm={gmm:10.6f} mse={mse:10.6f}".format(
+            pbar.set_postfix_str("loss={loss:10.6f} overshoot={overshoot:10.6f} "
+                                "gmm={gmm:10.6f} mse={mse:10.6f} bce={bce:10.6f}".format(
                                     loss=cum_loss / (i + 1), 
                                     overshoot=cum_overshoot / (i + 1),
-                                    gmm=cum_gmm / LATENT_SIZE / (i + 1), mse=cum_mse / (i + 1)),
-                                    bce=cum_bce / (i + 1))
+                                    gmm=cum_gmm / LATENT_SIZE / (i + 1), 
+                                    mse=cum_mse / (i + 1),
+                                    bce=cum_bce / (i + 1) ))
             pbar.update(BATCH_SIZE)
         pbar.close()
         cum_losses = []
@@ -361,14 +371,14 @@ def main(args):
                 
                 # unsqueeze all to make a batch.
                 # predict MDRNN one into the future
-                print('shape of actions going into mdrnn', last_test_pres_action.shape)
+                #print('shape of actions going into mdrnn', last_test_pres_action.shape)
                 mus, sigmas, logpi, rs, ds = mdrnn(last_test_pres_action.unsqueeze(0), last_test_latent_pres_obs.unsqueeze(0), last_test_pres_rewards.unsqueeze(0))
                 # squeeze just the first dimension!
                 mus, sigmas, logpi, rs, ds = [var.squeeze(0) for var in [mus, sigmas, logpi, rs, ds]]
                 print('MDRNN Debugger shouldnt have batch dimensions. :', mus.shape, sigmas.shape, logpi.shape)
                 
                 print('Eval of MDRNN: Real rewards and latent squeezed or not? :', last_test_next_rewards.squeeze(), last_test_next_rewards.shape, last_test_latent_pres_obs.shape)
-                print('Predicted Rewards:', rs, rs.shape)
+                #print('Predicted Rewards:', rs, rs.shape)
                 
                 pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, last_test_latent_pres_obs)
 
@@ -376,7 +386,7 @@ def main(args):
 
                 # squeeze it back again:
                 decoder_mu, decoder_logsigma = vae.decoder(pred_latent_obs, rs.unsqueeze(1))
-                print('shape of decoder mu', decoder_mu.shape)
+                #print('shape of decoder mu', decoder_mu.shape)
                 pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                 
                 # need to transform the last_test_observations here: 
@@ -389,9 +399,9 @@ def main(args):
                     trans_imgs.append( transform_for_mdrnn_samples(last_test_observations[i,:,:,:]) )
                 last_test_observations = torch.stack(trans_imgs)
 
-                print('trying to save all out', last_test_observations.shape, 
-                    real_next_vae_decoded_observation.shape, 
-                    pred_next_vae_decoded_observation.shape )
+                #print('trying to save all out', last_test_observations.shape, 
+                #    real_next_vae_decoded_observation.shape, 
+                #    pred_next_vae_decoded_observation.shape )
 
                 to_save = torch.cat([last_test_observations, 
                     real_next_vae_decoded_observation.cpu(), 
@@ -402,7 +412,7 @@ def main(args):
                         join(samples_dir, 'next_pred_sample_' + str(e) + '.png'))
 
                 ##################
-                print('predicting the next observation using the full RNN!!!!!!!!!!')
+                #print('predicting the next observation using the full RNN!!!!!!!!!!')
 
                 # Generating multistep predictions from the first latent. 
                 horizon_pred_obs = []
@@ -418,19 +428,19 @@ def main(args):
                     horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
                     horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
 
-                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                    #print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
                                 horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
                     horizon_next_reward = horizon_next_reward.unsqueeze(0)
-                    print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
+                    #print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
                     horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
                     
                     # mse between this and the real one. 
                     mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
                     
-                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
-                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.squeeze(0), horizon_next_reward.squeeze(0))
-                    print('shape of decoder mu', decoder_mu.shape)
+                    #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.unsqueeze(0), horizon_next_reward.squeeze(0))
+                    #print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
 
@@ -439,7 +449,7 @@ def main(args):
                 horizon_pred_obs_given_next = torch.stack(horizon_pred_obs).squeeze()
 
                 ##################
-                print('using full RNN!!!')
+                #print('using full RNN!!!')
 
                 # Generating multistep predictions from the first latent. 
                 horizon_pred_obs = []
@@ -459,22 +469,22 @@ def main(args):
                         horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
 
                     next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
-                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                    #print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
                                 horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
                     horizon_next_reward = horizon_next_reward.unsqueeze(0)
-                    print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
+                    #print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
                     horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
                     
                     # mse between this and the real one. 
                     mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
                     
-                    #horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
                     
-                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
-                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.squeeze(0), horizon_next_reward.squeeze(0))
-                    #horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
-                    print('shape of decoder mu', decoder_mu.shape)
+                    #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward.squeeze(0))
+                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    #print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
 
@@ -501,7 +511,7 @@ def main(args):
                         horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0)
 
                     next_action = last_test_pres_action[t].unsqueeze(0)
-                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                    #print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn_cell(next_action, 
                                 horizon_next_latent_state, horizon_next_hidden, horizon_next_reward)
                     horizon_next_reward = horizon_next_reward.unsqueeze(0)
@@ -509,10 +519,10 @@ def main(args):
                     
                     # mse between this and the real one. 
                     mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
-                    #horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
-                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
                     decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward)
-                    print('shape of decoder mu', decoder_mu.shape)
+                    #print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
 
@@ -558,7 +568,9 @@ if __name__ == '__main__':
     parser.add_argument('--no_reload', action='store_true',
                         help="Do not reload if specified.")
     parser.add_argument('--do_not_include_reward', action='store_true',
-                        help="Add a reward modelisation term to the loss.")
+                        help="If true doesn't add reward modelisation term to the loss.")
+    parser.add_argument('--do_not_include_overshoot', action='store_true',
+                        help="If true doesn't add an overshoot modelisation term to the loss.")
     parser.add_argument('--include_terminal', action='store_true',
                         help="Add a terminal modelisation term to the loss.")
     args = parser.parse_args()

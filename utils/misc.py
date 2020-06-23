@@ -123,6 +123,7 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_cho
             raise ValueError
     else: 
         mus, sigmas = mus.squeeze(), sigmas.squeeze()
+        latent_s = latent_s.squeeze()
 
     # predict the next latent state. 
     pred_latent = mus + (sigmas * torch.randn_like(mus))
