@@ -247,6 +247,8 @@ def main(args):
             cur_batch_size = terminal.shape[0]
             num_rollouts_shown+= cur_batch_size
 
+            print('current ||| total number of rollouts shown', cur_batch_size, num_rollouts_shown)
+
             print('===== obs shape is:', obs.shape)
 
             # transform obs
