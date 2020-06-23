@@ -283,14 +283,14 @@ def main(args):
                                     include_terminal=include_terminal, 
                                     include_overshoot=include_overshoot)
 
-            cum_loss += losses['loss'].item()
-            cum_gmm += losses['gmm'].item()
-            cum_bce += losses['bce'].item() if hasattr(losses['bce'], 'item') else \
+            cum_loss += losses['loss'].item() * cur_batch_size
+            cum_gmm += losses['gmm'].item() * cur_batch_size
+            cum_bce += losses['bce'].item() * cur_batch_size if hasattr(losses['bce'], 'item') else \
                 losses['bce']
             # nice. this is better than a try statement and all on one line!
-            cum_mse += losses['mse'].item() if hasattr(losses['mse'], 'item') else \
+            cum_mse += losses['mse'].item() * cur_batch_size if hasattr(losses['mse'], 'item') else \
                 losses['mse']
-            cum_overshoot += losses['overshoot'].item() if hasattr(losses['overshoot'], 'item') else \
+            cum_overshoot += losses['overshoot'].item() * cur_batch_size if hasattr(losses['overshoot'], 'item') else \
                 losses['overshoot']
 
             pbar.set_postfix_str("loss={loss:10.6f} overshoot={overshoot:10.6f} "
