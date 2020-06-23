@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as f
 from torch.distributions.normal import Normal
 
-def gmm_loss(latent_deltas, mus, sigmas, logpi): # pylint: disable=too-many-arguments
+def gmm_loss(latent_target, mus, sigmas, logpi): # pylint: disable=too-many-arguments
     """ Computes the gmm loss.
 
     Compute minus the log probability of next_latents under the GMM model described
@@ -27,16 +27,16 @@ def gmm_loss(latent_deltas, mus, sigmas, logpi): # pylint: disable=too-many-argu
         sum_{k=1..gs} pi[i1, i2, ..., k] * N(
             next_latents[i1, i2, ..., :] | mus[i1, i2, ..., k, :], sigmas[i1, i2, ..., k, :]))
     """
-    latent_deltas = latent_deltas.unsqueeze(-2) # to acccount for the gaussian dimension. 
+    latent_target = latent_target.unsqueeze(-2) # to acccount for the gaussian dimension. 
     normal_dist = Normal(mus, sigmas) # for every gaussian in each latent dimension. 
-    #print('MDRNN TEST. WHAT ARE THE DIMENSIONS OF THESE????', logpi.shape, mus.shape, latent_deltas.shape)
-    g_log_probs = logpi + normal_dist.log_prob(latent_deltas) # how far off are the next obs? 
+    #print('MDRNN TEST. WHAT ARE THE DIMENSIONS OF THESE????', logpi.shape, mus.shape, latent_target.shape)
+    g_log_probs = logpi + normal_dist.log_prob(latent_target) # how far off are the next obs? 
     # sum across the gaussians, need to do so in log space: 
     log_loss = - torch.logsumexp(g_log_probs, dim=-2) # now have bs1, bs2, fs. all of these are different predictions to take the mean of.   
     #print(torch.exp(logpi))
-    #print('gmm loss', latent_deltas.shape, mus.shape, sigmas.shape, g_log_probs.shape, log_loss.shape)
+    #print('gmm loss', latent_target.shape, mus.shape, sigmas.shape, g_log_probs.shape, log_loss.shape)
     return torch.mean(log_loss)
-    
+
 class _MDRNNBase(nn.Module):
     def __init__(self, latents, actions, hiddens, gaussians, conditional):
         super().__init__()

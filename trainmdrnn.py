@@ -10,7 +10,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
              pres_action, pres_reward, 
              next_reward, terminal, device,
              include_reward = True, include_overshoot=True, 
-             include_terminal = False):
+             include_terminal = False, deterministic=True):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 
     """ Compute MDRNN losses.
@@ -34,17 +34,15 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
     """
 
     mse_coef = 100
-    deterministic = True
-    
     mus, sigmas, logpi, rs, ds = mdrnn(pres_action, latent_obs, pres_reward)
 
     # find the delta between the next observation and the present one. 
     latent_delta = latent_next_obs - latent_obs
     
     if deterministic: 
-        gmm = f.mse_loss(latent_delta, mus))
+        mus = mus.squeeze(-2)
+        gmm = f.mse_loss(latent_delta, mus)
         pred_latent_obs = mus + latent_obs
-        print('deterministic outputs', mus.shape, pred_latent_obs.shape, latent_obs.shape)
     else: 
         gmm = gmm_loss(latent_delta, mus, sigmas, logpi) # by default gives mean over all.
         pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, latent_obs)
@@ -73,20 +71,24 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                                             pres_reward[:, i, :].unsqueeze(1)
 
             for t in range(i, i+overshooting_horizon):
+                print('into mdrnn', pred_latent_obs.shape, pred_reward.shape)
                 mus, sigmas, logpi, pred_reward, ds, next_hidden = mdrnn(pres_action[:, t, :].unsqueeze(1), 
                                     pred_latent_obs, pred_reward, last_hidden=next_hidden)
                 # get next latent observation
                 if deterministic: 
-                    pred_latent_obs = mus + latent_obs
+                    #print('latent overshooot', latent_delta[:, t, :].unsqueeze(1).shape, mus.shape)
+                    overshoot_loss = f.mse_loss(latent_delta[:, t, :].squeeze(), mus.squeeze())
+                    mus = mus.squeeze(-2)
+                    pred_latent_obs = mus + pred_latent_obs
                 else: 
+                    overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
                     pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
-                # log this one
-                overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
+                    pred_latent_obs = pred_latent_obs.unsqueeze(1)
                 pred_reward = pred_reward.squeeze()
                 reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
                 overshoot_losses += overshoot_loss+(mse_coef*reward_loss)
                 pred_reward = pred_reward.unsqueeze(1).unsqueeze(2)
-                pred_latent_obs = pred_latent_obs.unsqueeze(1)
+                
             
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
@@ -127,6 +129,7 @@ def main(args):
     conditional=True 
     cur_best = None
     make_mdrnn_samples = True 
+    deterministic = True 
 
     desired_horizon = 30
     num_action_repeats = 5 # number of times the same action is performed repeatedly. 
@@ -183,7 +186,7 @@ def main(args):
     if make_mdrnn_samples:
         mdrnn_cell = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(device)
         if exists(best_filename) and not args.no_reload:
-            mdrnn_cell.load_state_dict( 
+            mdrnn_cell.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state["state_dict"].items()})
 
         transform_for_mdrnn_samples = transforms.Compose([
@@ -251,6 +254,7 @@ def main(args):
         cum_mse = 0
         cum_overshoot = 0
         num_rollouts_shown = 0
+
         pbar = tqdm(total=len(loader.dataset), desc="Epoch {}".format(epoch))
         for i, data in enumerate(loader):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
@@ -278,7 +282,7 @@ def main(args):
                                 pres_reward, next_reward,
                                 next_terminal, device, include_reward=include_reward, 
                                 include_terminal=include_terminal, 
-                                include_overshoot=include_overshoot)
+                                include_overshoot=include_overshoot, deterministic=deterministic)
 
                 optimizer.zero_grad()
                 losses['loss'].backward()
@@ -291,7 +295,7 @@ def main(args):
                                     pres_reward, next_reward,
                                     next_terminal, device, include_reward=include_reward, 
                                     include_terminal=include_terminal, 
-                                    include_overshoot=include_overshoot)
+                                    include_overshoot=include_overshoot, deterministic=deterministic)
 
             cum_loss += losses['loss'].item() * cur_batch_size
             cum_gmm += losses['gmm'].item() * cur_batch_size
@@ -394,14 +398,18 @@ def main(args):
                 mus, sigmas, logpi, rs, ds = mdrnn(last_test_pres_action.unsqueeze(0), last_test_latent_pres_obs.unsqueeze(0), last_test_pres_rewards.unsqueeze(0))
                 # squeeze just the first dimension!
                 mus, sigmas, logpi, rs, ds = [var.squeeze(0) for var in [mus, sigmas, logpi, rs, ds]]
-                print('MDRNN Debugger shouldnt have batch dimensions. :', mus.shape, sigmas.shape, logpi.shape)
+                #print('MDRNN Debugger shouldnt have batch dimensions. :', mus.shape, sigmas.shape, logpi.shape)
                 
-                print('Eval of MDRNN: Real rewards and latent squeezed or not? :', last_test_next_rewards.squeeze(), last_test_next_rewards.shape, last_test_latent_pres_obs.shape)
+                #print('Eval of MDRNN: Real rewards and latent squeezed or not? :', last_test_next_rewards.squeeze(), last_test_next_rewards.shape, last_test_latent_pres_obs.shape)
                 #print('Predicted Rewards:', rs, rs.shape)
-                
-                pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, last_test_latent_pres_obs)
 
-                print('shape of pred latent obs', pred_latent_obs.shape )
+                if deterministic: 
+                    pred_latent_obs = last_test_latent_pres_obs + mus.squeeze(-2)
+                else: 
+                    pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, last_test_latent_pres_obs)
+                    
+
+                #print('shape of pred latent obs', pred_latent_obs.shape )
 
                 # squeeze it back again:
                 decoder_mu, decoder_logsigma = vae.decoder(pred_latent_obs, rs.unsqueeze(1))
@@ -452,13 +460,19 @@ def main(args):
                                 horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
                     horizon_next_reward = horizon_next_reward.unsqueeze(0)
                     #print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
-                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+
+                    if deterministic: 
+                        horizon_next_latent_state = horizon_next_latent_state + md_mus.squeeze(-2)
+                        horizon_next_latent_state = horizon_next_latent_state.squeeze(0)
+                    else: 
+                        horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                        horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
                     
                     # mse between this and the real one. 
-                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
+                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state.squeeze()) )
                     
                     #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
-                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.unsqueeze(0), horizon_next_reward.squeeze(0))
+                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward.squeeze(0))
                     #print('shape of decoder mu', decoder_mu.shape)
                     pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
                     horizon_pred_obs.append(pred_next_vae_decoded_observation)
@@ -493,12 +507,16 @@ def main(args):
                                 horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
                     horizon_next_reward = horizon_next_reward.unsqueeze(0)
                     #print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
-                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
-                    
+
+                    if deterministic: 
+                        horizon_next_latent_state = horizon_next_latent_state + md_mus.squeeze(-2)
+                        horizon_next_latent_state = horizon_next_latent_state.squeeze(0)
+                    else: 
+                        horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                        horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+
                     # mse between this and the real one. 
-                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
-                    
-                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state.squeeze()) )
                     
                     #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
                     decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward.squeeze(0))
@@ -534,11 +552,17 @@ def main(args):
                     md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn_cell(next_action, 
                                 horizon_next_latent_state, horizon_next_hidden, horizon_next_reward)
                     horizon_next_reward = horizon_next_reward.unsqueeze(0)
-                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+
+                    if deterministic: 
+                        horizon_next_latent_state = horizon_next_latent_state + md_mus.squeeze(-2)
+                        #horizon_next_latent_state = horizon_next_latent_state.squeeze(0)
+                    else: 
+                        horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                        horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    
                     
                     # mse between this and the real one. 
-                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
-                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state.squeeze()) )
                     #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
                     decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward)
                     #print('shape of decoder mu', decoder_mu.shape)
