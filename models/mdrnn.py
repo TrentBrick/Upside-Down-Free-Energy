@@ -55,16 +55,16 @@ class _MDRNNBase(nn.Module):
 class MDRNN(_MDRNNBase):
     """ MDRNN model for multi steps forward """
     def __init__(self, latents, actions, hiddens, gaussians, conditional=True,
-                        no_lstm=True):
+                        use_lstm=True):
         super().__init__(latents, actions, hiddens, gaussians, conditional)
         
-        self.no_lstm = no_lstm
-        if no_lstm: 
+        self.use_lstm = use_lstm
+        if not use_lstm: 
             self.forward1 = nn.Linear(latents + actions+1, 128)
             self.forward2 = nn.Linear(128, 256)
-            self.forward25 = nn.Linear(256, 256)
-            self.forward3 = nn.Linear(256, 128)
-            self.forward4 = nn.Linear(128, latents+1)
+            self.forward3 = nn.Linear(256, 256)
+            self.forward4 = nn.Linear(256, 128)
+            self.forward5 = nn.Linear(128, latents+1)
         else:
             if self.conditional: 
                 self.rnn = nn.LSTM(latents + actions+1, hiddens, batch_first=True)
@@ -90,25 +90,24 @@ class MDRNN(_MDRNNBase):
         batch_size, seq_len = actions.size(0), actions.size(1)
         #r = r.unsqueeze(1)
 
-        if self.no_lstm:
+        if not self.use_lstm:
             ins = torch.cat([actions, latents, r], dim=-1)
 
             outs = self.forward1(ins)
             outs = self.forward2(outs)
-            outs = self.forward25(outs)
             outs = self.forward3(outs)
             outs = self.forward4(outs)
+            outs = self.forward5(outs)
 
             #print('returning from forward model!', outs.shape)
 
             if len(outs.shape) ==2:
-                return outs[:,:self.latents], torch.zeros((5,5,5)), torch.zeros((5,5,5)), outs[:,-1], torch.zeros((5,5,5)), (torch.zeros((5,5,5)),torch.zeros((5,5,5)))
-
+                return outs[:,:self.latents], torch.zeros((2,2,2)), torch.zeros((2,2,2)), outs[:,-1], torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))
 
             if last_hidden:
-                return outs[:,:,:self.latents], torch.zeros((5,5,5)), torch.zeros((5,5,5)), outs[:,:,-1], torch.zeros((5,5,5)), (torch.zeros((5,5,5)),torch.zeros((5,5,5)))
+                return outs[:,:,:self.latents], torch.zeros((2,2,2)), torch.zeros((2,2,2)), outs[:,:,-1], torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))
             else: 
-                return outs[:,:,:self.latents], torch.zeros((5,5,5)), torch.zeros((5,5,5)), outs[:,:,-1], torch.zeros((5,5,5))
+                return outs[:,:,:self.latents], torch.zeros((2,2,2)), torch.zeros((2,2,2)), outs[:,:,-1], torch.zeros((2,2,2))
 
         else: 
             #print(actions.shape, latents.shape)

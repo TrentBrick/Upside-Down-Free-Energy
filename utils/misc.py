@@ -4,6 +4,7 @@ import time
 from os.path import join, exists
 import torch
 from torchvision import transforms
+from torchvision.utils import save_image
 import numpy as np
 from models import MDRNNCell, VAE, Controller
 import gym
@@ -138,165 +139,201 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_cho
     else: 
         return latent_s 
 
+def generate_samples(vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic,
+                            samples_dir, SEQ_LEN, example_length, memory_adapt_period,
+                            make_vae_samples=False,
+                            make_mdrnn_samples=True, 
+                            transform_obs = False):
 
+    # need to restrict the data to a random segment. Important in cases where 
+    # sequence length is too long
+    start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
+    end_sample_ind = start_sample_ind+example_length
 
+    # ensuring this is the same length as everything else. 
+    for_vae_n_mdrnn_sampling[0] = for_vae_n_mdrnn_sampling[0][1:, :, :, :]
 
-'''class RolloutGenerator(object):
-    """ Utility to generate rollouts.
+    last_test_observations, \
+    last_test_pres_rewards, last_test_next_rewards, \
+    last_test_latent_pres_obs, last_test_latent_next_obs, \
+    last_test_pres_action = [var[start_sample_ind:end_sample_ind] for var in for_vae_n_mdrnn_sampling]
 
-    Encapsulate everything that is needed to generate rollouts in the TRUE ENV
-    using a controller with previously trained VAE and MDRNN.
+    if transform_obs:
+        transform_for_mdrnn_samples = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
+                transforms.ToTensor(),
+                ])
 
-    :attr vae: VAE model loaded from mdir/vae
-    :attr mdrnn: MDRNN model loaded from mdir/mdrnn
-    :attr controller: Controller, either loaded from mdir/ctrl or randomly
-        initialized
-    :attr env: instance of the CarRacing-v0 gym environment
-    :attr device: device used to run VAE, MDRNN and Controller
-    :attr time_limit: rollouts have a maximum of time_limit timesteps
-    """
-    def __init__(self, device, time_limit, mdir=None, return_events=False, give_models=None):
-        """ Build vae, rnn, controller and environment. """
+    if make_vae_samples:
+        with torch.no_grad():
+            # get test samples
+            decoder_mu, decoder_logsigma = vae.decoder(last_test_latent_next_obs, last_test_next_rewards)
+            recon_batch = decoder_mu + (decoder_logsigma.exp() * torch.randn_like(decoder_mu))
+            recon_batch = recon_batch.view(recon_batch.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            decoder_mu = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
+            print('Generating VAE samples of the shape:', to_save.shape)
+            save_image(to_save,
+                    join(samples_dir, 'vae_sample_' + str(e) + '.png'))
 
-        self.env = gym.make('CarRacing-v0')
-        self.device = device
-        self.return_events = return_events
-        self.time_limit = time_limit
+        print('====== Done Generating VAE Samples')
 
-        if give_models:
-            self.vae = give_models['vae']
+    if make_mdrnn_samples: 
+        with torch.no_grad():
 
-            if 'controller' in give_models.key():
-                self.controller = give_models['controller']
+            # update MDRNN with the new samples: 
+            # TODO: would this update have happened by default?? 
+            
+            #mdrnn_cell.load_state_dict( 
+            #    {k.strip('_l0'): v for k, v in mdrnn.state_dict().items()})
+
+            # vae of one in the future
+            decoder_mu, decoder_logsigma = vae.decoder(last_test_latent_next_obs, last_test_next_rewards)
+            real_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            
+            # unsqueeze all to make a batch.
+            # predict MDRNN one into the future
+            #print('shape of actions going into mdrnn', last_test_pres_action.shape)
+            mus, sigmas, logpi, rs, ds = mdrnn(last_test_pres_action.unsqueeze(0), last_test_latent_pres_obs.unsqueeze(0), last_test_pres_rewards.unsqueeze(0))
+            # squeeze just the first dimension!
+            mus, sigmas, logpi, rs, ds = [var.squeeze(0) for var in [mus, sigmas, logpi, rs, ds]]
+            #print('MDRNN Debugger shouldnt have batch dimensions. :', mus.shape, sigmas.shape, logpi.shape)
+            
+            #print('Eval of MDRNN: Real rewards and latent squeezed or not? :', last_test_next_rewards.squeeze(), last_test_next_rewards.shape, last_test_latent_pres_obs.shape)
+            #print('Predicted Rewards:', rs, rs.shape)
+
+            if deterministic: 
+                pred_latent_obs = last_test_latent_pres_obs + mus.squeeze(-2)
             else: 
-                self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(device)
-                # load controller if it was previously saved
-                ctrl_file = join(mdir, 'ctrl', 'best.tar')
-                if exists(ctrl_file):
-                    ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(device)})
-                    print("Loading Controller with reward {}".format(
-                        ctrl_state['reward']))
-                    self.controller.load_state_dict(ctrl_state['state_dict'])
+                pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, last_test_latent_pres_obs)
+                
+            #print('shape of pred latent obs', pred_latent_obs.shape )
 
-            # need to load in the cell based version!
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(device)
-            self.mdrnn.load_state_dict( 
-                {k.strip('_l0'): v for k, v in give_models['mdrnn'].state_dict.items()})
+            # squeeze it back again:
+            decoder_mu, decoder_logsigma = vae.decoder(pred_latent_obs, rs.unsqueeze(1))
+            #print('shape of decoder mu', decoder_mu.shape)
+            pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            
+            # need to transform the last_test_observations here: 
+            # THIS IS ONLY NEEDED HERE, NOT IN JOINT TRAINING AS IN JOINT ALL THE TRANSFORMS HAVE
+            # ALREADY OCCURED. 
+            if transform_obs:
+                last_test_observations = last_test_observations.permute(0,2,3,1) * 255
+                last_test_observations = last_test_observations.cpu().numpy().astype(np.uint8)
+                trans_imgs = []
+                for i in range(last_test_observations.shape[0]):
+                    trans_imgs.append( transform_for_mdrnn_samples(last_test_observations[i,:,:,:]) )
+                last_test_observations = torch.stack(trans_imgs)
+            else: 
+                last_test_observations = last_test_observations.cpu()
 
-        else:
-            # Loading world model and vae
-            vae_file, rnn_file, ctrl_file = \
-                [join(mdir, m, 'best.tar') for m in ['vae', 'mdrnn', 'ctrl']]
+            #print('trying to save all out', last_test_observations.shape, 
+            #    real_next_vae_decoded_observation.shape, 
+            #    pred_next_vae_decoded_observation.shape )
 
-            assert exists(vae_file) and exists(rnn_file),\
-                "Either vae or mdrnn is untrained or the file is in the wrong place."
+            to_save = torch.cat([last_test_observations, 
+                real_next_vae_decoded_observation.cpu(), 
+                pred_next_vae_decoded_observation.cpu()], dim=0)
 
-            vae_state, rnn_state = [
-                torch.load(fname, map_location={'cuda:0': str(device)})
-                for fname in (vae_file, rnn_file)]
+            print('Generating MDRNN samples of the shape:', to_save.shape)
+            save_image(to_save,
+                    join(samples_dir, 'next_pred_sample_' + str(e) + '.png'))
 
-            #print('about to load in the states')
-            for m, s in (('VAE', vae_state), ('MDRNN', rnn_state)):
-                print("Loading {} at epoch {} "
-                    "with test loss {}".format(
-                        m, s['epoch'], s['precision']))
-            #print('loading in vae from: ', vae_file, device)
-            self.vae = VAE(3, LATENT_SIZE).to(device)
-            self.vae.load_state_dict(vae_state['state_dict'])
+            ##################
 
-            #print('loading in mdrnn')
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 5).to(device)
-            self.mdrnn.load_state_dict(
-                {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
+            # Generating multistep predictions from the first latent. 
+            horizon_pred_obs = []
+            mse_losses = []
+            # first latent state. straight from the VAE. 
+            
+            horizon_next_hidden = [
+                torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
+                for _ in range(2)]
 
-            #print('loadin in controller.')
-            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE).to(device)
+            for t in range(example_length):
+                next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
+                horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
+                horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
 
-            # load controller if it was previously saved
-            if exists(ctrl_file):
-                ctrl_state = torch.load(ctrl_file, map_location={'cuda:0': str(device)})
-                print("Loading Controller with reward {}".format(
-                    ctrl_state['reward']))
-                self.controller.load_state_dict(ctrl_state['state_dict'])
+                #print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
+                            horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
+                horizon_next_reward = horizon_next_reward.unsqueeze(0)
+                #print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
 
-    def get_action_and_transition(self, obs, hidden):
-        """ Get action and transition.
-
-        Encode obs to latent using the VAE, then obtain estimation for next
-        latent and next hidden state using the MDRNN and compute the controller
-        corresponding action.
-
-        :args obs: current observation (1 x 3 x 64 x 64) torch tensor
-        :args hidden: current hidden state (1 x 256) torch tensor
-
-        :returns: (action, next_hidden)
-            - action: 1D np array
-            - next_hidden (1 x 256) torch tensor
-        """
-
-        # why is none of this batched?? Because can't run lots of environments at a single point in parallel I guess. 
-        mu, logsigma = self.vae.encoder(obs)
-        latent_z =  mu + logsigma.exp() * torch.randn_like(mu) 
-
-        assert latent_z.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
-
-        action = self.controller(latent_z, hidden[0])
-        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_z, hidden)
-        return action.squeeze().cpu().numpy(), next_hidden'''
-
-'''    def rollout(self, params, rand_env_seed, render=False):
-        """ Execute a rollout and returns minus cumulative reward.
-
-        Load :params: into the controller and execute a single rollout. This
-        is the main API of this class.
-
-        :args params: parameters as a single 1D np array
-
-        :returns: minus cumulative reward
-        # Why is this the minus cumulative reward?!?!!?
-        """
-        # copy params into the controller
-        if params is not None:
-            load_parameters(params, self.controller)
-
-        self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
-        obs = self.env.reset()
-
-        # This first render is required !
-        self.env.render()
-
-        hidden = [
-            torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
-            for _ in range(2)]
-
-        cumulative = 0
-        i = 0
-        if self.return_events: 
-            rollout_dict = {k:[] for k in ['obs', 'rew', 'act', 'term']}
-        while True:
-            #print('iteration of the rollout', i)
-            obs = transform(obs).unsqueeze(0).to(self.device)
-            action, hidden = self.get_action_and_transition(obs, hidden)
-            obs, reward, done, _ = self.env.step(action)
-
-            if self.return_events: 
-                for key, var in zip(['obs', 'rew', 'act', 'term'], [obs,reward, action, done]):
-                    rollout_dict[key].append(var)
-
-            if render:
-                self.env.render()
-
-            cumulative += reward
-            if done or i > self.time_limit:
-                #print('done with this simulation')
-                if self.return_events:
-                    for k,v in rollout_dict.items():
-                        rollout_dict[k] = np.array(v)
-
-                    return - cumulative, rollout_dict
+                if deterministic: 
+                    horizon_next_latent_state = horizon_next_latent_state + md_mus.squeeze(-2)
+                    horizon_next_latent_state = horizon_next_latent_state.squeeze(0)
                 else: 
-                    return - cumulative
-            i += 1'''
+                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                
+                # mse between this and the real one. 
+                mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state.squeeze()) )
+                
+                #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward.squeeze(0))
+                #print('shape of decoder mu', decoder_mu.shape)
+                pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+                horizon_pred_obs.append(pred_next_vae_decoded_observation)
+
+            print('===== MSE losses between horizon prediction and real', mse_losses)
+
+            horizon_pred_obs_given_next = torch.stack(horizon_pred_obs).squeeze()
+
+            ##################
+
+            # Generating multistep predictions from the first latent. 
+            horizon_pred_obs = []
+            mse_losses = []
+            # first latent state. straight from the VAE. 
+            horizon_next_hidden = [
+                torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
+                for _ in range(2)]
+
+            for t in range(example_length):
+
+                if t< memory_adapt_period:
+                    # giving the real observation still 
+                    horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
+                    horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
+
+                next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
+                #print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
+                md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
+                            horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
+                horizon_next_reward = horizon_next_reward.unsqueeze(0)
+                #print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
+
+                if deterministic: 
+                    horizon_next_latent_state = horizon_next_latent_state + md_mus.squeeze(-2)
+                    horizon_next_latent_state = horizon_next_latent_state.squeeze(0)
+                else: 
+                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
+                    horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+
+                # mse between this and the real one. 
+                mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state.squeeze()) )
+                #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward.squeeze(0))
+                horizon_next_latent_state = horizon_next_latent_state.unsqueeze(0)
+                #print('shape of decoder mu', decoder_mu.shape)
+                pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+                horizon_pred_obs.append(pred_next_vae_decoded_observation)
+
+            print('===== MSE losses between horizon prediction and real', mse_losses)
+
+            horizon_pred_obs_full_based = torch.stack(horizon_pred_obs).squeeze()
+
+            #######################
+
+            to_save = torch.cat([last_test_observations, real_next_vae_decoded_observation.cpu(), horizon_pred_obs_given_next.cpu(),
+                horizon_pred_obs_full_based.cpu() ], dim=0)
+
+            print('Generating MDRNN samples of the shape:', to_save.shape)
+            save_image(to_save,
+                    join(samples_dir, 'horizon_pred_sample_' + str(e) + '.png'))
 
 if __name__ == "__main__":
     env = gym.make("CarRacing-v0")

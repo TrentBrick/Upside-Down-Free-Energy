@@ -10,7 +10,6 @@ import torch
 import torch.nn.functional as f
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from torchvision.utils import save_image
 import numpy as np
 import json
 from tqdm import tqdm
@@ -27,7 +26,7 @@ from trainvae import loss_function as trainvae_loss_function
 from trainmdrnn import get_loss as trainmdrnn_loss_function
 from collections import OrderedDict
 import time 
-from utils.misc import sample_mdrnn_latent
+from utils.misc import sample_mdrnn_latent, generate_samples
 
 def main(args):
 
@@ -42,6 +41,10 @@ def main(args):
 
     include_reward = condition_on_rewards # has the MDRNN return rewards. this is very important for the conditioning on rewards 
     include_terminal = False
+    include_overshoot = False 
+
+    deterministic=True
+    use_lstm = False 
     
     # Constants
     BATCH_SIZE = 32
@@ -96,7 +99,9 @@ def main(args):
 
     # init models
     vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, condition_on_rewards).to(device)
-    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, condition_on_rewards).to(device)
+    mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, 
+        LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, 
+        condition_on_rewards, use_lstm=use_lstm).to(device)
     
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
@@ -278,7 +283,10 @@ def main(args):
             mdrnn_loss_dict = trainmdrnn_loss_function(mdrnn, latent_obs,
                                 latent_next_obs, pres_action,
                                 pres_reward, next_reward,
-                                terminal, device, include_reward, include_terminal)
+                                terminal, device, include_reward=include_reward, 
+                                include_terminal=include_terminal, 
+                                include_overshoot = include_overshoot,
+                                deterministic=deterministic)
 
             if return_for_vae_n_mdrnn_sampling:
                 for_vae_n_mdrnn_sampling = [obs[0,:,:,:,:], pres_reward[0,:,:], next_reward[0,:,:], latent_obs[0,:,:], latent_next_obs[0,:,:], pres_action[0,:,:]]
@@ -454,146 +462,13 @@ def main(args):
 
         if make_vae_samples or make_mdrnn_samples:
 
-            # need to restrict the data to a random segment. Important in cases where 
-            # sequence length is too long
-            start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
-            end_sample_ind = start_sample_ind+example_length
-
-            # ensuring that the last_test_observations are the same length as everything else. 
-            # and one into the future. 
-            for_vae_n_mdrnn_sampling[0] = for_vae_n_mdrnn_sampling[0][1:, :, :, :]
-            
-            last_test_observations, \
-            last_test_pres_rewards, last_test_next_rewards, \
-            last_test_latent_pres_obs, last_test_latent_next_obs, \
-            last_test_pres_action = [var[start_sample_ind:end_sample_ind] for var in for_vae_n_mdrnn_sampling]
-
-        # generating and saving VAE samples
-        if make_vae_samples:
-            with torch.no_grad():
-                # get test samples
-                decoder_mu, decoder_logsigma = vae.decoder(last_test_latent_next_obs, last_test_next_rewards)
-                recon_batch = decoder_mu + (decoder_logsigma.exp() * torch.randn_like(decoder_mu))
-                recon_batch = recon_batch.view(recon_batch.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-                decoder_mu = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-                to_save = torch.cat([last_test_observations.cpu(), recon_batch.cpu(), decoder_mu.cpu()], dim=0)
-                print('Generating VAE samples of the shape:', to_save.shape)
-                save_image(to_save,
-                        join(samples_dir, 'vae_sample_' + str(e) + '.png'))
+            generate_samples( vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic, 
+                            samples_dir, SEQ_LEN, example_length,
+                            memory_adapt_period,
+                            make_vae_samples=make_vae_samples,
+                            make_mdrnn_samples=make_mdrnn_samples, 
+                            transform_obs=False  )
         
-        print('====== Done Generating VAE Samples')
-
-        # Generate MDRNN examples. 
-
-        if make_mdrnn_samples:
-            with torch.no_grad():
-                # some of this compute is repeated from the VAE sample but it all runs quickly and doesn't happen v often. 
-                # vae of one in the future
-                decoder_mu, decoder_logsigma = vae.decoder(last_test_latent_next_obs, last_test_next_rewards)
-                real_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-                # unsqueeze all to make a batch.
-                # predict MDRNN one into the future
-                print('shape of actions going into mdrnn', last_test_pres_action.shape)
-                mus, sigmas, logpi, rs, ds = mdrnn(last_test_pres_action.unsqueeze(0), last_test_latent_pres_obs.unsqueeze(0), last_test_pres_rewards.unsqueeze(0))
-                # squeeze just the first dimension!
-                mus, sigmas, logpi, rs, ds = [var.squeeze(0) for var in [mus, sigmas, logpi, rs, ds]]
-                print('MDRNN Debugger shouldnt have batch dimensions. :', mus.shape, sigmas.shape, logpi.shape)
-                print('Eval of MDRNN: Real rewards and latent squeezed or not? :', last_test_next_rewards.squeeze(), last_test_next_rewards.shape, last_test_latent_pres_obs.shape)
-                print('Predicted Rewards:', rs, rs.shape)
-                pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, last_test_latent_pres_obs)
-                print('shape of pred latent obs', pred_latent_obs.shape )
-                # squeeze it back again:
-                decoder_mu, decoder_logsigma = vae.decoder(pred_latent_obs, rs.unsqueeze(1))
-                print('shape of decoder mu', decoder_mu.shape)
-                pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-                
-                print('trying to save all out', last_test_observations.shape, 
-                    real_next_vae_decoded_observation.shape, 
-                    pred_next_vae_decoded_observation.shape )
-                to_save = torch.cat([last_test_observations.cpu(), 
-                    real_next_vae_decoded_observation.cpu(), 
-                    pred_next_vae_decoded_observation.cpu()], dim=0)
-                print('Generating MDRNN samples of the shape:', to_save.shape)
-                save_image(to_save,
-                        join(samples_dir, 'mdrnn_next_pred_sample_' + str(e) + '.png'))
-                
-                ################## Predicting next observation using the full RNN
-                # Generating multistep predictions from the first latent. 
-                horizon_pred_obs = []
-                mse_losses = [] 
-                horizon_next_hidden = [
-                    torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
-                    for _ in range(2)]
-                # TODO: convert to all in one go for speed up at some point
-                # this could be done all in one go but I used code from single iterations during debugging. 
-                for t in range(example_length):
-                    next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
-                    horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
-                    horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
-
-                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
-                    md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
-                                horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
-                    horizon_next_reward = horizon_next_reward.unsqueeze(0)
-                    print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
-                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
-                    
-                    # mse between this and the real one. 
-                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
-                    
-                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
-                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.unsqueeze(0), horizon_next_reward.squeeze(0))
-                    print('shape of decoder mu', decoder_mu.shape)
-                    pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-                    horizon_pred_obs.append(pred_next_vae_decoded_observation)
-                print('===== MSE losses between horizon prediction and real', mse_losses)
-                horizon_pred_obs_given_next = torch.stack(horizon_pred_obs).squeeze()
-                
-                ##################
-                # Generating multistep predictions from the first latent. 
-                horizon_pred_obs = []
-                mse_losses = []
-                # first latent state. straight from the VAE. 
-                #horizon_next_latent_state = last_test_latent_pres_obs[0].unsqueeze(0).unsqueeze(0)
-                #horizon_next_reward = last_test_pres_rewards[0].unsqueeze(0).unsqueeze(0)
-                horizon_next_hidden = [
-                    torch.zeros(1, 1, LATENT_RECURRENT_SIZE).to(device)
-                    for _ in range(2)]
-    
-                for t in range(example_length):
-
-                    if t< memory_adapt_period:
-                        # giving the real observation still 
-                        horizon_next_latent_state = last_test_latent_pres_obs[t].unsqueeze(0).unsqueeze(0)
-                        horizon_next_reward = last_test_pres_rewards[t].unsqueeze(0).unsqueeze(0)
-
-                    next_action = last_test_pres_action[t].unsqueeze(0).unsqueeze(0)
-                    print('going into horizon pred', next_action.shape, horizon_next_latent_state.shape, horizon_next_hidden[0].shape, horizon_next_reward.shape)
-                    md_mus, md_sigmas, md_logpi, horizon_next_reward, d, horizon_next_hidden = mdrnn(next_action, 
-                                horizon_next_latent_state, horizon_next_reward, horizon_next_hidden)
-                    horizon_next_reward = horizon_next_reward.unsqueeze(0)
-                    print('going into sample mdrnn latent', md_mus.shape, horizon_next_latent_state.shape)
-                    horizon_next_latent_state = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, horizon_next_latent_state)
-                    # mse between this and the real one. 
-                    mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state) )
-                    print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
-                    decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state.unsqueeze(0), horizon_next_reward.squeeze(0))
-                    print('shape of decoder mu', decoder_mu.shape)
-                    pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-                    horizon_pred_obs.append(pred_next_vae_decoded_observation)
-
-                    
-                print('===== MSE losses between horizon prediction and real', mse_losses)
-                horizon_pred_obs_full_based = torch.stack(horizon_pred_obs).squeeze()
-
-                to_save = torch.cat([last_test_observations.cpu(), real_next_vae_decoded_observation.cpu(), 
-                    horizon_pred_obs_given_next.cpu(),
-                    horizon_pred_obs_full_based.cpu()], dim=0)
-
-                print('Generating MDRNN samples of the shape:', to_save.shape)
-                save_image(to_save,
-                        join(samples_dir, 'mdrnn_horizon_pred_sample_' + str(e) + '.png'))
-
         # Header at the top of logger file written once at the start of new training run.
         if not exists(logger_filename) or e==0: 
             header_string = ""

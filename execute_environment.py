@@ -271,6 +271,8 @@ class EnvSimulator:
         done = 0
         action = np.array([0.,0.,0.])
 
+        sim_rewards = []
+
         cumulative = 0
         i = 0
         if self.return_events: 
@@ -301,6 +303,15 @@ class EnvSimulator:
             for _ in range(self.num_action_repeats):
                 obs, reward, done, _ = self.env.step(action)
                 cumulative += reward
+
+                if len(sim_rewards) <50:
+                    sim_rewards.append(reward)
+                else: 
+                    sim_rewards.pop(0)
+                    sim_rewards.append(reward)
+                    #print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
+                    if round(sum(sim_rewards), 3) == -5.0:
+                        done=True 
 
                 if self.use_old_gym:
                     self.env.viewer.window.dispatch_events()
