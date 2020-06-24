@@ -160,20 +160,22 @@ def worker(inp): # run lots of rollouts
     save and return the observations, rewards, and FEEF calculations."""
 
     gamename, vae_conditional, mdrnn_conditional, \
+        deterministic, use_lstm, \
         time_limit, logdir, num_episodes, \
         horizon, num_action_repeats, \
         planner_n_particles, init_cem_params, \
         cem_iters, discount_factor, \
         compute_feef, seed = inp
     
-    model = EnvSimulator(gamename, logdir, vae_conditional, mdrnn_conditional,
+    env_simulator = EnvSimulator(gamename, logdir, vae_conditional, mdrnn_conditional,
+            deterministic, use_lstm,
             time_limit=time_limit,
-            return_events=True,
+            
             planner_n_particles = planner_n_particles, 
             horizon=horizon, num_action_repeats=num_action_repeats,
             init_cem_params=init_cem_params, cem_iters=cem_iters, 
-            discount_factor=discount_factor, use_old_gym=False)
+            discount_factor=discount_factor)
 
-    return model.simulate(train_mode=True, render_mode=False, 
-            num_episode=num_episodes, seed=seed, 
-            compute_feef=compute_feef)
+    return env_simulator.simulate(return_events=True,
+            compute_feef=compute_feef,
+            num_episodes=num_episodes, seed=seed)

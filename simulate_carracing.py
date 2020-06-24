@@ -41,7 +41,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
         if test_agent and not use_planner: 
             # load in controller trained using CMA-ES.: 
-            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing', condition=self.condition).to('cpu')
+            self.controller = Controller(LATENT_SIZE, LATENT_RECURRENT_SIZE, ACTION_SIZE, 'carracing').to('cpu')
             
             with open('es_log/carracing.cma.12.64.best.json', 'r') as f:
                 ctrl_params = json.load(f)
