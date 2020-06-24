@@ -88,8 +88,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                 reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
                 overshoot_losses += overshoot_loss+(mse_coef*reward_loss)
                 pred_reward = pred_reward.unsqueeze(1).unsqueeze(2)
-                
-            
+                   
     if include_reward:
         mse = f.mse_loss(rs, next_reward.squeeze())
     else:
@@ -97,7 +96,6 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
 
     if include_terminal:
         bce = f.binary_cross_entropy_with_logits(ds, terminal)
-
     else:
         bce = 0
 
@@ -184,10 +182,10 @@ def main(args):
         earlystopping.load_state_dict(rnn_state['earlystopping'])
 
     if make_mdrnn_samples:
-        mdrnn_cell = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(device)
-        if exists(best_filename) and not args.no_reload:
-            mdrnn_cell.load_state_dict(
-                {k.strip('_l0'): v for k, v in rnn_state["state_dict"].items()})
+        #mdrnn_cell = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(device)
+        #if exists(best_filename) and not args.no_reload:
+        #    mdrnn_cell.load_state_dict(
+        #        {k.strip('_l0'): v for k, v in rnn_state["state_dict"].items()})
 
         transform_for_mdrnn_samples = transforms.Compose([
             transforms.ToPILImage(),
@@ -385,8 +383,9 @@ def main(args):
 
                 # update MDRNN with the new samples: 
                 # TODO: would this update have happened by default?? 
-                mdrnn_cell.load_state_dict( 
-                    {k.strip('_l0'): v for k, v in mdrnn.state_dict().items()})
+                
+                #mdrnn_cell.load_state_dict( 
+                #    {k.strip('_l0'): v for k, v in mdrnn.state_dict().items()})
 
                 # vae of one in the future
                 decoder_mu, decoder_logsigma = vae.decoder(last_test_latent_next_obs, last_test_next_rewards)
@@ -531,7 +530,7 @@ def main(args):
 
                 #######################
 
-                # Generating multistep predictions from the first latent. 
+                '''# Generating multistep predictions from the first latent. 
                 horizon_pred_obs = []
                 mse_losses = []
                 # first latent state. straight from the VAE. 
@@ -571,10 +570,11 @@ def main(args):
 
                 print('===== MSE losses between horizon prediction and real', mse_losses)
 
-                horizon_pred_obs_cell_based = torch.stack(horizon_pred_obs).squeeze()
+                horizon_pred_obs_cell_based = torch.stack(horizon_pred_obs).squeeze()'''
 
                 to_save = torch.cat([last_test_observations, real_next_vae_decoded_observation.cpu(), horizon_pred_obs_given_next.cpu(),
-                    horizon_pred_obs_full_based.cpu(), horizon_pred_obs_cell_based.cpu() ], dim=0)
+                    horizon_pred_obs_full_based.cpu() ], dim=0)
+                    #, horizon_pred_obs_cell_based.cpu()
 
                 print('Generating MDRNN samples of the shape:', to_save.shape)
                 save_image(to_save,

@@ -54,12 +54,21 @@ class _MDRNNBase(nn.Module):
 
 class MDRNN(_MDRNNBase):
     """ MDRNN model for multi steps forward """
-    def __init__(self, latents, actions, hiddens, gaussians, conditional=True):
+    def __init__(self, latents, actions, hiddens, gaussians, conditional=True,
+                        no_lstm=True):
         super().__init__(latents, actions, hiddens, gaussians, conditional)
-        if self.conditional: 
-            self.rnn = nn.LSTM(latents + actions+1, hiddens, batch_first=True)
-        else: 
-            self.rnn = nn.LSTM(latents + actions, hiddens, batch_first=True)
+        
+        self.no_lstm = no_lstm
+        if no_lstm: 
+            self.forward1 = nn.Linear(latents + actions+1, 128)
+            self.forward2 = nn.Linear(128, 256)
+            self.forward3 = nn.Linear(256, 128)
+            self.forward4 = nn.Linear(128, latents+1)
+        else:
+            if self.conditional: 
+                self.rnn = nn.LSTM(latents + actions+1, hiddens, batch_first=True)
+            else: 
+                self.rnn = nn.LSTM(latents + actions, hiddens, batch_first=True)
 
     def forward(self, actions, latents, r, last_hidden=None): # pylint: disable=arguments-differ
         """ MULTI STEPS forward.
@@ -80,40 +89,56 @@ class MDRNN(_MDRNNBase):
         batch_size, seq_len = actions.size(0), actions.size(1)
         #r = r.unsqueeze(1)
 
-        #print(actions.shape, latents.shape)
-        if self.conditional: 
+        if self.no_lstm:
             ins = torch.cat([actions, latents, r], dim=-1)
+
+            outs = self.forward1(ins)
+            outs = self.forward2(outs)
+            outs = self.forward3(outs)
+            outs = self.forward4(outs)
+
+            print('returning from forward model!', outs.shape)
+
+            if last_hidden:
+                return outs[:,:,:self.latents], torch.zeros((5,5,5)), torch.zeros((5,5,5)), outs[:,:,-1], torch.zeros((5,5,5)), (torch.zeros((5,5,5)),torch.zeros((5,5,5)))
+            else: 
+                return outs[:,:,:self.latents], torch.zeros((5,5,5)), torch.zeros((5,5,5)), outs[:,:,-1], torch.zeros((5,5,5))
+
         else: 
-            ins = torch.cat([actions, latents], dim=-1)
+            #print(actions.shape, latents.shape)
+            if self.conditional: 
+                ins = torch.cat([actions, latents, r], dim=-1)
+            else: 
+                ins = torch.cat([actions, latents], dim=-1)
 
-        if last_hidden:
-            outs, last_hidden = self.rnn(ins, last_hidden)
-        else: 
-            outs, _ = self.rnn(ins)
-        gmm_outs = self.gmm_linear(outs)
+            if last_hidden:
+                outs, last_hidden = self.rnn(ins, last_hidden)
+            else: 
+                outs, _ = self.rnn(ins)
+            gmm_outs = self.gmm_linear(outs)
 
-        stride = self.gaussians * self.latents # number of predictions per element.
+            stride = self.gaussians * self.latents # number of predictions per element.
 
-        mus = gmm_outs[:, :, :stride]
-        mus = mus.view(batch_size, seq_len, self.gaussians, self.latents)
+            mus = gmm_outs[:, :, :stride]
+            mus = mus.view(batch_size, seq_len, self.gaussians, self.latents)
 
-        sigmas = gmm_outs[:, :, stride:2 * stride]
-        sigmas = sigmas.view(batch_size, seq_len, self.gaussians, self.latents)
-        sigmas = torch.exp(sigmas) # assuming they were logged before? 
+            sigmas = gmm_outs[:, :, stride:2 * stride]
+            sigmas = sigmas.view(batch_size, seq_len, self.gaussians, self.latents)
+            sigmas = torch.exp(sigmas) # assuming they were logged before? 
 
-        pi = gmm_outs[:, :, 2 * stride: 3 * stride ]
-        pi = pi.view(batch_size, seq_len, self.gaussians, self.latents)
-        logpi = f.log_softmax(pi, dim=-2) #NOTE:Check this is working as it should be!! and update in the Cell version too below!!
+            pi = gmm_outs[:, :, 2 * stride: 3 * stride ]
+            pi = pi.view(batch_size, seq_len, self.gaussians, self.latents)
+            logpi = f.log_softmax(pi, dim=-2) #NOTE:Check this is working as it should be!! and update in the Cell version too below!!
 
-        # TODO: enable removing these channels because they are taking up space!
-        rs = gmm_outs[:, :, -2]
+            # TODO: enable removing these channels because they are taking up space!
+            rs = gmm_outs[:, :, -2]
 
-        ds = gmm_outs[:, :, -1]
+            ds = gmm_outs[:, :, -1]
 
-        if last_hidden:
-            return mus, sigmas, logpi, rs, ds, last_hidden
-        else: 
-            return mus, sigmas, logpi, rs, ds
+            if last_hidden:
+                return mus, sigmas, logpi, rs, ds, last_hidden
+            else: 
+                return mus, sigmas, logpi, rs, ds
 
 class MDRNNCell(_MDRNNBase):
     """ MDRNN model for one step forward """
