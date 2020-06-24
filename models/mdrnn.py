@@ -52,7 +52,6 @@ class _MDRNNBase(nn.Module):
     def forward(self, *inputs):
         pass
 
-
 class RewardModule(nn.Module):
     """ Given the next latent state. predict the reward. 
         Easier to debug this way. """
@@ -76,10 +75,12 @@ class MDRNN(_MDRNNBase):
     def __init__(self, latents, actions, hiddens, gaussians, conditional=True,
                         use_lstm=True):
         super().__init__(latents, actions, hiddens, gaussians, conditional)
-        
         self.use_lstm = use_lstm
         if not use_lstm: 
-            self.forward1 = nn.Linear(latents + actions+1, 256)
+            if self.conditional:
+                self.forward1 = nn.Linear(latents + actions+1, 256)
+            else: 
+                self.forward1 = nn.Linear(latents + actions, 256)
             self.forward2 = nn.Linear(256, 256)
             self.forward3 = nn.Linear(256, 256)
             self.forward4 = nn.Linear(256, latents)
@@ -111,7 +112,11 @@ class MDRNN(_MDRNNBase):
         #r = r.unsqueeze(1)
 
         if not self.use_lstm:
-            ins = torch.cat([actions, latents, r], dim=-1)
+
+            if self.conditional:
+                ins = torch.cat([actions, latents, r], dim=-1)
+            else: 
+                ins = torch.cat([actions, latents], dim=-1)
 
             # assuming it is always predicting the delta!
             outs = torch.relu(self.forward1(ins))

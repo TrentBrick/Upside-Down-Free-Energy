@@ -33,12 +33,16 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
         the averaged loss.
     """
 
+    # coefficient used to make the reward and latent state predictions the same order
+    # of magnitude.
     mse_coef = 10
+    # if no_lstm is True then the only real values here are for mus and rs. 
     mus, sigmas, logpi, rs, ds = mdrnn(pres_action, latent_obs, pres_reward)
 
     # find the delta between the next observation and the present one. 
     latent_delta = latent_next_obs - latent_obs
     
+    # just use the mus. 
     if deterministic: 
         mus = mus.squeeze(-2)
         gmm = f.mse_loss(latent_delta, mus)
@@ -47,7 +51,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
         gmm = gmm_loss(latent_delta, mus, sigmas, logpi) # by default gives mean over all.
         pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, latent_obs)
     
-    print('MSE between predicted and real latent values', 
+    print('MSE between predicted and real latent values in trainmdrnn.py!', 
         f.mse_loss(latent_next_obs, pred_latent_obs))
 
     overshoot_losses = 0
@@ -126,7 +130,8 @@ def main(args):
     BATCH_SIZE = 1024
     SEQ_LEN = 12
     epochs = 300
-    conditional=True 
+    vae_conditional=True 
+    mdrnn_conditional = False
     cur_best = None
     make_mdrnn_samples = True 
     if args.probabilistic:
@@ -155,7 +160,7 @@ def main(args):
         "with test error {}".format(
             state['epoch'], state['precision']))
 
-    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=conditional).to(device)
+    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=vae_conditional).to(device)
     vae.load_state_dict(state['state_dict'])
 
     # Loading model
@@ -170,10 +175,10 @@ def main(args):
         mkdir(rnn_dir)
 
     mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 
-            NUM_GAUSSIANS_IN_MDRNN, conditional=conditional, 
+            NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, 
             use_lstm=args.use_lstm ).to(device)
 
-    optimizer = torch.optim.Adam(mdrnn.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(mdrnn.parameters(), lr=1e-3)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
     earlystopping = EarlyStopping('min', patience=100)
 
@@ -253,10 +258,6 @@ def main(args):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
             cur_batch_size = terminal.shape[0]
             num_rollouts_shown+= cur_batch_size
-
-            print('current ||| total number of rollouts shown', cur_batch_size, num_rollouts_shown)
-
-            print('===== obs shape is:', obs.shape)
 
             # transform obs
             latent_obs = to_latent(obs, reward)

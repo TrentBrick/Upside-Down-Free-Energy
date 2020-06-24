@@ -43,11 +43,14 @@ def main(args):
     include_terminal = False
     include_overshoot = False 
 
+    vae_conditional=True 
+    mdrnn_conditional = True
+
     deterministic=True
     use_lstm = False 
     
     # Constants
-    BATCH_SIZE = 128
+    BATCH_SIZE = 512
     SEQ_LEN = 14 # number of sequences in a row used during training
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
@@ -106,7 +109,7 @@ def main(args):
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
-    earlystopping = EarlyStopping('min', patience=100) # NOTE: this needs to be esp high as the epochs are heterogenous buffers!! not all data. 
+    earlystopping = EarlyStopping('min', patience=200)
 
     # Loading in trained models: 
     if not args.no_reload:
@@ -296,6 +299,7 @@ def main(args):
 
         # iterate through an epoch of data. 
         num_rollouts_shown = 0
+        mdrnn_coef = 10000
         for i, data in enumerate(loader):
             obs, action, reward, terminal = [arr.to(device) for arr in data]
             cur_batch_size = terminal.shape[0]
@@ -304,7 +308,7 @@ def main(args):
             if train:
                 vae_loss_dict, mdrnn_loss_dict = forward_and_loss()
                 # coefficient balancing!
-                mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
+                mdrnn_loss_dict['loss'] = mdrnn_coef*mdrnn_loss_dict['loss']
                 total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
                 # taking grad step after every batch. 
@@ -317,7 +321,7 @@ def main(args):
                 with torch.no_grad():
                     vae_loss_dict, mdrnn_loss_dict, for_vae_n_mdrnn_sampling = forward_and_loss(return_for_vae_n_mdrnn_sampling = True)
                     # coefficient balancing!
-                    mdrnn_loss_dict['loss'] = 10000*mdrnn_loss_dict['loss']
+                    mdrnn_loss_dict['loss'] = mdrnn_coef*mdrnn_loss_dict['loss']
                     #total_loss = vae_loss_dict['loss'] + mdrnn_loss_dict['loss']
 
             # add results from each batch to cumulative losses
@@ -333,7 +337,7 @@ def main(args):
             # Display training progress bar with current losses
             postfix_str = ""
             for k,v in cumloss_dict.items():
-                v = v / (i + 1)
+                v = (v /num_rollouts_shown)/SEQ_LEN
                 postfix_str+= k+'='+str(round(v,4))+', '
             pbar.set_postfix_str(postfix_str)
             pbar.update(cur_batch_size)
@@ -354,17 +358,24 @@ def main(args):
 
     ################## Main Training Loop ############################
 
+    # all of these are static across epochs. 
+    worker_package = [ args.gamename, vae_conditional, mdrnn_conditional,
+                time_limit, joint_dir, 
+                num_vae_mdrnn_training_rollouts_per_worker,
+                actual_horizon,
+                num_action_repeats, planner_n_particles, 
+                init_cem_params, cem_iters, discount_factor,
+                use_feef ]
+
     for e in range(epochs):
         print('====== New Epoch: ',e)
         ## run the current policy with the current VAE and MDRNN
 
         # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
         print('====== Generating Rollouts to train the MDRNN and VAE') 
+        
         train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
-                actual_horizon, num_action_repeats, planner_n_particles, 
-                SEQ_LEN, time_limit, joint_dir, init_cem_params, cem_iters, discount_factor,
-                 num_rolls_per_worker=num_vae_mdrnn_training_rollouts_per_worker, 
-                num_workers=args.num_workers, compute_feef=use_feef )
+                args.num_workers, SEQ_LEN, worker_package)
 
         if use_training_buffer:
             if e==0:

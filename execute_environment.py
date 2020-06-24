@@ -17,11 +17,11 @@ from utils.misc import sample_mdrnn_latent
 
 class EnvSimulator:
 
-    def __init__(self, env_name, time_limit=1000, use_old_gym=False, 
-        mdir=None, return_events=False, give_models=None, conditional=True, 
-        joint_file_dir=False, planner_n_particles=100, horizon=30, 
-        num_action_repeats=5, init_cem_params=None, cem_iters=10, discount_factor=0.90):
-        """ Build vae, rnn, controller and environment. """
+    def __init__(self, env_name, logdir, vae_conditional, mdrnn_conditional,
+        time_limit=1000, return_events=False, planner_n_particles=100, horizon=30, 
+        num_action_repeats=5, init_cem_params=None, cem_iters=10, 
+        discount_factor=0.90, use_old_gym=False):
+        """ Build vae, forward model, and environment. """
 
         #self.env = gym.make('CarRacing-v0')
         self.env_name = env_name
@@ -30,58 +30,49 @@ class EnvSimulator:
         self.deterministic = True
         self.use_lstm = False
 
-        self.device = 'cpu' #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = 'cpu' 
+        #self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
 
+        # transform used on environment generated observations. 
         self.transform = transforms.Compose([
                 transforms.ToPILImage(),
                 transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
                 transforms.ToTensor()
             ])
 
-        if give_models:
-            self.vae = give_models['vae']
+        # Loading world model and vae
+        # NOTE: the checkpoint, ie most up to date model. Is being loaded in. 
+        vae_file, rnn_file = \
+                [join(logdir, m+'_checkpoint.tar') for m in ['vae', 'mdrnn']]
+        
+        assert exists(vae_file) and exists(rnn_file),\
+            "Either vae or mdrnn is untrained or the file is in the wrong place. "+vae_file+' '+rnn_file
 
-            # need to load in the cell based version!
-            self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, use_lstm=self.use_lstm).to(self.device)
-            self.mdrnn.load_state_dict( 
-                {k.strip('_l0'): v for k, v in give_models['mdrnn'].state_dict.items()})
+        vae_state, rnn_state = [
+            torch.load(fname, map_location={'cuda:0': str(self.device)})
+            for fname in (vae_file, rnn_file)]
 
-        else:
-            # Loading world model and vae
-            # NOTE: the checkpoint, ie most up to date model. Is being loaded in. 
-            vae_file, rnn_file = \
-                    [join(mdir, m+'_checkpoint.tar') for m in ['vae', 'mdrnn']]
-            
-            assert exists(vae_file) and exists(rnn_file),\
-                "Either vae or mdrnn is untrained or the file is in the wrong place. "+vae_file+' '+rnn_file
+        for m, s in (('VAE', vae_state), ('MDRNN', rnn_state)):
+            print("Loading {} at epoch {} "
+                "with test loss {}".format(
+                    m, s['epoch'], s['precision']))
+        print('loading in vae from:', vae_file, self.device)
+        self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE).to(self.device)
+        self.vae.load_state_dict(vae_state['state_dict'])
 
-            vae_state, rnn_state = [
-                torch.load(fname, map_location={'cuda:0': str(self.device)})
-                for fname in (vae_file, rnn_file)]
+        print('loading in mdrnn from:', rnn_file, self.device)
+        if self.deterministic:
+            self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional, use_lstm=self.use_lstm).to(self.device)
+            self.mdrnn.load_state_dict(rnn_state['state_dict'])
+        else: 
+            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional).to(self.device)
+            self.mdrnn.load_state_dict(
+                {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
 
-            for m, s in (('VAE', vae_state), ('MDRNN', rnn_state)):
-                print("Loading {} at epoch {} "
-                    "with test loss {}".format(
-                        m, s['epoch'], s['precision']))
-            print('loading in vae from:', vae_file, self.device)
-            self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE).to(self.device)
-            self.vae.load_state_dict(vae_state['state_dict'])
-
-            #
-
-            print('loading in mdrnn from:', rnn_file, self.device)
-            if self.deterministic:
-                self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional, use_lstm=self.use_lstm).to(self.device)
-                self.mdrnn.load_state_dict(rnn_state['state_dict'])
-            else: 
-                self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional).to(self.device)
-                self.mdrnn.load_state_dict(
-                    {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
-
-                self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional ).to(self.device)
-                self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
+            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional ).to(self.device)
+            self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
 
         self.num_action_repeats = num_action_repeats
         # the real horizon 
@@ -241,7 +232,7 @@ class EnvSimulator:
 
         return out
 
-    def rollout(self, rand_env_seed, params=None, render=False, time_limit=None, trim_controls=True):
+    def rollout(self, rand_env_seed, params=None, render=False, trim_controls=True):
         """ Execute a rollout and returns minus cumulative reward.
 
         Load :params: into the controller and execute a single rollout. This
@@ -261,9 +252,6 @@ class EnvSimulator:
         # copy params into the controller
         if params is not None:
             self.controller = load_parameters(params, self.controller)
-
-        if not time_limit: 
-            time_limit = self.time_limit 
 
         #random(rand_env_seed)
         np.random.seed(rand_env_seed)
@@ -331,7 +319,7 @@ class EnvSimulator:
                 if self.use_old_gym:
                     self.env.viewer.window.dispatch_events()
 
-                if done or i > time_limit:
+                if done or i > self.time_limit:
                 #print('done with this simulation')
                     if self.return_events:
                         for k,v in rollout_dict.items(): # list of tensors arrays.
@@ -469,16 +457,13 @@ class EnvSimulator:
 
     def simulate(self, train_mode=True, 
         render_mode=False, num_episode=16, 
-        seed=27, max_len=1000, compute_feef=False): # run lots of rollouts 
+        seed=27, compute_feef=False): # run lots of rollouts 
 
         # update params into the controller
         #self.controller = load_parameters(params, self.controller)
 
         recording_mode = False
         penalize_turning = False
-
-        #if train_mode and max_len < 0:
-        #    max_episode_length = max_len
 
         #random(seed)
         np.random.seed(seed)
@@ -490,9 +475,6 @@ class EnvSimulator:
             data_dict_list = []
             if compute_feef:
                 feef_losses_list = []
-                
-        if max_len ==-1:
-            max_len = 1000 # making it very long
 
         with torch.no_grad():
             for i in range(num_episode):
@@ -503,7 +485,7 @@ class EnvSimulator:
                 
                 if self.return_events: 
                     rew, t, data_dict = self.rollout(rand_env_seed, render=render_mode, 
-                                params=None, time_limit=max_len)
+                                params=None)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                 
                     data_dict_list.append(data_dict)
@@ -512,7 +494,7 @@ class EnvSimulator:
                     
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
-                                params=None, time_limit=max_len)
+                                params=None)
                 reward_list.append(rew)
                 t_list.append(t)
 

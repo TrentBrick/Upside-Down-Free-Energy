@@ -14,6 +14,7 @@ from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
 import time
 from execute_environment import EnvSimulator
 from ray.util.multiprocessing import Pool
+import copy
 #from multiprocessing import Pool 
 
 class GeneratedDataset(torch.utils.data.Dataset):
@@ -100,19 +101,26 @@ def combine_worker_rollouts(inp, seq_len, dim=1):
 
     return combo_dict
 
-def generate_rollouts_using_planner(horizon, num_action_repeats, planner_n_particles, 
-    seq_len, time_limit, logdir, init_cem_params, cem_iters, discount_factor, 
-    num_rolls_per_worker=2, num_workers=16, compute_feef=True): # this makes 32 pieces of data.
+def generate_rollouts_using_planner(num_workers, seq_len, worker_package): 
 
-    """ Uses ray.util.multiprocessing Pool to create workers that each run environment rollouts using 
-    planning with CEM (Cross Entropy Method). Each worker passes back 
+    """ Uses ray.util.multiprocessing Pool to create workers that each 
+    run environment rollouts using planning with CEM (Cross Entropy Method). 
+    Each worker (that runs code in execute_environment.py) passes back the 
+    rollouts which have already been transformed (done for the planner to work). 
+    These are split between train and test. The FEEF (Free energy of the expected future)
+    and cumulative rewards from the rollout are also passed back. 
+
+    Arguments and returns should be self explanatory. 
+    All inputs are ints, strings or bools except 'init_cem_params' 
+    which is a tuple/list containing two tensors. One for mus and other
+    for sigmas. 
     """
 
     # 10% of the rollouts to use for test data. 
     ten_perc = np.floor(num_workers*0.1)
     if ten_perc == 0.0:
         ten_perc=1
-    ninety_perc = int(num_workers- ten_perc)
+    ninety_perc = int(num_workers-ten_perc)
 
     # generate a random number to give as a random seed to each pool worker. 
     rand_ints = np.random.randint(0, 1e9, num_workers)
@@ -120,11 +128,18 @@ def generate_rollouts_using_planner(horizon, num_action_repeats, planner_n_parti
     worker_data = []
     #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
     for i in range(num_workers):
-        worker_data.append( (time_limit, horizon, num_action_repeats, 
+
+        package_w_rand = copy.copy(worker_package)
+        package_w_rand.append(rand_ints[i])
+
+        (time_limit, horizon, num_action_repeats, 
             planner_n_particles, init_cem_params, cem_iters, discount_factor,
             rand_ints[i], num_rolls_per_worker, 
-            time_limit, logdir, compute_feef ) )
+            time_limit, logdir, compute_feef )
 
+        worker_data.append( tuple(package_w_rand)  )
+
+    # deploy all of the workers and wait for results. 
     with Pool(processes=num_workers) as pool:
         res = pool.map(worker, worker_data) 
 
@@ -143,20 +158,28 @@ def generate_rollouts_using_planner(horizon, num_action_repeats, planner_n_parti
                 combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), \
                 feef_losses, reward_list
 
-#@ray.remote
 def worker(inp): # run lots of rollouts 
-    time_limit, horizon, num_action_repeats, \
+
+    """ Parses its input before creating an environment simulator instance
+    and using it to generate the desired number of rollouts. These rollouts
+    save and return the observations, rewards, and FEEF calculations."""
+
+    gamename, vae_conditional, mdrnn_conditional, \
+        time_limit, logdir, num_episodes, \
+        horizon, num_action_repeats, \
         planner_n_particles, init_cem_params, \
-        cem_iters, discount_factor, seed, num_episodes, \
-        max_len, logdir, compute_feef = inp
-    gamename = 'carracing'
-    model = EnvSimulator(gamename, time_limit=1000, mdir = logdir, conditional=True, 
-            return_events=True, use_old_gym=False, joint_file_dir=True,
+        cem_iters, discount_factor, \
+        compute_feef, seed = inp
+    
+    model = EnvSimulator(gamename, logdir, vae_conditional, mdrnn_conditional,
+            time_limit=time_limit,
+            vae_conditional=vae_conditional, mdrnn_conditional=mdrnn_conditional,
+            return_events=True,
             planner_n_particles = planner_n_particles, 
             horizon=horizon, num_action_repeats=num_action_repeats,
             init_cem_params=init_cem_params, cem_iters=cem_iters, 
-            discount_factor=discount_factor)
+            discount_factor=discount_factor, use_old_gym=False)
 
     return model.simulate(train_mode=True, render_mode=False, 
-            num_episode=num_episodes, seed=seed, max_len=max_len, 
+            num_episode=num_episodes, seed=seed, 
             compute_feef=compute_feef)
