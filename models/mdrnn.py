@@ -97,7 +97,11 @@ class MDRNN(_MDRNNBase):
             outs = self.forward3(outs)
             outs = self.forward4(outs)
 
-            print('returning from forward model!', outs.shape)
+            #print('returning from forward model!', outs.shape)
+
+            if len(outs.shape) ==2:
+                return outs[:,:self.latents], torch.zeros((5,5,5)), torch.zeros((5,5,5)), outs[:,-1], torch.zeros((5,5,5)), (torch.zeros((5,5,5)),torch.zeros((5,5,5)))
+
 
             if last_hidden:
                 return outs[:,:,:self.latents], torch.zeros((5,5,5)), torch.zeros((5,5,5)), outs[:,:,-1], torch.zeros((5,5,5)), (torch.zeros((5,5,5)),torch.zeros((5,5,5)))

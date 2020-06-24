@@ -9,7 +9,7 @@ from torchvision import transforms
 import gym
 from gym import spaces
 from models.vae import VAE
-from models.mdrnn import MDRNNCell
+from models.mdrnn import MDRNNCell, MDRNN
 from models.controller import Controller
 from utils.misc import NUM_IMG_CHANNELS, NUM_GAUSSIANS_IN_MDRNN, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, ACTION_SIZE
 import matplotlib.pyplot as plt
@@ -37,6 +37,7 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.use_planner = use_planner
         self.num_action_repeats = num_action_repeats
         self.condition = True 
+        self.deterministic=True 
 
         if test_agent and not use_planner: 
             # load in controller trained using CMA-ES.: 
@@ -68,7 +69,10 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
         self.vae.load_state_dict(vae_state['state_dict'])
 
         # load MDRNN
-        self.rnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN)
+        if self.deterministic:
+            self.rnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=self.condition )
+        else: 
+            self.rnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN)
         rnn_state = torch.load(rnn_file, map_location=lambda storage, location: storage)
         print("Loading MDRNN at epoch {}, "
             "with test error {}...".format(
@@ -118,18 +122,14 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
             mus, sigmas, logpi, r, d, n_h = self.rnn(action, self._lstate, self._hstate, r) #next_z, next_hidden)
 
-            next_z =  sample_mdrnn_latent(mus, sigmas, logpi, self._lstate)
-
-            #mu, sigma, pi, r, d, n_h = self.rnn(action, self._lstate, self._hstate)
-            #pi = pi.squeeze()
-            #mixt = Categorical(torch.exp(pi)).sample().item()
+            if self.deterministic: 
+                next_z = self._lstate + mus.squeeze(-2)
+                next_z = next_z.squeeze(0)
+            else: 
+                next_z =  sample_mdrnn_latent(mus, sigmas, logpi, self._lstate)
 
             self._lstate = next_z
             self._hstate = n_h
-
-            #self._lstate = mu[:, mixt, :] # + sigma[:, mixt, :] * torch.randn_like(mu[:, mixt, :])
-            # TODO: THINK THAT THIS ALSO HAS THE ACTUAL OUTPUTS RATHER THAN JUST THE HIDDEN!!
-            #self._hstate = n_h
 
             self._obs, dec_sigma = self.vae.decoder(self._lstate, r.unsqueeze(1))
             self._obs = self._obs.view(self._obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
@@ -205,10 +205,18 @@ class SimulatedCarracing(gym.Env): # pylint: disable=too-many-instance-attribute
 
                     # need to produce a batch of first actions here. 
                     ens_action = self.sample_cross_entropy_method() 
-                    md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+                    if self.deterministic:
+                        md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_reward, last_hidden=ens_full_hidden)
+
+                    else: 
+                        md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
                     
                     # get the next latent state
-                    ens_latent_s =  sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
+                    if self.deterministic:
+                        ens_latent_s = ens_latent_s+md_mus.squeeze(-2)
+                        ens_latent_s = ens_latent_s.squeeze(0)
+                    else: 
+                        ens_latent_s =  sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
                     
                     # store these cumulative rewards and action
                     all_particles_cum_rewards[start_ind:end_ind] += (self.discount_factor**t)*ens_reward
@@ -326,6 +334,8 @@ if __name__ == '__main__':
     action = np.array([0., 0., 0.])
     reward = torch.Tensor([0]).unsqueeze(0)
 
+    deterministic = True
+
     def on_key_press(event):
         """ Defines key pressed behavior """
         if event.key == 'up':
@@ -406,7 +416,11 @@ if __name__ == '__main__':
                         mu, logsigma = agent_class.vae.encoder(obs_t, reward)
                         latent_z =  mu + logsigma.exp() * torch.randn_like(mu) 
                         action = agent_class.planner(latent_z, hidden, reward, t, obs_t)
-                        _, _, _, _, _, hidden = agent_class.rnn(action, latent_z, hidden, reward)
+                        if deterministic:
+                            _, _, _, _, _, hidden = agent_class.rnn(action, latent_z, reward, last_hidden=hidden )
+
+                        else: 
+                            _, _, _, _, _, hidden = agent_class.rnn(action, latent_z, hidden, reward)
                         
                         print('t is:', t)
                         if t == 60:
@@ -424,16 +438,16 @@ if __name__ == '__main__':
                 cum_reward += reward
                 t+=1
 
-                print(sim_rewards)
+                #print(sim_rewards)
                 if len(sim_rewards) <30:
                     sim_rewards.append(reward)
                 else: 
                     sim_rewards.pop(0)
                     sim_rewards.append(reward)
-                    print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
+                    #print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
                     if round(sum(sim_rewards), 3) == -3.0:
                         print('we have equality!!!')
-                        break 
+                        #break 
 
                 if done:
                     print(cum_reward)
@@ -477,7 +491,7 @@ if __name__ == '__main__':
                     break
 
         env.render()
-        time.sleep(0.5)
+        time.sleep(0.2)
         
         print('time step of simulation', t)
         print('=============================')

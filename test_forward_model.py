@@ -4,17 +4,17 @@ import torch
 from utils.misc import sample_mdrnn_latent
 import pickle 
 from models.vae import VAE
-from models.mdrnn import MDRNNCell
+from models.mdrnn import MDRNNCell, MDRNN 
 from utils.misc import NUM_IMG_CHANNELS, NUM_GAUSSIANS_IN_MDRNN, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, ACTION_SIZE
 from os.path import join, exists
 from torchvision.utils import save_image
 
 directory = 'exp_dir'
 
-#vae_file = join(directory, 'vae', 'best.tar')
-#mdrnn_file = join(directory, 'mdrnn', 'best.tar')
-vae_file = join(directory, 'joint', 'vae_best.tar')
-mdrnn_file = join(directory, 'joint', 'mdrnn_best.tar')
+vae_file = join(directory, 'vae', 'best.tar')
+mdrnn_file = join(directory, 'mdrnn', 'best.tar')
+#vae_file = join(directory, 'joint', 'vae_best.tar')
+#mdrnn_file = join(directory, 'joint', 'mdrnn_best.tar')
 assert exists(vae_file), "No VAE model in the directory..."
 assert exists(mdrnn_file), "No MDRNN model in the directory..."
 
@@ -28,8 +28,12 @@ print("Loading VAE at epoch {}, "
         vae_state['epoch'], vae_state['precision']))
 vae.load_state_dict(vae_state['state_dict'])
 
+deterministic=True 
+
 # load MDRNN
-mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN)
+# mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN)
+mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, 
+        NUM_GAUSSIANS_IN_MDRNN, conditional=True, no_lstm=True )
 mdrnn_state = torch.load(mdrnn_file, map_location=lambda storage, location: storage)
 print("Loading MDRNN at epoch {}, "
     "with test error {}...".format(
@@ -65,10 +69,14 @@ with torch.no_grad():
         for t in range(20):
             md_mus, md_sigmas, md_logpi, ens_reward, d, hidden = mdrnn(rep_action, 
                                                                     ens_latent_s, 
-                                                                    hidden, ens_reward)
+                                                                    ens_reward, last_hidden=hidden)
 
             # get the next latent state
-            ens_latent_s =  sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
+            if deterministic: 
+                ens_latent_s = md_mus + ens_latent_s 
+                #ens_latent_s = ens_latent_s.squeeze(0)
+            else: 
+                ens_latent_s =  sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
             
             sequential_rewards.append(ens_reward)
             ens_reward = ens_reward.unsqueeze(0)
