@@ -47,11 +47,11 @@ def main(args):
     use_lstm = False 
     
     # Constants
-    BATCH_SIZE = 32
-    SEQ_LEN = 100 # number of sequences in a row used during training
+    BATCH_SIZE = 128
+    SEQ_LEN = 14 # number of sequences in a row used during training
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 3
+    num_vae_mdrnn_training_rollouts_per_worker = 10
 
     # Planning values
     planner_n_particles = 700
@@ -59,12 +59,12 @@ def main(args):
     num_action_repeats = 5 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
     actual_horizon = (desired_horizon//num_action_repeats)+1
-    discount_factor = 0.90
+    discount_factor = 0.50
     init_cem_params = ( torch.Tensor([0,0.7,0]), torch.Tensor([0.5,0.7,0.3]) )
     cem_iters = 7
 
     # for plotting example horizons:
-    example_length = 16
+    example_length = 12
     assert example_length<= SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - actual_horizon
 

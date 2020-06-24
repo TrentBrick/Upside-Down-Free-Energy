@@ -33,7 +33,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
         the averaged loss.
     """
 
-    mse_coef = 100
+    mse_coef = 10
     mus, sigmas, logpi, rs, ds = mdrnn(pres_action, latent_obs, pres_reward)
 
     # find the delta between the next observation and the present one. 
@@ -54,7 +54,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
     if include_overshoot:
         # latent overshooting: 
         overshooting_horizon = 6
-        min_memory_adapt_period= 4 # for zero indexing
+        min_memory_adapt_period= 0 # for zero indexing
         stop_ind = latent_obs.shape[1] - overshooting_horizon
         for i in range(min_memory_adapt_period, stop_ind):
 
@@ -71,7 +71,7 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                                             pres_reward[:, i, :].unsqueeze(1)
 
             for t in range(i, i+overshooting_horizon):
-                print('into mdrnn', pred_latent_obs.shape, pred_reward.shape)
+                #print('into mdrnn', pred_latent_obs.shape, pred_reward.shape)
                 mus, sigmas, logpi, pred_reward, ds, next_hidden = mdrnn(pres_action[:, t, :].unsqueeze(1), 
                                     pred_latent_obs, pred_reward, last_hidden=next_hidden)
                 # get next latent observation
@@ -79,11 +79,13 @@ def get_loss(mdrnn, latent_obs, latent_next_obs,
                     #print('latent overshooot', latent_delta[:, t, :].unsqueeze(1).shape, mus.shape)
                     overshoot_loss = f.mse_loss(latent_delta[:, t, :].squeeze(), mus.squeeze())
                     mus = mus.squeeze(-2)
-                    pred_latent_obs = mus + pred_latent_obs
+                    #print('pred and mus', pred_latent_obs.shape, mus.shape)
+                    pred_latent_obs = mus + pred_latent_obs.squeeze()
                 else: 
                     overshoot_loss = gmm_loss(latent_delta[:, t, :].unsqueeze(1), mus, sigmas, logpi )
                     pred_latent_obs = sample_mdrnn_latent(mus, sigmas, logpi, pred_latent_obs)
-                    pred_latent_obs = pred_latent_obs.unsqueeze(1)
+                pred_latent_obs = pred_latent_obs.unsqueeze(1)
+                #print('pred latent', pred_latent_obs.shape)
                 pred_reward = pred_reward.squeeze()
                 reward_loss = f.mse_loss(pred_reward, next_reward[:,t,:].squeeze())
                 overshoot_losses += overshoot_loss+(mse_coef*reward_loss)
