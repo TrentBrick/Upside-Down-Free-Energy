@@ -119,10 +119,10 @@ class MDRNN(_MDRNNBase):
             outs = torch.relu(self.forward3(outs))
             latent_deltas = self.forward4(outs)
 
-            print('ins', ins.shape)
+            #print('ins', ins.shape)
             next_rewards = self.reward_model(ins)
             next_rewards = next_rewards.squeeze(-1)
-            print('next rewards shape', next_rewards.shape)
+            #print('next rewards shape', next_rewards.shape)
 
             if len(outs.shape) ==2:
                 return latent_deltas, torch.zeros((2,2,2)), torch.zeros((2,2,2)), next_rewards, torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))

@@ -27,6 +27,9 @@ class EnvSimulator:
         self.env_name = env_name
         self.use_old_gym = use_old_gym
 
+        self.deterministic = True
+        self.use_lstm = False
+
         self.device = 'cpu' #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.return_events = return_events
         self.time_limit = time_limit
@@ -41,7 +44,7 @@ class EnvSimulator:
             self.vae = give_models['vae']
 
             # need to load in the cell based version!
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(self.device)
+            self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, use_lstm=self.use_lstm).to(self.device)
             self.mdrnn.load_state_dict( 
                 {k.strip('_l0'): v for k, v in give_models['mdrnn'].state_dict.items()})
 
@@ -66,13 +69,19 @@ class EnvSimulator:
             self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE).to(self.device)
             self.vae.load_state_dict(vae_state['state_dict'])
 
-            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional ).to(self.device)
-            self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
+            #
 
             print('loading in mdrnn from:', rnn_file, self.device)
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional).to(self.device)
-            self.mdrnn.load_state_dict(
-                {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
+            if self.deterministic:
+                self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional, use_lstm=self.use_lstm).to(self.device)
+                self.mdrnn.load_state_dict(rnn_state['state_dict'])
+            else: 
+                self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional).to(self.device)
+                self.mdrnn.load_state_dict(
+                    {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
+
+                self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional ).to(self.device)
+                self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
 
         self.num_action_repeats = num_action_repeats
         # the real horizon 
@@ -129,7 +138,10 @@ class EnvSimulator:
 
         action = self.planner(latent_s, hidden, reward)
 
-        _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
+        if self.deterministic:
+            _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, reward, last_hidden=hidden)
+        else: 
+            _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
         
         return action.squeeze().cpu().numpy(), next_hidden
 
@@ -168,10 +180,13 @@ class EnvSimulator:
 
                     # sample an action and reward.
                     ens_action = self.sample_cross_entropy_method() 
-                    md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
-                    
-                    # predict the next latent state
-                    ens_latent_s = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
+                    if self.deterministic: 
+                        md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_reward, last_hidden=ens_full_hidden)
+                        ens_latent_s = ens_latent_s + md_mus
+                    else: 
+                        md_mus, md_sigmas, md_logpi, ens_reward, d, ens_full_hidden = mdrnn_boot(ens_action, ens_latent_s, ens_full_hidden, ens_reward)
+                        # predict the next latent state
+                        ens_latent_s = sample_mdrnn_latent(md_mus, md_sigmas, md_logpi, ens_latent_s)
 
                     # store these cumulative rewards and action
                     all_particles_sequential_actions[start_ind:end_ind, t, :] = ens_action
@@ -304,13 +319,13 @@ class EnvSimulator:
                 obs, reward, done, _ = self.env.step(action)
                 cumulative += reward
 
-                if len(sim_rewards) <50:
+                if len(sim_rewards) <40:
                     sim_rewards.append(reward)
                 else: 
                     sim_rewards.pop(0)
                     sim_rewards.append(reward)
                     #print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
-                    if round(sum(sim_rewards), 3) == -5.0:
+                    if round(sum(sim_rewards), 3) == -4.0:
                         done=True 
 
                 if self.use_old_gym:

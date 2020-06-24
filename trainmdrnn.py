@@ -9,7 +9,7 @@ from utils.misc import sample_mdrnn_latent, generate_samples
 def get_loss(mdrnn, latent_obs, latent_next_obs, 
              pres_action, pres_reward, 
              next_reward, terminal, device,
-             include_reward = True, include_overshoot=True, 
+             include_reward = True, include_overshoot=False, 
              include_terminal = False, deterministic=True):
     # TODO: I thought for the car racer we werent predicting terminal states 
     # and also in general that we werent predicting the reward of the next state. 

@@ -8,7 +8,8 @@ from os import mkdir, unlink, listdir, getpid
 import torch
 import torch.utils.data
 from torchvision import transforms
-import gym 
+import gym
+from bisect import bisect
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
 import time
 from execute_environment import EnvSimulator
@@ -49,7 +50,6 @@ class GeneratedDataset(torch.utils.data.Dataset):
         rollout_index = bisect(self._cum_size, i) - 1 # because it finds the index to the right of the element. 
         # within a specific rollout. will linger on one rollout for a while iff random sampling not used. 
         seq_index = i - self._cum_size[rollout_index] # references the previous file length. so normalizes to within this file's length. 
-        
         obs_data = self.data['obs'][rollout_index][seq_index:seq_index + self._seq_len + 1]
         if self._transform:
             obs_data = self._transform(obs_data.astype(np.float32))
