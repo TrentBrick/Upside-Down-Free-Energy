@@ -17,22 +17,18 @@ from utils.misc import sample_mdrnn_latent
 
 class EnvSimulator:
 
-    def __init__(self, env_name, logdir, vae_conditional, mdrnn_conditional,
-        time_limit=1000, return_events=False, planner_n_particles=100, horizon=30, 
+    def __init__(self, gamename, logdir, vae_conditional, mdrnn_conditional,
+        deterministic, use_lstm,
+        time_limit=1000, planner_n_particles=100, horizon=30, 
         num_action_repeats=5, init_cem_params=None, cem_iters=10, 
-        discount_factor=0.90, use_old_gym=False):
+        discount_factor=0.90):
         """ Build vae, forward model, and environment. """
 
-        #self.env = gym.make('CarRacing-v0')
-        self.env_name = env_name
-        self.use_old_gym = use_old_gym
+        self.gamename = gamename
+        self.deterministic = deterministic
+        self.use_lstm = use_lstm
 
-        self.deterministic = True
-        self.use_lstm = False
-
-        self.device = 'cpu' 
-        #self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.return_events = return_events
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.time_limit = time_limit
 
         # transform used on environment generated observations. 
@@ -71,7 +67,7 @@ class EnvSimulator:
             self.mdrnn.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
 
-            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional ).to(self.device)
+            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, use_lstm=self.use_lstm ).to(self.device)
             self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
 
         self.num_action_repeats = num_action_repeats
@@ -93,13 +89,12 @@ class EnvSimulator:
         self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size 
 
     def make_env(self, seed=-1, render_mode=False, full_episode=False):
+        """ Called every time a new rollout occurs. Creates a new environment and 
+        sets a new random seed for it."""
         self.render_mode = render_mode
-        if self.use_old_gym:
-            self.env = make_env(self.env_name, seed=seed, render_mode=render_mode, full_episode=full_episode)
-        else: 
-            self.env = gym.make("CarRacing-v0")
-            self.env.seed(int(seed))
-            self.env.render('rgb_array')
+        self.env = gym.make("CarRacing-v0")
+        self.env.seed(int(seed))
+        self.env.render('rgb_array')
 
     def get_action_and_transition(self, obs, hidden, reward):
         """ Get action and transition.
@@ -108,8 +103,9 @@ class EnvSimulator:
         latent and next hidden state using the MDRNN and compute the controller
         corresponding action.
 
-        :args obs: current observation (1 x 3 x 64 x 64) torch tensor
-        :args hidden: current hidden state (1 x 256) torch tensor
+        :args:
+            - obs: current observation (1 x 3 x 64 x 64) torch tensor
+            - hidden: current hidden state (1 x 256) torch tensor
 
         :returns: (action, next_hidden)
             - action: 1D np array
@@ -122,11 +118,6 @@ class EnvSimulator:
 
         assert latent_s.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
 
-        '''if testing_old_controller: 
-            action = self.controller(latent_s, hidden[0])
-        else: 
-            action = self.controller(latent_s, hidden[0], reward)'''
-
         action = self.planner(latent_s, hidden, reward)
 
         if self.deterministic:
@@ -137,14 +128,29 @@ class EnvSimulator:
         return action.squeeze().cpu().numpy(), next_hidden
 
     def planner(self, latent_s, full_hidden, reward, discount_factor=0.90):
-        # predicts into the future up to horizon. 
-        # returns the immediate action that will lead to the largest
-        # cumulative reward
+        """ Predicts into the future up to horizon. 
+        Returns the immediate action that will lead to the largest 
+        cumulative reward.
+        
+        :args: 
+            BATCH_SIZE AND SEQUENCE LENGTH HERE ARE BOTH 1. 
+            - latent_s: Torch tensor. (1, 1, LATENT_SIZE) starting latent state to plan from. 
+            - full_hidden: tuple/list of 2 Torch tensors: (1, 1, LATENT_SIZE)
+            if using RNN based forward model. 
+            Gives memory associated with latent.
+            - reward: Torch tensor (1, 1) last reward. 
+            - discount_factor: float. used to discount future rewards exponentially.
+
+        :returns: 
+            - best_action: Torch tensor (1, ACTION_DIM). 
+        
+        """
 
         # starting CEM from scratch each time 
         self.cem_mus = self.init_cem_mus.clone()
         self.cem_sigmas = self.init_cem_sigmas.clone()
 
+        # used to refine the CEM parameters. 
         for cem_iter in range(self.cem_iters):
 
             all_particles_cum_rewards = torch.zeros((self.planner_n_particles))
@@ -162,6 +168,8 @@ class EnvSimulator:
                 # indices for logging the actions and rewards during horizon planning across the ensemble. 
                 start_ind = self.ensemble_batchsize*mdrnn_ind
                 end_ind = start_ind+self.ensemble_batchsize
+                # NOTE: I could do all of these CEM iters and updates within a 
+                # single ensemble. Would be much slower and likely not much better though...
 
                 # need to produce a batch of first actions here. 
                 #ens_action = self.sample_cross_entropy_method() 
@@ -195,6 +203,11 @@ class EnvSimulator:
         return best_action.unsqueeze(0)
 
     def sample_cross_entropy_method(self):
+        """ Sample from the most up to date CEM parameters.
+        
+        :returns: 
+            - actions: Torch tensor (num_particles, ACTION_DIM)
+        """
         actions = Normal(self.cem_mus, self.cem_sigmas).sample([self.ensemble_batchsize])
         # constrain these actions:
         actions = self.constrain_actions(actions)
@@ -202,7 +215,18 @@ class EnvSimulator:
         return actions
 
     def update_cross_entropy_method(self, all_actions, rewards):
+        """ Updates CEM. 
+        
+        :args: 
+            - all_actions: Torch tensor (num_particles, horizon, action ). All 
+                            actions taken by all particles in the CEM iteration. 
+            - rewards: Torch tensor (num_particles). cumulative rewards from each particle. 
+        
+        Returns updated versions of cem_mu and cem_sigma.
+        """
         # for carracing we have 3 independent gaussians
+    
+        # determines how quickly the CEM values update from those in the prev iteration.
         smoothing = 0.8
         vals, inds = torch.topk(rewards, self.k_top, sorted=False )
         elite_actions = all_actions[inds]
@@ -215,7 +239,8 @@ class EnvSimulator:
         self.cem_sigmas = smoothing*new_sigma+(1-smoothing)*(self.cem_sigmas )
 
     def constrain_actions(self, out):
-        if self.env_name=='carracing':
+        """ Ensures actions sampled from the gaussians are within the game bounds."""
+        if self.gamename=='carracing':
             out[:,0] = torch.clamp(out[:,0], min=-1.0, max=1.0)
             out[:,1] = torch.clamp(out[:,1], min=0.0, max=1.0)
             out[:,2] = torch.clamp(out[:,2], min=0.0, max=1.0)
@@ -224,7 +249,8 @@ class EnvSimulator:
         return out
 
     def random_shooting(self, batch_size):
-        if self.env_name=='carracing':
+        """ Generate random actions. Alternative to CEM."""
+        if self.gamename=='carracing':
             out = torch.distributions.Uniform(-1,1).sample((batch_size, 3))
             out = self.constrain_actions(out)
         else:
@@ -232,40 +258,29 @@ class EnvSimulator:
 
         return out
 
-    def rollout(self, rand_env_seed, params=None, render=False, trim_controls=True):
-        """ Execute a rollout and returns minus cumulative reward.
+    def rollout(self, rand_env_seed, render=False):
+        """ Executes a rollout and returns cumulative reward along with
+        the time point the rollout stopped and 
+        optionally, all observations/actions/rewards/terminal outputted 
+        by the environment.
 
-        Load :params: into the controller and execute a single rollout. This
-        is the main API of this class.
+        :args:
+            - rand_env_seed: int. Used to help guarentee this rollout is random.
 
-        :args params: parameters as a single 1D np array
-
-        :returns: minus cumulative reward
-        # Why is this the minus cumulative reward?!?!!?
+        :returns: (cumulative, t, [rollout_dict])
+            - cumulative: float. cumulative reward
+            - t: int. timestep of termination
+            - rollout_dict: OPTIONAL. Dictionary with keys: 'obs', 'rewards',
+                'actions', 'terminal'. Each is a PyTorch Tensor with the first
+                dimension corresponding to time. 
         """
 
-        #if self.use_old_gym:
-        # setting in make env. 
-        #self.env.render('rgb_array')
-        self.trim_controls = trim_controls
-
-        # copy params into the controller
-        if params is not None:
-            self.controller = load_parameters(params, self.controller)
-
-        #random(rand_env_seed)
+        # base random seed set. Then sample new random numbers
+        # for each individual rollout. 
         np.random.seed(rand_env_seed)
         torch.manual_seed(rand_env_seed)
-        #now setting in make env.
-        #self.env.seed(int(rand_env_seed)) # ensuring that each rollout has a differnet random seed. 
-        obs = self.env.reset()
-        if self.use_old_gym:
-            self.env.viewer.window.dispatch_events()
 
-        # NOTE: TODO: call first render in the make env. note this is before I call reset though...
-        #if not self.use_old_gym:
-        # This first render is required !
-        #    self.env.render()
+        obs = self.env.reset()
 
         hidden = [
             torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
@@ -275,16 +290,15 @@ class EnvSimulator:
         action = np.array([0.,0.,0.])
 
         sim_rewards = []
-
         cumulative = 0
-        i = 0
+        t = 0
         if self.return_events: 
             rollout_dict = {k:[] for k in ['obs', 'rewards', 'actions', 'terminal']}
         while True:
-            #print('iteration of the rollout', i)
+            #print('iteration of the rollout', t)
 
-            if self.trim_controls:
-                # need to trim the observation first
+            if self.gamename=='carracing':
+                # trims the control panel at the base
                 obs = obs[:84, :, :]
 
             obs = self.transform(obs).unsqueeze(0).to(self.device)
@@ -294,43 +308,41 @@ class EnvSimulator:
             action, hidden = self.get_action_and_transition(obs, hidden, reward)
             
             # have this here rather than further down in order to capture the very first 
-            # observation and actions. Not sure I should though.
+            # observation and actions.
             if self.return_events: 
                 for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
                                         [obs, reward, action, done ]):
                     if key == 'actions' or key=='terminal':
                         var = torch.Tensor([var])
-                    
                     rollout_dict[key].append(var.squeeze())
 
+            # using action repeats
             for _ in range(self.num_action_repeats):
                 obs, reward, done, _ = self.env.step(action)
                 cumulative += reward
 
-                if len(sim_rewards) <40:
-                    sim_rewards.append(reward)
-                else: 
-                    sim_rewards.pop(0)
-                    sim_rewards.append(reward)
-                    #print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
-                    if round(sum(sim_rewards), 3) == -4.0:
-                        done=True 
+                # if the last 40 steps (real steps independent of action repeats)
+                # have all given -0.1 reward then cut the rollout early. 
+                if self.gamename == 'carracing':
+                    if len(sim_rewards) <40:
+                        sim_rewards.append(reward)
+                    else: 
+                        sim_rewards.pop(0)
+                        sim_rewards.append(reward)
+                        #print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
+                        if round(sum(sim_rewards), 3) == -4.0:
+                            done=True
 
-                if self.use_old_gym:
-                    self.env.viewer.window.dispatch_events()
-
-                if done or i > self.time_limit:
+                if done or t > self.time_limit:
                 #print('done with this simulation')
                     if self.return_events:
                         for k,v in rollout_dict.items(): # list of tensors arrays.
                             #print(k, v[0].shape, len(v))
                             rollout_dict[k] = torch.stack(v)
-                        return cumulative, i, rollout_dict # passed back to simulate. 
+                        return cumulative, t, rollout_dict # passed back to simulate. 
                     else: 
-                        return cumulative, i # ending time and cum reward
-
-                i += 1
-            
+                        return cumulative, t # ending time and cum reward
+                t += 1
 
     def importance_sampling(self, num_samps, real_obs, latent_s, encoder_mu, 
         encoder_logsigma, cond_reward, delta_prediction=False, pres_latent_s=None):
@@ -455,21 +467,37 @@ class EnvSimulator:
 
         return log_policy_loss - log_tilde_loss
 
-    def simulate(self, train_mode=True, 
-        render_mode=False, num_episode=16, 
-        seed=27, compute_feef=False): # run lots of rollouts 
+    def simulate(self, return_events=False, num_episodes=16, 
+        seed=27, compute_feef=False,
+        render_mode=False):
+        """ Runs lots of rollouts with different random seeds. Optionally,
+        can keep track of all outputs from the environment in each rollout 
+        (adding each to a list which contains dictionaries for the rollout). 
+        And it can compute the FEEF at the end of each rollout. 
+        
+        :returns: (cum_reward_list, t_list, [data_dict_list], [feef_losses_list])
+            - cum_reward_list: list. cumulative rewards of each rollout. 
+            - t_list: list. timestep the rollout ended at. 
+            - data_dict_list: list. OPTIONAL. Dictionaries from each rollout.
+                Has keys: 'obs', 'rewards',
+                'actions', 'terminal'. Each is a PyTorch Tensor with the first
+                dimension corresponding to time.  
+            - feef_losses_list: list. OPTIONAL. Free Energy of Expected Future value
+            from the whole rollout. 
+        """
 
-        # update params into the controller
-        #self.controller = load_parameters(params, self.controller)
-
+        # have these here in case I wanted to use them. 
+        # Render also currently doesnt do anything. 
         recording_mode = False
         penalize_turning = False
+
+        self.return_events = return_events
 
         #random(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        reward_list = []
+        cum_reward_list = []
         t_list = []
         if self.return_events:
             data_dict_list = []
@@ -477,7 +505,7 @@ class EnvSimulator:
                 feef_losses_list = []
 
         with torch.no_grad():
-            for i in range(num_episode):
+            for i in range(num_episodes):
 
                 rand_env_seed = np.random.randint(0,1e9,1)[0]
 
@@ -495,18 +523,18 @@ class EnvSimulator:
                 else: 
                     rew, t = self.rollout(rand_env_seed, render=render_mode, 
                                 params=None)
-                reward_list.append(rew)
+                cum_reward_list.append(rew)
                 t_list.append(t)
 
                 self.env.close()
 
         if self.return_events: 
             if compute_feef:
-                return reward_list, t_list, data_dict_list, feef_losses_list  # no need to return the data.
+                return cum_reward_list, t_list, data_dict_list, feef_losses_list  # no need to return the data.
             else: 
-                return reward_list, t_list, data_dict_list 
+                return cum_reward_list, t_list, data_dict_list 
         else: 
-            return reward_list, t_list
+            return cum_reward_list, t_list
 
 
     

@@ -360,6 +360,7 @@ def main(args):
 
     # all of these are static across epochs. 
     worker_package = [ args.gamename, vae_conditional, mdrnn_conditional,
+                deterministic, use_lstm,
                 time_limit, joint_dir, 
                 num_vae_mdrnn_training_rollouts_per_worker,
                 actual_horizon,
