@@ -57,20 +57,19 @@ class RewardModule(nn.Module):
     """ Given the next latent state. predict the reward. 
         Easier to debug this way. """
     def __init__(self, latents, actions):
-        self.forward1 = nn.Linear(latents+actions+1, 32)
-        self.forward2 = nn.Linear(32, 32)
-        self.forward3 = nn.Linear(32, 32)
-        self.forward4 = nn.Linear(32, 1)
+        super(RewardModule, self).__init__()
+        self.forward1 = nn.Linear(latents+actions+1, 256)
+        self.forward2 = nn.Linear(256, 256)
+        self.forward3 = nn.Linear(256, 256)
+        self.forward4 = nn.Linear(256, 1)
         
-    def forward(ins):
+    def forward(self, ins):
         #ins = torch.cat([next_latent, prev_action], dim=-1)
         outs = torch.relu(self.forward1(ins))
         outs = torch.relu(self.forward2(outs))
         outs = torch.relu(self.forward3(outs))
         outs = self.forward4(outs)
-        
         return outs
-
 
 class MDRNN(_MDRNNBase):
     """ MDRNN model for multi steps forward """
@@ -114,13 +113,16 @@ class MDRNN(_MDRNNBase):
         if not self.use_lstm:
             ins = torch.cat([actions, latents, r], dim=-1)
 
+            # assuming it is always predicting the delta!
             outs = torch.relu(self.forward1(ins))
             outs = torch.relu(self.forward2(outs))
             outs = torch.relu(self.forward3(outs))
             latent_deltas = self.forward4(outs)
 
-            # assuming it is always predicting the delta! 
+            print('ins', ins.shape)
             next_rewards = self.reward_model(ins)
+            next_rewards = next_rewards.squeeze(-1)
+            print('next rewards shape', next_rewards.shape)
 
             if len(outs.shape) ==2:
                 return latent_deltas, torch.zeros((2,2,2)), torch.zeros((2,2,2)), next_rewards, torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))

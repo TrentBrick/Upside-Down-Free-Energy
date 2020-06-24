@@ -4,7 +4,7 @@
 # imported if this file is run directly. 
 from models.mdrnn import MDRNN, gmm_loss, MDRNNCell
 import torch.nn.functional as f
-from utils.misc import sample_mdrnn_latent
+from utils.misc import sample_mdrnn_latent, generate_samples
 
 def get_loss(mdrnn, latent_obs, latent_next_obs, 
              pres_action, pres_reward, 
@@ -186,14 +186,6 @@ def main(args):
         scheduler.load_state_dict(rnn_state['scheduler'])
         earlystopping.load_state_dict(rnn_state['earlystopping'])
 
-    if make_mdrnn_samples:
-        #mdrnn_cell = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN).to(device)
-        #if exists(best_filename) and not args.no_reload:
-        #    mdrnn_cell.load_state_dict(
-        #        {k.strip('_l0'): v for k, v in rnn_state["state_dict"].items()})
-
-        
-
     # Data Loading. Cant use previous transform directly as it is a seq len sized batch of observations!!
     transform = transforms.Lambda(
         lambda x: np.transpose(x, (0, 3, 1, 2)) / 255) #why is this necessary?
@@ -366,14 +358,12 @@ def main(args):
 
         # generate examples of MDRNN
         if make_mdrnn_samples: 
-            generate_samples( vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic, 
+            generate_samples( vae, mdrnn, for_mdrnn_sampling, deterministic, 
                             samples_dir, SEQ_LEN, example_length, memory_adapt_period,
+                            e, device,
                             make_vae_samples=False,
                             make_mdrnn_samples=make_mdrnn_samples, 
                             transform_obs=True  )
-            
-
-            
 
         if earlystopping.stop:
             print("End of Training because of early stopping at epoch {}".format(e))
@@ -406,7 +396,7 @@ if __name__ == '__main__':
                         help="Do not reload if specified.")
     parser.add_argument('--use_lstm', action='store_true',
                         help="Use LSTM with hidden state rather than the forward model.")
-    parser.add_argument('--make_probabilistic', action='store_true',
+    parser.add_argument('--probabilistic', action='store_true',
                         help="Have the model be probabilistic. LSTM needs to be true.")
     parser.add_argument('--do_not_include_reward', action='store_true',
                         help="If true doesn't add reward modelisation term to the loss.")

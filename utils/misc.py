@@ -10,6 +10,7 @@ from models import MDRNNCell, VAE, Controller
 import gym
 import gym.envs.box2d
 from torch.distributions.categorical import Categorical
+import torch.nn.functional as f
 
 # A bit dirty: manually change size of car racing env
 # BUG: this makes the images very grainy!!!
@@ -140,7 +141,8 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_cho
         return latent_s 
 
 def generate_samples(vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic,
-                            samples_dir, SEQ_LEN, example_length, memory_adapt_period,
+                            samples_dir, SEQ_LEN, example_length, 
+                            memory_adapt_period, e, device,
                             make_vae_samples=False,
                             make_mdrnn_samples=True, 
                             transform_obs = False):
@@ -272,7 +274,7 @@ def generate_samples(vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic,
                 # mse between this and the real one. 
                 mse_losses.append(  f.mse_loss(last_test_latent_next_obs[t], horizon_next_latent_state.squeeze()) )
                 
-                #print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
+                print('going into vae', horizon_next_latent_state.shape, horizon_next_reward.shape )
                 decoder_mu, decoder_logsigma = vae.decoder(horizon_next_latent_state, horizon_next_reward.squeeze(0))
                 #print('shape of decoder mu', decoder_mu.shape)
                 pred_next_vae_decoded_observation = decoder_mu.view(decoder_mu.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)

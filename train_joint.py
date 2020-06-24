@@ -464,7 +464,7 @@ def main(args):
 
             generate_samples( vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic, 
                             samples_dir, SEQ_LEN, example_length,
-                            memory_adapt_period,
+                            memory_adapt_period, e, device, 
                             make_vae_samples=make_vae_samples,
                             make_mdrnn_samples=make_mdrnn_samples, 
                             transform_obs=False  )
