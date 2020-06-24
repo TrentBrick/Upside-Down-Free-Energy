@@ -52,6 +52,26 @@ class _MDRNNBase(nn.Module):
     def forward(self, *inputs):
         pass
 
+
+class RewardModule(nn.Module):
+    """ Given the next latent state. predict the reward. 
+        Easier to debug this way. """
+    def __init__(self, latents, actions):
+        self.forward1 = nn.Linear(latents+actions+1, 32)
+        self.forward2 = nn.Linear(32, 32)
+        self.forward3 = nn.Linear(32, 32)
+        self.forward4 = nn.Linear(32, 1)
+        
+    def forward(ins):
+        #ins = torch.cat([next_latent, prev_action], dim=-1)
+        outs = torch.relu(self.forward1(ins))
+        outs = torch.relu(self.forward2(outs))
+        outs = torch.relu(self.forward3(outs))
+        outs = self.forward4(outs)
+        
+        return outs
+
+
 class MDRNN(_MDRNNBase):
     """ MDRNN model for multi steps forward """
     def __init__(self, latents, actions, hiddens, gaussians, conditional=True,
@@ -60,13 +80,14 @@ class MDRNN(_MDRNNBase):
         
         self.use_lstm = use_lstm
         if not use_lstm: 
-            self.forward1 = nn.Linear(latents + actions+1, 128)
-            self.forward2 = nn.Linear(128, 256)
+            self.forward1 = nn.Linear(latents + actions+1, 256)
+            self.forward2 = nn.Linear(256, 256)
             self.forward3 = nn.Linear(256, 256)
-            self.forward4 = nn.Linear(256, 128)
-            self.forward5 = nn.Linear(128, latents+1)
+            self.forward4 = nn.Linear(256, latents)
+            # assumes that conditional is true here. 
+            self.reward_model = RewardModule(latents, actions)
         else:
-            if self.conditional: 
+            if self.conditional:
                 self.rnn = nn.LSTM(latents + actions+1, hiddens, batch_first=True)
             else: 
                 self.rnn = nn.LSTM(latents + actions, hiddens, batch_first=True)
@@ -93,21 +114,21 @@ class MDRNN(_MDRNNBase):
         if not self.use_lstm:
             ins = torch.cat([actions, latents, r], dim=-1)
 
-            outs = self.forward1(ins)
-            outs = self.forward2(outs)
-            outs = self.forward3(outs)
-            outs = self.forward4(outs)
-            outs = self.forward5(outs)
+            outs = torch.relu(self.forward1(ins))
+            outs = torch.relu(self.forward2(outs))
+            outs = torch.relu(self.forward3(outs))
+            latent_deltas = self.forward4(outs)
 
-            #print('returning from forward model!', outs.shape)
+            # assuming it is always predicting the delta! 
+            next_rewards = self.reward_model(ins)
 
             if len(outs.shape) ==2:
-                return outs[:,:self.latents], torch.zeros((2,2,2)), torch.zeros((2,2,2)), outs[:,-1], torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))
-
-            if last_hidden:
-                return outs[:,:,:self.latents], torch.zeros((2,2,2)), torch.zeros((2,2,2)), outs[:,:,-1], torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))
+                return latent_deltas, torch.zeros((2,2,2)), torch.zeros((2,2,2)), next_rewards, torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))
             else: 
-                return outs[:,:,:self.latents], torch.zeros((2,2,2)), torch.zeros((2,2,2)), outs[:,:,-1], torch.zeros((2,2,2))
+                if last_hidden:
+                    return latent_deltas, torch.zeros((2,2,2)), torch.zeros((2,2,2)), next_rewards, torch.zeros((2,2,2)), (torch.zeros((2,2,2)),torch.zeros((2,2,2)))
+                else: 
+                    return latent_deltas, torch.zeros((2,2,2)), torch.zeros((2,2,2)), next_rewards, torch.zeros((2,2,2))
 
         else: 
             #print(actions.shape, latents.shape)
