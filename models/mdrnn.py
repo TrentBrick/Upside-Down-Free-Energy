@@ -62,6 +62,7 @@ class MDRNN(_MDRNNBase):
         if no_lstm: 
             self.forward1 = nn.Linear(latents + actions+1, 128)
             self.forward2 = nn.Linear(128, 256)
+            self.forward25 = nn.Linear(256, 256)
             self.forward3 = nn.Linear(256, 128)
             self.forward4 = nn.Linear(128, latents+1)
         else:
@@ -94,6 +95,7 @@ class MDRNN(_MDRNNBase):
 
             outs = self.forward1(ins)
             outs = self.forward2(outs)
+            outs = self.forward25(outs)
             outs = self.forward3(outs)
             outs = self.forward4(outs)
 
