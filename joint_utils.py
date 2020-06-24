@@ -132,11 +132,6 @@ def generate_rollouts_using_planner(num_workers, seq_len, worker_package):
         package_w_rand = copy.copy(worker_package)
         package_w_rand.append(rand_ints[i])
 
-        (time_limit, horizon, num_action_repeats, 
-            planner_n_particles, init_cem_params, cem_iters, discount_factor,
-            rand_ints[i], num_rolls_per_worker, 
-            time_limit, logdir, compute_feef )
-
         worker_data.append( tuple(package_w_rand)  )
 
     # deploy all of the workers and wait for results. 
@@ -173,7 +168,6 @@ def worker(inp): # run lots of rollouts
     
     model = EnvSimulator(gamename, logdir, vae_conditional, mdrnn_conditional,
             time_limit=time_limit,
-            vae_conditional=vae_conditional, mdrnn_conditional=mdrnn_conditional,
             return_events=True,
             planner_n_particles = planner_n_particles, 
             horizon=horizon, num_action_repeats=num_action_repeats,

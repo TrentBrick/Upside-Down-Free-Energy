@@ -59,19 +59,19 @@ class EnvSimulator:
                 "with test loss {}".format(
                     m, s['epoch'], s['precision']))
         print('loading in vae from:', vae_file, self.device)
-        self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE).to(self.device)
+        self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=vae_conditional).to(self.device)
         self.vae.load_state_dict(vae_state['state_dict'])
 
         print('loading in mdrnn from:', rnn_file, self.device)
         if self.deterministic:
-            self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional, use_lstm=self.use_lstm).to(self.device)
+            self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, use_lstm=self.use_lstm).to(self.device)
             self.mdrnn.load_state_dict(rnn_state['state_dict'])
         else: 
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional).to(self.device)
+            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional).to(self.device)
             self.mdrnn.load_state_dict(
                 {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
 
-            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=conditional ).to(self.device)
+            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional ).to(self.device)
             self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
 
         self.num_action_repeats = num_action_repeats
