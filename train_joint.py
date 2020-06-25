@@ -41,7 +41,7 @@ def main(args):
 
     include_reward = condition_on_rewards # has the MDRNN return rewards. this is very important for the conditioning on rewards 
     include_terminal = False
-    include_overshoot = False 
+    include_overshoot = False
 
     vae_conditional=True 
     mdrnn_conditional = True
@@ -108,7 +108,7 @@ def main(args):
     
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
-    scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=5)
+    scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=15)
     earlystopping = EarlyStopping('min', patience=200)
 
     # Loading in trained models: 
