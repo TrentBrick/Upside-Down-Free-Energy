@@ -14,9 +14,9 @@ from bisect import bisect
 from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
 import time
 from execute_environment import EnvSimulator
-from ray.util.multiprocessing import Pool
+#from ray.util.multiprocessing import Pool
 import copy
-#from multiprocessing import Pool 
+from multiprocessing import Pool 
 
 class GeneratedDataset(torch.utils.data.Dataset):
     """ This dataset is inspired by those from dataset/loaders.py but it 

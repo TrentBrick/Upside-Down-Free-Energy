@@ -56,23 +56,23 @@ def main(args):
     
     # Constants
     BATCH_SIZE = 512
-    SEQ_LEN = 14 # number of sequences in a row used during training
+    SEQ_LEN = 9 #14 # number of sequences in a row used during training
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 10
+    num_vae_mdrnn_training_rollouts_per_worker = 5 # 10 change back to ray!!!
 
     # Planning values
     planner_n_particles = 700
     desired_horizon = 30
-    num_action_repeats = 3 # number of times the same action is performed repeatedly. 
+    num_action_repeats = 5 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
-    actual_horizon = (desired_horizon//num_action_repeats)+1
+    actual_horizon = (desired_horizon//num_action_repeats)
     discount_factor = 0.80
     init_cem_params = ( torch.Tensor([0,0.7,0]), torch.Tensor([0.5,0.7,0.3]) )
     cem_iters = 7
 
     # for plotting example horizons:
-    example_length = 12
+    example_length = 8 #12
     assert example_length<= SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - actual_horizon
 
@@ -100,7 +100,7 @@ def main(args):
     # Init save filenames 
     joint_dir = join(args.logdir, 'joint')
     filenames_dict = {m+'_'+bc:join(joint_dir, m+'_'+bc+'.tar') for bc in ['best', 'checkpoint'] \
-                                                    for m in ['vae', 'mdrnn']}
+                                                    for m in ['rssm']}
     # make directories if they dont exist
     samples_dir = join(joint_dir, 'samples')
     for dirr in [joint_dir, samples_dir]:
@@ -182,10 +182,11 @@ def main(args):
         # also set the terminals to non terms. 
 
         # I am inputting these with batch first. Need to flip this around. 
-        acts = acts.permute(1,0,2)
-        obs = obs.permute(1, 0, 2, 3, 4) 
-        terminals = terminals.permute(1,0,2) 
-        non_terms = (terminals==0.).double()
+        obs = obs.permute(1, 0, 2, 3, 4).contiguous()
+        acts = acts.permute(1,0,2).contiguous()
+        rews = rews.permute(1,0,2).contiguous()
+        terminals = terminals.unsqueeze(-1).permute(1,0,2).contiguous()
+        non_terms = (terminals==0.).float().contiguous()
 
         """ (seq_len, batch_size, *dims) """
         #obs, acts, rews, non_terms = buffer.sample_and_shift(batch_size, seq_len)
@@ -194,7 +195,7 @@ def main(args):
         encoded_obs = rssm.encode_sequence_obs(obs)
 
         """ (seq_len, batch_size, dim) """
-        rollout = rssm.perform_rollout(acts, obs=encoded_obs, non_terms=non_terms)
+        rollout = rssm.perform_rollout(acts, encoder_output=encoded_obs, non_terms=non_terms)
 
         """ (seq_len, batch_size, *dims) """
         decoded_obs = rssm.decode_sequence_obs(
@@ -206,11 +207,12 @@ def main(args):
             rollout["hiddens"], rollout["posterior_states"]
         )
 
+        #print('shape of decoded reward', decoded_reward.shape )
         posterior = Normal(rollout["posterior_means"], rollout["posterior_stds"])
         prior = Normal(rollout["prior_means"], rollout["prior_stds"])
 
         obs_loss = _observation_loss(decoded_obs, obs)
-        reward_loss = _reward_loss(decoded_reward, rews)
+        reward_loss = _reward_loss(decoded_reward, rews.squeeze())
         kl_loss = _kl_loss(posterior, prior)
 
         if return_for_vae_n_mdrnn_sampling: 
@@ -227,14 +229,16 @@ def main(args):
             return obs_loss, reward_loss, kl_loss
 
     def _observation_loss(decoded_obs, obs):
+        #print('obs loss', decoded_obs.shape, obs.shape)
         return (
-            f.mse_loss(decoded_obs, obs, reduction="none")
+            f.mse_loss(obs, decoded_obs, reduction="none")
             .sum(dim=(2, 3, 4))
             .mean(dim=(0, 1))
         )
 
     def _reward_loss(decoded_reward, reward):
-        return f.mse_loss(decoded_reward, reward, reduction="none").mean(dim=(0, 1))
+        #print(decoded_reward.shape, reward.shape)
+        return f.mse_loss(reward, decoded_reward, reduction="none").mean(dim=(0, 1))
 
     def _kl_loss(posterior, prior):
         if free_nats is not None:
@@ -454,7 +458,7 @@ def main(args):
                 "optimizer": optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
                 'earlystopping': earlystopping.state_dict(),
-                "precision": test_loss_dict['loss_'+model_name],
+                "precision": test_loss_dict['loss'],
                 "epoch": e}, is_best, filenames_dict[model_name+'_checkpoint'],
                             filenames_dict[model_name+'_best'])
         print('====== Done Saving VAE and MDRNN')

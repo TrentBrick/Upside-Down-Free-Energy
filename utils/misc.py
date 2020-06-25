@@ -164,10 +164,10 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
     last_test_latent_obs, \
     last_test_actions = [var[start_sample_ind:end_sample_ind] for var in for_vae_n_mdrnn_sampling]
 
+    last_test_encoded_obs = rssm.encode_sequence_obs(last_test_observations.unsqueeze(1))
+
     last_test_observations = last_test_observations.view(last_test_observations.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
     last_test_decoded_obs = last_test_decoded_obs.view(last_test_decoded_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
-
-    last_test_encoded_obs = rssm.encode_sequence_obs(last_test_observations.unsqueeze(1))
 
     if transform_obs:
         transform_for_mdrnn_samples = transforms.Compose([
@@ -196,15 +196,20 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
             # print multi horizon examples. 
 
             # set memory and context: 
+            last_test_actions = last_test_actions.unsqueeze(1)
             adapt_dict = rssm.perform_rollout(last_test_actions[:memory_adapt_period], 
-                obs=last_test_encoded_obs[:memory_adapt_period] ) 
-            adapt_obs = rssm.decode_obs(adapt_dict['hiddens'], adapt_dict['posterior_states'])
+                encoder_output=last_test_encoded_obs[:memory_adapt_period] ) 
+            print('into decoder:', adapt_dict['hiddens'].shape, adapt_dict['posterior_states'].shape)
+            adapt_obs = rssm.decode_sequence_obs(adapt_dict['hiddens'], adapt_dict['posterior_states'])
             adapt_obs = adapt_obs.view(adapt_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+
+            print('into horizon predictions', ast_test_actions[memory_adapt_period:].shape, hidden=adapt_dict['hiddens'][-1].shape , 
+                state=adapt_dict['posterior_states'][-1].shape)
 
             horizon_multi_step_dict = rssm.perform_rollout(last_test_actions[memory_adapt_period:], hidden=adapt_dict['hiddens'][-1] , 
                 state=adapt_dict['posterior_states'][-1] )
             
-            horizon_multi_step_obs = rssm.decode_obs(horizon_multi_step_dict['hiddens'], horizon_multi_step_dict['prior_states'])
+            horizon_multi_step_obs = rssm.decode_sequence_obs(horizon_multi_step_dict['hiddens'], horizon_multi_step_dict['prior_states'])
             horizon_multi_step_obs = horizon_multi_step_obs.view(horizon_multi_step_obs.shape[0],3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
 
             to_save = torch.cat([last_test_observations, last_test_decoded_obs, 

@@ -61,7 +61,7 @@ def main(args):
     desired_horizon = 30
     num_action_repeats = 5 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
-    actual_horizon = (desired_horizon//num_action_repeats)+1
+    actual_horizon = (desired_horizon//num_action_repeats)
     discount_factor = 0.50
     init_cem_params = ( torch.Tensor([0,0.7,0]), torch.Tensor([0.5,0.7,0.3]) )
     cem_iters = 7
@@ -77,7 +77,7 @@ def main(args):
     use_training_buffer=True
     num_new_rollouts = args.num_workers*num_vae_mdrnn_training_rollouts_per_worker
     num_prev_epochs_to_store = 4
-    iters_through_buffer_each_epoch = 100 // num_prev_epochs_to_store
+    iters_through_buffer_each_epoch = 10 // num_prev_epochs_to_store
     # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
     max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
 

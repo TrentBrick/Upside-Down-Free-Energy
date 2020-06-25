@@ -33,7 +33,7 @@ class EnvSimulator:
 
         self.use_rssm = True 
 
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = 'cpu'#torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.time_limit = time_limit
 
         # transform used on environment generated observations. 
@@ -158,17 +158,13 @@ class EnvSimulator:
             encoder_obs = self.rssm.encode_obs(obs)
             encoder_obs = encoder_obs.unsqueeze(0)
 
-            if action: 
+            if action is not None: 
                 action = action.unsqueeze(0)
 
-            dyn_dict = self.rssm.perform_rollout(action, hidden=hidden, state=latent_s, obs=encoder_obs)
-            print('dyna dict hiddens', dyn_dict['hiddens'].shape)
+            dyn_dict = self.rssm.perform_rollout(action, hidden=hidden, state=latent_s, encoder_output=encoder_obs)
             next_hidden = dyn_dict['hiddens'].squeeze(0)
             latent_s = dyn_dict['posterior_states'].squeeze(0)
-
-            print('')
             action = self.rssm_planner(hidden, latent_s)
-            print('action shape going into rssm dynamics in rollout gen should be 2D!', action.shape )
             return action.squeeze().cpu().numpy(), next_hidden, action, latent_s
 
         else:

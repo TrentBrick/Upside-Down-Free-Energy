@@ -39,25 +39,25 @@ class RSSModel(object):
         )
 
     def perform_rollout(
-        self, actions, hidden=None, state=None, obs=None, non_terms=None
+        self, actions, hidden=None, state=None, encoder_output=None, non_terms=None
     ):
         if hidden is not None and state is not None:
             """ [action] (seq_len, batch_size, action_size )
                 [hidden] (batch_size, hidden_size ) 
                 [state]  (batch_size, state_size ) 
             """
-            return self.dynamics(hidden, state, actions, obs, non_terms)
+            return self.dynamics(hidden, state, actions, encoder_output, non_terms)
         else:
             """ [action] (seq_len, batch_size, n_actions ) 
                 [hidden] (seq_len, batch_size, hidden_size ) 
                 [state]  (seq_len, batch_size, state_size ) 
             """
 
-            batch_size = obs.size(1)
+            batch_size = encoder_output.size(1)
             init_hidden, init_state = self.init_hidden_state(batch_size)
 
             return self.dynamics(
-                init_hidden, init_state, actions, obs=obs, non_terms=non_terms
+                init_hidden, init_state, actions, encoder_output=encoder_output, non_terms=non_terms
             )
 
     def eval(self):

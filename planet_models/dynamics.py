@@ -33,7 +33,7 @@ class RecurrentDynamics(nn.Module):
         prev_hidden (batch, hidden_size)
         prev_state  (batch, hidden_size)
         actions     (seq_len, batch, hidden_size)
-        encoder_output         (seq_len, batch, hidden_size)
+        encoder_output  (seq_len, batch, hidden_size)
         non_terms   (seq_len, batch, hidden_size)
         """
 
@@ -56,6 +56,7 @@ class RecurrentDynamics(nn.Module):
             _state = _state if non_terms is None else _state * non_terms[t]
 
             """ compute deterministic hidden state """
+            print('cat in dynamic@', t, _state.shape, actions[t].shape)
             out = torch.cat([_state, actions[t]], dim=1)
             out = self.act_fn(self.fc_embed_state_action(out))
             hiddens[t + 1] = self.rnn(out, hiddens[t])
@@ -72,7 +73,7 @@ class RecurrentDynamics(nn.Module):
             prior_states[t + 1] = sample
 
             if encoder_output is not None:
-                """ encoder_outputervations have different time index """
+                """ encoder_output observations have different time index """
                 t_ = t - 1
 
                 """ calculate latent state posterior """
