@@ -55,9 +55,12 @@ class _MDRNNBase(nn.Module):
 class RewardModule(nn.Module):
     """ Given the next latent state. predict the reward. 
         Easier to debug this way. """
-    def __init__(self, latents, actions):
+    def __init__(self, latents, actions, conditional=True):
         super(RewardModule, self).__init__()
-        self.forward1 = nn.Linear(latents+actions+1, 256)
+        if conditional: 
+            self.forward1 = nn.Linear(latents+actions+1, 256)
+        else: 
+            self.forward1 = nn.Linear(latents+actions, 256)
         self.forward2 = nn.Linear(256, 256)
         self.forward3 = nn.Linear(256, 256)
         self.forward4 = nn.Linear(256, 1)
@@ -85,7 +88,7 @@ class MDRNN(_MDRNNBase):
             self.forward3 = nn.Linear(256, 256)
             self.forward4 = nn.Linear(256, latents)
             # assumes that conditional is true here. 
-            self.reward_model = RewardModule(latents, actions)
+            self.reward_model = RewardModule(latents, actions, conditional=conditional)
         else:
             if self.conditional:
                 self.rnn = nn.LSTM(latents + actions+1, hiddens, batch_first=True)
