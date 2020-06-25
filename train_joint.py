@@ -76,6 +76,7 @@ def main(args):
     use_training_buffer=True
     num_new_rollouts = args.num_workers*num_vae_mdrnn_training_rollouts_per_worker
     num_prev_epochs_to_store = 4
+    iters_through_buffer_each_epoch = 100 // num_prev_epochs_to_store
     # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
     max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
 
@@ -107,7 +108,7 @@ def main(args):
     
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)
-    scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=15)
+    scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=20)
     earlystopping = EarlyStopping('min', patience=200)
 
     # Loading in trained models: 
@@ -432,19 +433,22 @@ def main(args):
         # TODO: set number of workers higher. Here it doesn;t matter much as already have tensors ready. 
         # (dont need any loading or tranformations) 
         # and before these workers were clashing with the ray workers for generating rollouts. 
-        train_loader = DataLoader(train_dataset,
-            batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
+        
+        for it in range(iters_through_buffer_each_epoch):
+            train_loader = DataLoader(train_dataset,
+                batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
+            print('====== Starting Training of VAE and MDRNN')
+            # train VAE and MDRNN. uses partial(data_pass)
+            train_loss_dict = train(e)
+            print('====== Done Training VAE and MDRNN')
+        
         test_loader = DataLoader(test_dataset, shuffle=True,
-            batch_size=BATCH_SIZE, num_workers=0, drop_last=False)
-        print('====== Starting Training of VAE and MDRNN')
-        # train VAE and MDRNN. uses partial(data_pass)
-        train_loss_dict = train(e)
-        print('====== Done Training VAE and MDRNN')
+                batch_size=BATCH_SIZE, num_workers=0, drop_last=False)
         # returns the last ones in order to produce samples!
         test_loss_dict, for_vae_n_mdrnn_sampling = test(e)
         print('====== Done Testing VAE and MDRNN')
+        
         scheduler.step(test_loss_dict['loss'])
-
         # append the planning results to the TEST loss dictionary. 
         for name, var in zip(['reward_planner', 'feef_planner'], [reward_losses, feef_losses]):
             test_loss_dict['avg_'+name] = np.mean(var)
@@ -472,7 +476,6 @@ def main(args):
         print('====== Done Saving VAE and MDRNN')
 
         if make_vae_samples or make_mdrnn_samples:
-
             generate_samples( vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic, 
                             samples_dir, SEQ_LEN, example_length,
                             memory_adapt_period, e, device, 
@@ -481,7 +484,7 @@ def main(args):
                             transform_obs=False  )
         
         # Header at the top of logger file written once at the start of new training run.
-        if not exists(logger_filename) or e==0: 
+        if not exists(logger_filename): 
             header_string = ""
             for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):
                 for k in loss_dict.keys():
