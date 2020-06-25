@@ -1,3 +1,4 @@
+# pylint: disable=no-member
 """ Various auxiliary utilities """
 import math
 import time 
@@ -20,6 +21,7 @@ import torch.nn.functional as f
 NUM_IMG_CHANNELS, ACTION_SIZE, LATENT_SIZE, LATENT_RECURRENT_SIZE, IMAGE_RESIZE_DIM, SIZE =\
     3, 3, 32, 512, 64, 96
 NUM_GAUSSIANS_IN_MDRNN = 1
+NODE_SIZE, EMBEDDING_SIZE = 256, 256
 
 # Same. used for Rollout Generator below. 
 transform = transforms.Compose([
@@ -111,7 +113,7 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_cho
         if len(logpi.shape) == 3: 
             g_probs = Categorical(probs=torch.exp(logpi.squeeze()).permute(0,2,1))
             which_g = g_probs.sample()
-            mus, sigmas = torch.gather(md_mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(md_sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
+            mus, sigmas = torch.gather(mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(sigmas.squeeze(), 1, which_g.unsqueeze(1)).squeeze()
         elif len(logpi.shape) == 4:
             g_probs = torch.distributions.Categorical(probs=torch.exp(logpi.squeeze()).permute(0,1,3,2))
             which_g = g_probs.sample()
@@ -139,6 +141,79 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_cho
         return latent_s, mus, sigmas
     else: 
         return latent_s 
+
+
+def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
+                            samples_dir, SEQ_LEN, example_length, 
+                            memory_adapt_period, e, device,
+                            make_vae_samples=False,
+                            make_mdrnn_samples=True, 
+                            transform_obs = False):
+
+    # need to restrict the data to a random segment. Important in cases where 
+    # sequence length is too long
+    start_sample_ind = np.random.randint(0, SEQ_LEN-example_length,1)[0]
+    end_sample_ind = start_sample_ind+example_length
+
+    # ensuring this is the same length as everything else. 
+    #for_vae_n_mdrnn_sampling[0] = for_vae_n_mdrnn_sampling[0][1:, :, :, :]
+
+    last_test_observations, last_test_decoded_obs, \
+    last_test_hiddens, last_test_prior_states, \
+    last_test_pres_rewards, last_test_next_rewards, \
+    last_test_latent_obs, \
+    last_test_actions = [var[start_sample_ind:end_sample_ind] for var in for_vae_n_mdrnn_sampling]
+
+    last_test_observations = last_test_observations.view(last_test_observations.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
+    last_test_decoded_obs = last_test_decoded_obs.view(last_test_decoded_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
+
+    last_test_encoded_obs = rssm.encode_sequence_obs(last_test_observations.unsqueeze(1))
+
+    if transform_obs:
+        transform_for_mdrnn_samples = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
+                transforms.ToTensor(),
+                ])
+
+    if make_vae_samples:
+        with torch.no_grad():
+            # get test samples
+            to_save = torch.cat([last_test_observations, last_test_decoded_obs], dim=0)
+            print('Generating VAE samples of the shape:', to_save.shape)
+            save_image(to_save,
+                    join(samples_dir, 'vae_sample_' + str(e) + '.png'))
+
+        print('====== Done Generating VAE Samples')
+
+    if make_mdrnn_samples: 
+        with torch.no_grad():
+            # print examples of the prior
+
+            horizon_one_step = rssm.decode_obs(last_test_hiddens, last_test_prior_states)
+            horizon_one_step_obs = horizon_one_step.view(horizon_one_step.shape[0],3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            
+            # print multi horizon examples. 
+
+            # set memory and context: 
+            adapt_dict = rssm.perform_rollout(last_test_actions[:memory_adapt_period], 
+                obs=last_test_encoded_obs[:memory_adapt_period] ) 
+            adapt_obs = rssm.decode_obs(adapt_dict['hiddens'], adapt_dict['posterior_states'])
+            adapt_obs = adapt_obs.view(adapt_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+
+            horizon_multi_step_dict = rssm.perform_rollout(last_test_actions[memory_adapt_period:], hidden=adapt_dict['hiddens'][-1] , 
+                state=adapt_dict['posterior_states'][-1] )
+            
+            horizon_multi_step_obs = rssm.decode_obs(horizon_multi_step_dict['hiddens'], horizon_multi_step_dict['prior_states'])
+            horizon_multi_step_obs = horizon_multi_step_obs.view(horizon_multi_step_obs.shape[0],3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+
+            to_save = torch.cat([last_test_observations, last_test_decoded_obs, 
+                horizon_one_step_obs.cpu(), adapt_obs.cpu(), horizon_multi_step_obs.cpu()], dim=0)
+
+            print('Generating MDRNN samples of the shape:', to_save.shape)
+            save_image(to_save,
+                    join(samples_dir, 'horizon_preds_sample_' + str(e) + '.png'))
+
 
 def generate_samples(vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic,
                             samples_dir, SEQ_LEN, example_length, 
