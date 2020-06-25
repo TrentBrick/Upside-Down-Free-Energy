@@ -32,19 +32,18 @@ def main(args):
 
     assert args.num_workers <= cpu_count(), "Providing too many workers! Need one less than total amount." 
 
-    condition_on_rewards =True
     make_vae_samples, make_mdrnn_samples = True, True
     # used for saving which models are the best based upon their train performance. 
     vae_n_mdrnn_cur_best=None
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     use_feef = True # NOTE: currently not actually computing it inside of simulate!!!!
 
-    include_reward = condition_on_rewards # has the MDRNN return rewards. this is very important for the conditioning on rewards 
+    include_reward = True # has the MDRNN return rewards. this is very important for the conditioning on rewards 
     include_terminal = False
     include_overshoot = False
 
     vae_conditional=True 
-    mdrnn_conditional = True
+    mdrnn_conditional = False
 
     deterministic=True
     use_lstm = False 
@@ -101,10 +100,10 @@ def main(args):
     logger_filename = join(joint_dir, 'logger.txt')
 
     # init models
-    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, condition_on_rewards).to(device)
+    vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=vae_conditional).to(device)
     mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, 
         LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, 
-        condition_on_rewards, use_lstm=use_lstm).to(device)
+        conditional=mdrnn_conditional, use_lstm=use_lstm).to(device)
     
     # TODO: consider learning these parameters with different optimizers and learning rates for each network. 
     optimizer = torch.optim.Adam(list(vae.parameters())+list(mdrnn.parameters()), lr=1e-3)

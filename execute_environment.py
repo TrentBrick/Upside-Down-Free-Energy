@@ -512,8 +512,7 @@ class EnvSimulator:
                 self.make_env(seed=rand_env_seed)
                 
                 if self.return_events: 
-                    rew, t, data_dict = self.rollout(rand_env_seed, render=render_mode, 
-                                params=None)
+                    rew, t, data_dict = self.rollout(rand_env_seed, render=render_mode)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                 
                     data_dict_list.append(data_dict)
@@ -521,8 +520,7 @@ class EnvSimulator:
                         feef_losses_list.append(  0.0 )#self.feef_loss(data_dict)  )
                     
                 else: 
-                    rew, t = self.rollout(rand_env_seed, render=render_mode, 
-                                params=None)
+                    rew, t = self.rollout(rand_env_seed, render=render_mode)
                 cum_reward_list.append(rew)
                 t_list.append(t)
 
