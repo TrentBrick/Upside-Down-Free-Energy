@@ -1,3 +1,4 @@
+# pylint: disable=no-member
 """
 Define MDRNN model, supposed to be used as a world model
 on the latent space.

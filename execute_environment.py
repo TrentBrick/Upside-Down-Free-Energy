@@ -1,3 +1,4 @@
+# pylint: disable=no-member
 import math
 import random 
 import time
@@ -11,9 +12,11 @@ import gym
 import gym.envs.box2d
 from ha_env import make_env
 from torch.distributions.normal import Normal
-from utils.misc import NUM_IMG_CHANNELS, NUM_GAUSSIANS_IN_MDRNN, ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM
+from utils.misc import NUM_IMG_CHANNELS, NUM_GAUSSIANS_IN_MDRNN, ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE, IMAGE_RESIZE_DIM, NODE_SIZE, EMBEDDING_SIZE
 from trainvae import loss_function as original_vae_loss_function
 from utils.misc import sample_mdrnn_latent
+from planet_models.rssm import RSSModel 
+from planet_models.planner import Planner
 
 class EnvSimulator:
 
@@ -28,6 +31,8 @@ class EnvSimulator:
         self.deterministic = deterministic
         self.use_lstm = use_lstm
 
+        self.use_rssm = True 
+
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.time_limit = time_limit
 
@@ -40,36 +45,7 @@ class EnvSimulator:
 
         # Loading world model and vae
         # NOTE: the checkpoint, ie most up to date model. Is being loaded in. 
-        vae_file, rnn_file = \
-                [join(logdir, m+'_checkpoint.tar') for m in ['vae', 'mdrnn']]
         
-        assert exists(vae_file) and exists(rnn_file),\
-            "Either vae or mdrnn is untrained or the file is in the wrong place. "+vae_file+' '+rnn_file
-
-        vae_state, rnn_state = [
-            torch.load(fname, map_location={'cuda:0': str(self.device)})
-            for fname in (vae_file, rnn_file)]
-
-        for m, s in (('VAE', vae_state), ('MDRNN', rnn_state)):
-            print("Loading {} at epoch {} "
-                "with test loss {}".format(
-                    m, s['epoch'], s['precision']))
-        print('loading in vae from:', vae_file, self.device)
-        self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=vae_conditional).to(self.device)
-        self.vae.load_state_dict(vae_state['state_dict'])
-
-        print('loading in mdrnn from:', rnn_file, self.device)
-        if self.deterministic:
-            self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, use_lstm=self.use_lstm).to(self.device)
-            self.mdrnn.load_state_dict(rnn_state['state_dict'])
-        else: 
-            self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional).to(self.device)
-            self.mdrnn.load_state_dict(
-                {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
-
-            self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, use_lstm=self.use_lstm ).to(self.device)
-            self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
-
         self.num_action_repeats = num_action_repeats
         # the real horizon 
         self.horizon = horizon
@@ -80,14 +56,78 @@ class EnvSimulator:
             self.init_cem_sigmas = init_cem_params[1]
         self.cem_iters = cem_iters 
         self.discount_factor = discount_factor
+        self.k_top = int(planner_n_particles*0.10)
+
+        if self.use_rssm:
+
+            self.rssm = RSSModel(
+                ACTION_SIZE,
+                LATENT_RECURRENT_SIZE,
+                LATENT_SIZE,
+                EMBEDDING_SIZE,
+                NODE_SIZE,
+                device=self.device,
+            )
+            load_file = join(logdir, 'rssm_checkpoint.tar')
+
+            assert exists(load_file), "Could not find file: " + load_file + " to load in!"
+            state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
+            print("Loading model_type {} at epoch {} "
+                "with test error {}".format('rssm',
+                    state['epoch'], state['precision']))
+
+            self.rssm.load_state_dict(state['state_dict'])
+
+            self.rssm_planner = Planner(
+                self.rssm,
+                ACTION_SIZE,
+                plan_horizon=horizon,
+                optim_iters=cem_iters,
+                candidates=planner_n_particles,
+                top_candidates=self.k_top,
+            )
+
+        else:
+            vae_file, rnn_file = \
+                [join(logdir, m+'_checkpoint.tar') for m in ['vae', 'mdrnn']]
         
+            assert exists(vae_file) and exists(rnn_file),\
+                "Either vae or mdrnn is untrained or the file is in the wrong place. "+vae_file+' '+rnn_file
+
+            vae_state, rnn_state = [
+                torch.load(fname, map_location={'cuda:0': str(self.device)})
+                for fname in (vae_file, rnn_file)]
+
+            for m, s in (('VAE', vae_state), ('MDRNN', rnn_state)):
+                print("Loading {} at epoch {} "
+                    "with test loss {}".format(
+                        m, s['epoch'], s['precision']))
+            print('loading in vae from:', vae_file, self.device)
+            self.vae = VAE(NUM_IMG_CHANNELS, LATENT_SIZE, conditional=vae_conditional).to(self.device)
+            self.vae.load_state_dict(vae_state['state_dict'])
+
+            print('loading in mdrnn from:', rnn_file, self.device)
+            if self.deterministic:
+                self.mdrnn = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, use_lstm=self.use_lstm).to(self.device)
+                self.mdrnn.load_state_dict(rnn_state['state_dict'])
+            else: 
+                self.mdrnn = MDRNNCell(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional).to(self.device)
+                self.mdrnn.load_state_dict(
+                    {k.strip('_l0'): v for k, v in rnn_state['state_dict'].items()})
+
+                self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, use_lstm=self.use_lstm ).to(self.device)
+                self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
+
         # TODO: make an MDRNN ensemble. 
-        self.mdrnn_ensemble = [self.mdrnn]
+        if self.use_rssm: 
+            self.mdrnn_ensemble = [self.rssm]
+        else: 
+            self.mdrnn_ensemble = [self.mdrnn]
+
         self.ensemble_size = len(self.mdrnn_ensemble)
         assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
-        self.k_top = int(planner_n_particles*0.10)
         self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size 
-
+        
     def make_env(self, seed=-1, render_mode=False, full_episode=False):
         """ Called every time a new rollout occurs. Creates a new environment and 
         sets a new random seed for it."""
@@ -96,7 +136,7 @@ class EnvSimulator:
         self.env.seed(int(seed))
         self.env.render('rgb_array')
 
-    def get_action_and_transition(self, obs, hidden, reward):
+    def get_action_and_transition(self, obs, reward, hidden, action=None, latent_s=None):
         """ Get action and transition.
 
         Encode obs to latent using the VAE, then obtain estimation for next
@@ -113,19 +153,35 @@ class EnvSimulator:
         """
 
         # why is none of this batched?? Because can't run lots of environments at a single point in parallel I guess. 
-        mu, logsigma = self.vae.encoder(obs, reward)
-        latent_s =  mu + logsigma.exp() * torch.randn_like(mu) 
-
-        assert latent_s.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
-
-        action = self.planner(latent_s, hidden, reward)
-
-        if self.deterministic:
-            _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, reward, last_hidden=hidden)
-        else: 
-            _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
         
-        return action.squeeze().cpu().numpy(), next_hidden
+        if self.use_rssm: 
+            encoder_obs = self.rssm.encode_obs(obs)
+            encoder_obs = encoder_obs.unsqueeze(0)
+
+            if action: 
+                action = action.unsqueeze(0)
+
+            dyn_dict = self.rssm.perform_rollout(action, hidden=hidden, state=latent_s, obs=encoder_obs)
+            print('dyna dict hiddens', dyn_dict['hiddens'].shape)
+            next_hidden = dyn_dict['hiddens'].squeeze(0)
+            latent_s = dyn_dict['posterior_states'].squeeze(0)
+
+            print('')
+            action = self.rssm_planner(hidden, latent_s)
+            print('action shape going into rssm dynamics in rollout gen should be 2D!', action.shape )
+            return action.squeeze().cpu().numpy(), next_hidden, action, latent_s
+
+        else:
+            mu, logsigma = self.vae.encoder(obs, reward)
+            latent_s =  mu + logsigma.exp() * torch.randn_like(mu) 
+            assert latent_s.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
+            action = self.planner(latent_s, hidden, reward)
+            if self.deterministic:
+                _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, reward, last_hidden=hidden)
+            else: 
+                _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
+    
+            return action.squeeze().cpu().numpy(), next_hidden
 
     def planner(self, latent_s, full_hidden, reward, discount_factor=0.90):
         """ Predicts into the future up to horizon. 
@@ -282,9 +338,13 @@ class EnvSimulator:
 
         obs = self.env.reset()
 
-        hidden = [
-            torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
-            for _ in range(2)]
+        if self.use_rssm: 
+            hidden, latent_s, rssm_action = self.rssm.init_hidden_state_action(1)
+
+        else: 
+            hidden = [
+                torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
+                for _ in range(2)]
         reward = 0
         done = 0
         action = np.array([0.,0.,0.])
@@ -305,7 +365,10 @@ class EnvSimulator:
             reward = torch.Tensor([reward]).to(self.device).unsqueeze(0)
             
             # using planner!
-            action, hidden = self.get_action_and_transition(obs, hidden, reward)
+            if self.use_rssm: 
+                action, hidden, rssm_action, latent_s = self.get_action_and_transition(obs, reward, hidden, rssm_action, latent_s)
+            else: 
+                action, hidden = self.get_action_and_transition(obs, reward, hidden)
             
             # have this here rather than further down in order to capture the very first 
             # observation and actions.

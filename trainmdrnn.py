@@ -1,3 +1,4 @@
+# pylint: disable=no-member
 """ Recurrent model training """
 
 # rest of imports are at the bottom. This ensures they are only
