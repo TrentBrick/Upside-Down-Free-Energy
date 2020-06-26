@@ -188,6 +188,12 @@ def main(args):
         terminals = terminals.unsqueeze(-1).permute(1,0,2).contiguous()
         non_terms = (terminals==0.).float().contiguous()
 
+        # shift everything: 
+        obs = obs[1:]
+        acts = acts[:-1]
+        rews = rews[:-1]
+        non_terms = non_terms[:-1]
+
         """ (seq_len, batch_size, *dims) """
         #obs, acts, rews, non_terms = buffer.sample_and_shift(batch_size, seq_len)
 
@@ -365,6 +371,15 @@ def main(args):
         
         train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
                 args.num_workers, SEQ_LEN, worker_package)
+
+        print('====== Length of new rollouts')
+        rollout_lengths = []
+        for i in range(len(train_data['terminal'])):
+            rollout_lengths.append( len(train_data['terminal'][i]) )
+        rollout_lengths = np.asarray(rollout_lengths)
+        print('Mean length', rollout_lengths.mean(), 'Std', rollout_lengths.std())
+        print('Min length', rollout_lengths.min(), 'Max length', rollout_lengths.max())
+        print('10% quantile', np.quantile(rollout_lengths, 0.1))
 
         if use_training_buffer:
             if e==0:

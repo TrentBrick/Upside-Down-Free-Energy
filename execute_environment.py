@@ -87,6 +87,8 @@ class EnvSimulator:
                 top_candidates=self.k_top,
             )
 
+            self.rssm.eval()
+
         else:
             vae_file, rnn_file = \
                 [join(logdir, m+'_checkpoint.tar') for m in ['vae', 'mdrnn']]
@@ -117,6 +119,10 @@ class EnvSimulator:
 
                 self.mdrnn_full = MDRNN(LATENT_SIZE, ACTION_SIZE, LATENT_RECURRENT_SIZE, NUM_GAUSSIANS_IN_MDRNN, conditional=mdrnn_conditional, use_lstm=self.use_lstm ).to(self.device)
                 self.mdrnn_full.load_state_dict(rnn_state['state_dict'])
+
+            self.vae.eval()
+            self.mdrnn.eval()
+            self.mdrnn_full.eval()
 
         # TODO: make an MDRNN ensemble. 
         if self.use_rssm: 
