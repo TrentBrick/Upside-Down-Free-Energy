@@ -56,7 +56,7 @@ class RecurrentDynamics(nn.Module):
             _state = _state if non_terms is None else _state * non_terms[t]
 
             """ compute deterministic hidden state """
-            print('cat in dynamic@', t, _state.shape, actions[t].shape)
+            #print('cat in dynamic@', t, _state.shape, actions[t].shape)
             out = torch.cat([_state, actions[t]], dim=1)
             out = self.act_fn(self.fc_embed_state_action(out))
             hiddens[t + 1] = self.rnn(out, hiddens[t])

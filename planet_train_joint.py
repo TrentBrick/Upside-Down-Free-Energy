@@ -56,14 +56,14 @@ def main(args):
     
     # Constants
     BATCH_SIZE = 512
-    SEQ_LEN = 9 #14 # number of sequences in a row used during training
+    SEQ_LEN = 8 # number of sequences in a row used during training
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 5 # 10 change back to ray!!!
+    num_vae_mdrnn_training_rollouts_per_worker = 10
 
     # Planning values
     planner_n_particles = 700
-    desired_horizon = 30
+    desired_horizon = 25
     num_action_repeats = 5 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
     actual_horizon = (desired_horizon//num_action_repeats)
@@ -72,18 +72,18 @@ def main(args):
     cem_iters = 7
 
     # for plotting example horizons:
-    example_length = 8 #12
+    example_length = 7
     assert example_length<= SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - actual_horizon
 
     # memory buffer:
     # making a memory buffer for previous rollouts too. 
     # buffer contains a dictionary full of tensors. 
-    use_training_buffer=False
+    use_training_buffer=True
     print('using training buffer?', use_training_buffer)
     num_new_rollouts = args.num_workers*num_vae_mdrnn_training_rollouts_per_worker
     num_prev_epochs_to_store = 4
-    iters_through_buffer_each_epoch = 10 #0 // num_prev_epochs_to_store
+    iters_through_buffer_each_epoch = 10 // num_prev_epochs_to_store
     # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
     max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
 

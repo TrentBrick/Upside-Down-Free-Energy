@@ -199,12 +199,14 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
             last_test_actions = last_test_actions.unsqueeze(1)
             adapt_dict = rssm.perform_rollout(last_test_actions[:memory_adapt_period], 
                 encoder_output=last_test_encoded_obs[:memory_adapt_period] ) 
-            print('into decoder:', adapt_dict['hiddens'].shape, adapt_dict['posterior_states'].shape)
+            #print('into decoder:', adapt_dict['hiddens'].shape, adapt_dict['posterior_states'].shape)
             adapt_obs = rssm.decode_sequence_obs(adapt_dict['hiddens'], adapt_dict['posterior_states'])
             adapt_obs = adapt_obs.view(adapt_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
 
-            print('into horizon predictions', ast_test_actions[memory_adapt_period:].shape, hidden=adapt_dict['hiddens'][-1].shape , 
-                state=adapt_dict['posterior_states'][-1].shape)
+            #print('adapt dict keys', adapt_dict.keys())
+            #print('into horizon predictions', last_test_actions[memory_adapt_period:].shape, 
+            #    adapt_dict['hiddens'][-1].shape , 
+            #    adapt_dict['posterior_states'][-1].shape)
 
             horizon_multi_step_dict = rssm.perform_rollout(last_test_actions[memory_adapt_period:], hidden=adapt_dict['hiddens'][-1] , 
                 state=adapt_dict['posterior_states'][-1] )
@@ -217,7 +219,7 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
 
             print('Generating MDRNN samples of the shape:', to_save.shape)
             save_image(to_save,
-                    join(samples_dir, 'horizon_preds_sample_' + str(e) + '.png'))
+                    join(samples_dir, 'horizon_pred_sample_' + str(e) + '.png'))
 
 
 def generate_samples(vae, mdrnn, for_vae_n_mdrnn_sampling, deterministic,
