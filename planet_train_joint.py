@@ -372,6 +372,15 @@ def main(args):
         train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
                 args.num_workers, SEQ_LEN, worker_package)
 
+        print('====== Length of new rollouts')
+        rollout_lengths = []
+        for i in range(len(train_data['terminal'])):
+            rollout_lengths.append( len(train_data['terminal'][i]) )
+        rollout_lengths = np.asarray(rollout_lengths)
+        print('Mean length', rollout_lengths.mean(), 'Std', rollout_lengths.std())
+        print('Min length', rollout_lengths.min(), 'Max length', rollout_lengths.max())
+        print('10% quantile', np.quantile(rollout_lengths, 0.1))
+
         if use_training_buffer:
             if e==0:
                 # init buffers
