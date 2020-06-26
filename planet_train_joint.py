@@ -168,7 +168,7 @@ def main(args):
 
     # making learning rate lower because models are already pretrained!
     if args.giving_pretrained: 
-        optimizer = torch.optim.Adam(rssm.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(rssm.parameters(), lr=1e-3)
         rssm_cur_best = None
 
     vae_output_names = ['encoder_mu', 'encoder_logsigma', 'latent_s', 'decoder_mu', 'decoder_logsigma']
