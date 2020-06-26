@@ -188,6 +188,12 @@ def main(args):
         terminals = terminals.unsqueeze(-1).permute(1,0,2).contiguous()
         non_terms = (terminals==0.).float().contiguous()
 
+        # shift everything: 
+        obs = obs[1:]
+        acts = acts[:-1]
+        rews = rews[:-1]
+        non_terms = non_terms[:-1]
+
         """ (seq_len, batch_size, *dims) """
         #obs, acts, rews, non_terms = buffer.sample_and_shift(batch_size, seq_len)
 
