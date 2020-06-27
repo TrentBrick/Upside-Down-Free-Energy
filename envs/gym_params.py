@@ -4,11 +4,10 @@ def get_env_params(gamename):
 
     if gamename == "carracing":
         env_params = {
-            'env_name': 'CarRacing-V0',
+            'env_name': 'CarRacing-v0',
             'desired_horizon': 18,
             'num_action_repeats': 3,
             'time_limit':1000, # max time limit for the rollouts generated
-            'training_rollouts_per_worker': 3,
             'NUM_IMG_CHANNELS': 3,
             'ACTION_SIZE': 3,
             'init_cem_params': ( torch.Tensor([0.,0.7,0.]), 
@@ -26,14 +25,16 @@ def get_env_params(gamename):
             # stop_early_value
             'stop_early_buf_size': 40,
             'stop_early_value': -4.0
+
         }
+
+        env_params['actual_horizon'] = env_params['desired_horizon']//env_params['num_action_repeats']
 
     elif gamename == "cartpole":
 
         env_params = {
             'desired_horizon': 30,
             'num_action_repeats': 3,
-            'training_rollouts_per_worker': 3,
             'NUM_IMG_CHANNELS': 3,
             'ACTION_SIZE': 3,
             'init_cem_params': ( torch.Tensor([0.,0.,0.]), 

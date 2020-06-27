@@ -13,10 +13,6 @@ import gym
 from bisect import bisect
 import time
 from torchvision.utils import save_image
-from control import Agent
-from ray.util.multiprocessing import Pool
-#from multiprocessing import Pool 
-import copy
 
 generic_transform = transforms.Compose([
     transforms.ToPILImage(),
@@ -90,7 +86,7 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_cho
         return latent_s 
 
 
-def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
+def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
                             samples_dir, SEQ_LEN, example_length, 
                             memory_adapt_period, e, device,
                             make_vae_samples=False,
@@ -143,7 +139,7 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
                 encoder_output=last_test_encoded_obs[:memory_adapt_period] ) 
             #print('into decoder:', adapt_dict['hiddens'].shape, adapt_dict['posterior_states'].shape)
             adapt_obs = rssm.decode_sequence_obs(adapt_dict['hiddens'], adapt_dict['posterior_states'])
-            adapt_obs = adapt_obs.view(adapt_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            adapt_obs = adapt_obs.view(adapt_obs.shape[0], 3, adapt_obs.shape[-1], adapt_obs.shape[-1])
 
             #print('adapt dict keys', adapt_dict.keys())
             #print('into horizon predictions', last_test_actions[memory_adapt_period:].shape, 
@@ -209,120 +205,3 @@ class GeneratedDataset(torch.utils.data.Dataset):
         
     def __len__(self):
         return self._cum_size[-1]
-
-def combine_worker_rollouts(inp, seq_len, dim=1):
-    """Combine data across the workers and their rollouts (making each rollout a separate element in a batch)
-    
-    :args:
-        - inp: list. containing outputs of each worker. Assumes that each worker output inside this list is itself a list (or tuple)
-        - seq_len: int. given to ensure each rollout is equal to or longer. 
-        - dim: int. for a given worker, the element in its returned list that corresponds to the rollouts to be combined.
-
-    :returns:
-        - dictionary of rollouts organized by element type (eg. actions, pixel based observations). 
-            Each dictionary key corresponds to a list of full rollouts. 
-            Each full rollout has its first dimension corresponding to time. 
-    """
-    
-    print('RUNNING COMBINE WORKER')
-    first_iter = True
-    # iterate through the worker outputs. 
-    for worker_rollouts in inp: 
-        # iterate through each of the rollouts within the list of rollouts inside this worker.
-        for rollout_data_dict in worker_rollouts[dim]: # this is pulling from a list!
-            if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
-                # this rollout is too small so it is being ignored. 
-                # getting one of the keys from the dictionary in a dict agnostic way.
-                # NOTE: assumes that all keys in the dictionary correspond to lists of the same length
-                print('!!!!!! Combine_worker_rollouts is ignoring rollout of length', len(rollout_data_dict[list(rollout_data_dict.keys())[0]]), 'for being smaller than the sequence length')
-                continue
-
-            if first_iter:
-                # init the combo dictionary with lists for each key. 
-                combo_dict = {k:[v] for k, v in rollout_data_dict.items()} 
-                first_iter = False
-            else: 
-                # append items to the list for each key
-                for k, v in combo_dict.items():
-                    v.append(rollout_data_dict[k])
-
-    return combo_dict
-
-def generate_rollouts_using_planner(num_workers, seq_len, worker_package): 
-
-    """ Uses ray.util.multiprocessing Pool to create workers that each 
-    run environment rollouts using planning with CEM (Cross Entropy Method). 
-    Each worker (that runs code in execute_environment.py) passes back the 
-    rollouts which have already been transformed (done for the planner to work). 
-    These are split between train and test. The FEEF (Free energy of the expected future)
-    and cumulative rewards from the rollout are also passed back. 
-
-    Arguments and returns should be self explanatory. 
-    All inputs are ints, strings or bools except 'init_cem_params' 
-    which is a tuple/list containing two tensors. One for mus and other
-    for sigmas. 
-    """
-
-    # 10% of the rollouts to use for test data. 
-    ten_perc = np.floor(num_workers*0.1)
-    if ten_perc == 0.0:
-        ten_perc=1
-    ninety_perc = int(num_workers-ten_perc)
-
-    # generate a random number to give as a random seed to each pool worker. 
-    rand_ints = np.random.randint(0, 1e9, num_workers)
-
-    worker_data = []
-    #NOTE: currently not using joint_file_directory here (this is used for each worker to know to pull files from joint or from a subsection)
-    for i in range(num_workers):
-
-        package_w_rand = copy.copy(worker_package)
-        package_w_rand.append(rand_ints[i])
-
-        worker_data.append( tuple(package_w_rand)  )
-
-    # deploy all of the workers and wait for results. 
-    with Pool(processes=num_workers) as pool:
-        res = pool.map(worker, worker_data) 
-
-    # res is a list with tuples for each worker containing: reward_list, data_dict_list, t_list
-    print('===== Done with pool of workers')
-
-    # get all of the feef losses aggregated across the different workers: 
-    feef_losses, reward_list = [], []
-    for worker_rollouts in res:
-        for ind, li in zip([3, 0], [feef_losses, reward_list]): # output order from simulate.
-            li += worker_rollouts[ind]
-
-    print("Number of rollouts being given to test:", len(res[ninety_perc:]))
-
-    return combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), \
-                combine_worker_rollouts(res[ninety_perc:], seq_len, dim=2), \
-                feef_losses, reward_list
-
-def worker(inp): # run lots of rollouts 
-
-    """ Parses its input before creating an environment simulator instance
-    and using it to generate the desired number of rollouts. These rollouts
-    save and return the observations, rewards, and FEEF calculations."""
-
-    gamename, vae_conditional, mdrnn_conditional, \
-        deterministic, use_lstm, \
-        time_limit, logdir, num_episodes, \
-        horizon, num_action_repeats, \
-        planner_n_particles, init_cem_params, \
-        cem_iters, discount_factor, \
-        compute_feef, seed = inp
-    
-    env_simulator = EnvSimulator(gamename, logdir, vae_conditional, mdrnn_conditional,
-            deterministic, use_lstm,
-            time_limit=time_limit,
-            
-            planner_n_particles = planner_n_particles, 
-            horizon=horizon, num_action_repeats=num_action_repeats,
-            init_cem_params=init_cem_params, cem_iters=cem_iters, 
-            discount_factor=discount_factor)
-
-    return env_simulator.simulate(return_events=True,
-            compute_feef=compute_feef,
-            num_episodes=num_episodes, seed=seed)

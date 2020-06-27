@@ -52,16 +52,17 @@ def main(args):
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
     epochs = 500
 
+    training_rollouts_per_worker = 3
+
     # Planning values
     planner_n_particles = 700
-    actual_horizon = (env_params['desired_horizon']//env_params['num_action_repeats'])
     discount_factor = 0.80
     cem_iters = 7
 
     # for plotting example horizons:
     example_length = 8
     assert example_length<= SEQ_LEN, "Example length must be smaller."
-    memory_adapt_period = example_length - actual_horizon
+    memory_adapt_period = example_length - env_params['actual_horizon']
     assert memory_adapt_period >0, "need horizon or example length to be longer!"
 
     # memory buffer:
@@ -69,7 +70,7 @@ def main(args):
     # buffer contains a dictionary full of lists of tensors which correspond to full rollouts. 
     use_training_buffer = False 
     print('using training buffer?', use_training_buffer)
-    num_new_rollouts = args.num_workers*env_params['training_rollouts_per_worker']
+    num_new_rollouts = args.num_workers*training_rollouts_per_worker
     num_prev_epochs_to_store = 4
     # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
     max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
@@ -335,24 +336,21 @@ def main(args):
     ################## Main Training Loop ############################
 
     # all of these are static across epochs. 
-    worker_package = [ args.gamename, vae_conditional, mdrnn_conditional,
-                deterministic, use_lstm,
-                time_limit, game_dir, 
-                training_rollouts_per_worker,
-                actual_horizon,
-                num_action_repeats, planner_n_particles, 
-                init_cem_params, cem_iters, discount_factor,
+    worker_package = [ args.gamename, decoder_reward_condition,
+                game_dir, training_rollouts_per_worker,
+                planner_n_particles, 
+                cem_iters, discount_factor,
                 use_feef ]
 
     for e in range(epochs):
-        print('====== New Epoch: ',e)
+        print('====== New Epoch:', e)
         ## run the current policy with the current VAE and MDRNN
 
         # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
         print('====== Generating Rollouts to train the MDRNN and VAE') 
         
-        train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
-                args.num_workers, SEQ_LEN, worker_package)
+        SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
+                args.num_workers, batch_size_to_seq_len_multiple, worker_package)
 
         if use_training_buffer:
             if e==0:
@@ -374,16 +372,16 @@ def main(args):
         for it in range(iters_through_buffer_each_epoch):
             train_loader = DataLoader(train_dataset,
                 batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
-            print('====== Starting Training of VAE and MDRNN')
+            print('====== Starting Training Models')
             # train VAE and MDRNN. uses partial(data_pass)
             train_loss_dict = train(e)
-            print('====== Done Training VAE and MDRNN')
+            print('====== Done Training Models')
         
         test_loader = DataLoader(test_dataset, shuffle=True,
                 batch_size=BATCH_SIZE, num_workers=0, drop_last=False)
         # returns the last ones in order to produce samples!
         test_loss_dict, for_vae_n_mdrnn_sampling = test(e)
-        print('====== Done Testing VAE and MDRNN')
+        print('====== Done Testing Models')
         
         #scheduler.step(test_loss_dict['loss'])
         # append the planning results to the TEST loss dictionary. 
@@ -411,7 +409,7 @@ def main(args):
         print('====== Done Saving VAE and MDRNN')
 
         if make_vae_samples or make_mdrnn_samples:
-            generate_rssm_samples( rssm, for_vae_n_mdrnn_sampling, deterministic, 
+            generate_rssm_samples( rssm, for_vae_n_mdrnn_sampling, 
                             samples_dir, SEQ_LEN, example_length,
                             memory_adapt_period, e, device, 
                             make_vae_samples=make_vae_samples,
@@ -421,29 +419,9 @@ def main(args):
         
         write_logger(logger_filename, train_loss_dict, test_loss_dict)
         print('====== Done Writing out to the Logger')
-        # accounts for all of the different module losses. 
-        #earlystopping.step(test_loss_dict['loss'])
-
-        print('====== Length of new rollouts in buffer: ')
-        rollout_lengths = []
-        for i in range(len(train_data['terminal'])):
-            rollout_lengths.append( len(train_data['terminal'][i]) )
-        rollout_lengths = np.asarray(rollout_lengths)
-        print('Mean length', rollout_lengths.mean(), 'Std', rollout_lengths.std())
-        print('Min length', rollout_lengths.min(), 'Max length', rollout_lengths.max())
-        print('10% quantile', np.quantile(rollout_lengths, 0.1))
-        # set the new sequence length for the next rollouts.: 
-        print('dynamically updating sequence length')
-        SEQ_LEN = int(np.quantile(rollout_lengths, 0.1))-1 # number of sequences in a row used during training
-        # needs one more than this for the forward predictions. 
-        BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
-
-        '''if earlystopping.stop:
-            print("End of Training because of early stopping at epoch {}".format(e))
-            break'''
 
 if __name__ =='__main__':
-    parser = argparse.ArgumentParser("Joint training")
+    parser = argparse.ArgumentParser("Training Script")
     parser.add_argument('--logdir', type=str, default='exp_dir',
                         help="Where things are logged and models are loaded from.")
     parser.add_argument('--gamename', type=str, default='carracing',
