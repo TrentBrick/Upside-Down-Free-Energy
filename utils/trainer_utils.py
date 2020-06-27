@@ -11,9 +11,9 @@ import torch.utils.data
 from torchvision import transforms
 import gym
 from bisect import bisect
-from utils.misc import ACTION_SIZE, LATENT_RECURRENT_SIZE, LATENT_SIZE
 import time
-from execute_environment import EnvSimulator
+from torchvision.utils import save_image
+from control import Agent
 from ray.util.multiprocessing import Pool
 #from multiprocessing import Pool 
 import copy
@@ -23,6 +23,27 @@ generic_transform = transforms.Compose([
     transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
     transforms.ToTensor()
 ])
+
+def write_logger(logger_filename, train_loss_dict, test_loss_dict):
+    # Header at the top of logger file written once at the start of new training run.
+    if not exists(logger_filename): 
+        header_string = ""
+        for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):
+            for k in loss_dict.keys():
+                header_string+=train_or_test+'_'+k+' '
+        header_string+= '\n'
+        with open(logger_filename, "w") as file:
+            file.write(header_string) 
+
+    # write out all of the logger losses.
+    with open(logger_filename, "a") as file:
+        log_string = ""
+        for loss_dict in [train_loss_dict, test_loss_dict]:
+            for k, v in loss_dict.items():
+                log_string += str(v)+' '
+        log_string+= '\n'
+        file.write(log_string)
+
 
 def save_checkpoint(state, is_best, filename, best_filename):
     """ Save state in filename. Also save in best_filename if is_best. """
@@ -92,15 +113,10 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling, deterministic,
 
     last_test_encoded_obs = rssm.encode_sequence_obs(last_test_observations.unsqueeze(1))
 
+    print('last test obs before reshaping:', last_test_observations.shape)
+
     last_test_observations = last_test_observations.view(last_test_observations.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
     last_test_decoded_obs = last_test_decoded_obs.view(last_test_decoded_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
-
-    if transform_obs:
-        transform_for_mdrnn_samples = transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
-                transforms.ToTensor(),
-                ])
 
     if make_vae_samples:
         with torch.no_grad():

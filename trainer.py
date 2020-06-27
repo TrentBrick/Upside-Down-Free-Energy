@@ -15,7 +15,7 @@ from torchvision import transforms
 import numpy as np
 import json
 from tqdm import tqdm
-from utils import save_checkpoint, generate_rssm_samples, generate_rollouts_using_planner, GeneratedDataset
+from utils import save_checkpoint, generate_rssm_samples, generate_rollouts_using_planner, GeneratedDataset, TrainBufferDataset, write_logger
 from envs import get_env_params
 import sys
 from models.rssm import RSSModel 
@@ -71,9 +71,13 @@ def main(args):
     print('using training buffer?', use_training_buffer)
     num_new_rollouts = args.num_workers*env_params['training_rollouts_per_worker']
     num_prev_epochs_to_store = 4
-    iters_through_buffer_each_epoch = 10 // num_prev_epochs_to_store
     # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
     max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
+
+    if use_training_buffer:
+        iters_through_buffer_each_epoch =10 // num_prev_epochs_to_store
+    else: 
+        iters_through_buffer_each_epoch = 5
 
     kl_tolerance=0.5
     free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
@@ -125,8 +129,6 @@ def main(args):
             save_checkpoint({
                 "state_dict": model_var.get_save_dict(),
                 "optimizer": optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-                'earlystopping': earlystopping.state_dict(),
                 "precision": None,
                 "epoch": -1}, True, filenames_dict[model_name+'_checkpoint'],
                             filenames_dict[model_name+'_best'])
@@ -354,55 +356,16 @@ def main(args):
 
         if use_training_buffer:
             if e==0:
-                # init buffers
-                buffer_train_data = train_data
-                buffer_index = len(train_data['terminal'])
-            else:
-                curr_buffer_size = len(buffer_train_data['terminal'])
-                length_data_added = len(train_data['terminal'])
-                # dict agnostic length checker::: len(buffer_train_data[list(buffer_train_data.keys())[0]])
-                if curr_buffer_size < max_buffer_size:
-                    # grow the buffer
-                    print('growing buffer')
-                    for k, v in buffer_train_data.items():
-                        #buffer_train_data[k] = np.concatenate([v, train_data[k]], axis=0)
-                        buffer_train_data[k] += train_data[k]
-                        #buffer_train_data[k] = torch.cat([v, train_data[k]], dim=0)
-                    print('new buffer size', len(buffer_train_data['terminal']))
-                    buffer_index += length_data_added
-                    #if now exceeded buffer size: 
-                    if buffer_index>max_buffer_size:
-                        max_buffer_size=buffer_index
-                        buffer_index = 0
-                else: 
-                    # buffer is max size. Rewrite the correct index.
-                    if buffer_index > max_buffer_size-length_data_added:
-                        print('looping!')
-                        # going to go over so needs to loop around. 
-                        amount_pre_loop = max_buffer_size-buffer_index
-                        amount_post_loop = length_data_added-amount_pre_loop
-
-                        for k in buffer_train_data.keys():
-                            buffer_train_data[k][buffer_index:] = train_data[k][:amount_pre_loop]
-
-                        for k in buffer_train_data.keys():
-                            buffer_train_data[k][:amount_post_loop] = train_data[k][amount_pre_loop:]
-                        buffer_index = amount_post_loop
-                    else: 
-                        print('clean add')
-                        for k in buffer_train_data.keys():
-                            buffer_train_data[k][buffer_index:buffer_index+length_data_added] = train_data[k]
-                        # update the index. 
-                        buffer_index += length_data_added
-                        buffer_index = buffer_index % max_buffer_size
-
-            print('epoch', e, 'size of buffer', len(buffer_train_data['terminal']), 'buffer index', buffer_index)
-        else: 
-            buffer_train_data = train_data
+                buffer_train_data = TrainBufferDataset(train_data, max_buffer_size, 
+                                        key_to_check_lengths='terminal')
+            else: 
+                buffer_train_data.add(train_data)
+            train_data = buffer_train_data.buffer
+            print('epoch', e, 'size of buffer', len(buffer_train_data), 'buffer index', buffer_train_data.buffer_index)
 
         # NOTE: currently not applying any transformations as saving those that happen when the 
         # rollouts are actually generated. 
-        train_dataset = GeneratedDataset(None, buffer_train_data, SEQ_LEN)
+        train_dataset = GeneratedDataset(None, train_data, SEQ_LEN)
         test_dataset = GeneratedDataset(None, test_data, SEQ_LEN)
         # TODO: set number of workers higher. Here it doesn;t matter much as already have tensors ready. 
         # (dont need any loading or tranformations) 
@@ -422,7 +385,7 @@ def main(args):
         test_loss_dict, for_vae_n_mdrnn_sampling = test(e)
         print('====== Done Testing VAE and MDRNN')
         
-        scheduler.step(test_loss_dict['loss'])
+        #scheduler.step(test_loss_dict['loss'])
         # append the planning results to the TEST loss dictionary. 
         for name, var in zip(['reward_planner', 'feef_planner'], [reward_losses, feef_losses]):
             test_loss_dict['avg_'+name] = np.mean(var)
@@ -430,20 +393,18 @@ def main(args):
             test_loss_dict['max_'+name] = np.max(var)
             test_loss_dict['min_'+name] = np.min(var)
 
-        print('========== Test Loss dictionary:', test_loss_dict)
+        print('====== Test Loss dictionary:', test_loss_dict)
 
         # checkpointing the rssm. Necessary to ensure the workers load in the most up to date checkpoint.
         # save_checkpoint function always saves a checkpoint and may also update the best. 
         is_best = not rssm_cur_best or test_loss_dict['loss'] < rssm_cur_best
         if is_best:
             rssm_cur_best = test_loss_dict['loss']
-            print('========== New Best for the Test Loss! Updating *MODEL_best.tar*')
+            print('====== New Best for the Test Loss! Updating *MODEL_best.tar*')
         for model_var, model_name in zip([rssm],['rssm']):
             save_checkpoint({
                 "state_dict": model_var.get_save_dict(),
                 "optimizer": optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-                'earlystopping': earlystopping.state_dict(),
                 "precision": test_loss_dict['loss'],
                 "epoch": e}, is_best, filenames_dict[model_name+'_checkpoint'],
                             filenames_dict[model_name+'_best'])
@@ -456,47 +417,30 @@ def main(args):
                             make_vae_samples=make_vae_samples,
                             make_mdrnn_samples=make_mdrnn_samples, 
                             transform_obs=False  )
+            print('====== Done Generating Samples')
         
-        # Header at the top of logger file written once at the start of new training run.
-        if not exists(logger_filename): 
-            header_string = ""
-            for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):
-                for k in loss_dict.keys():
-                    header_string+=train_or_test+'_'+k+' '
-            header_string+= '\n'
-            with open(logger_filename, "w") as file:
-                file.write(header_string) 
-
-        # write out all of the logger losses.
-        with open(logger_filename, "a") as file:
-            log_string = ""
-            for loss_dict in [train_loss_dict, test_loss_dict]:
-                for k, v in loss_dict.items():
-                    log_string += str(v)+' '
-            log_string+= '\n'
-            file.write(log_string)
+        write_logger(logger_filename, train_loss_dict, test_loss_dict)
         print('====== Done Writing out to the Logger')
         # accounts for all of the different module losses. 
-        earlystopping.step(test_loss_dict['loss'])
+        #earlystopping.step(test_loss_dict['loss'])
 
         print('====== Length of new rollouts in buffer: ')
         rollout_lengths = []
-        for i in range(len(buffer_train_data['terminal'])):
-            rollout_lengths.append( len(buffer_train_data['terminal'][i]) )
+        for i in range(len(train_data['terminal'])):
+            rollout_lengths.append( len(train_data['terminal'][i]) )
         rollout_lengths = np.asarray(rollout_lengths)
         print('Mean length', rollout_lengths.mean(), 'Std', rollout_lengths.std())
         print('Min length', rollout_lengths.min(), 'Max length', rollout_lengths.max())
         print('10% quantile', np.quantile(rollout_lengths, 0.1))
-
         # set the new sequence length for the next rollouts.: 
         print('dynamically updating sequence length')
         SEQ_LEN = int(np.quantile(rollout_lengths, 0.1))-1 # number of sequences in a row used during training
         # needs one more than this for the forward predictions. 
         BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
 
-        if earlystopping.stop:
+        '''if earlystopping.stop:
             print("End of Training because of early stopping at epoch {}".format(e))
-            break
+            break'''
 
 if __name__ =='__main__':
     parser = argparse.ArgumentParser("Joint training")
