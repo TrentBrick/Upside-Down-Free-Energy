@@ -55,16 +55,18 @@ def main(args):
     use_lstm = False 
     
     # Constants
-    BATCH_SIZE = 512
-    SEQ_LEN = 8 # number of sequences in a row used during training
+    batch_size_to_seq_len_multiple = 4096
+    SEQ_LEN = 12 # number of sequences in a row used during training
+    # needs one more than this for the forward predictions. 
+    BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 10
+    num_vae_mdrnn_training_rollouts_per_worker = 5
 
     # Planning values
     planner_n_particles = 700
-    desired_horizon = 25
-    num_action_repeats = 5 # number of times the same action is performed repeatedly. 
+    desired_horizon = 18
+    num_action_repeats = 3 # number of times the same action is performed repeatedly. 
     # this makes the environment accelerate by this many frames. 
     actual_horizon = (desired_horizon//num_action_repeats)
     discount_factor = 0.80
@@ -72,9 +74,10 @@ def main(args):
     cem_iters = 7
 
     # for plotting example horizons:
-    example_length = 7
+    example_length = 8
     assert example_length<= SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - actual_horizon
+    assert memory_adapt_period >0, "need horizon or example length to be longer!"
 
     # memory buffer:
     # making a memory buffer for previous rollouts too. 
@@ -166,7 +169,7 @@ def main(args):
         if exists(logger_filename):
             unlink(logger_filename)
 
-    # making learning rate lower because models are already pretrained!
+    # consider making the learning rate lower because models are already pretrained!
     if args.giving_pretrained: 
         optimizer = torch.optim.Adam(rssm.parameters(), lr=1e-3)
         rssm_cur_best = None
@@ -372,15 +375,6 @@ def main(args):
         train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
                 args.num_workers, SEQ_LEN, worker_package)
 
-        print('====== Length of new rollouts')
-        rollout_lengths = []
-        for i in range(len(train_data['terminal'])):
-            rollout_lengths.append( len(train_data['terminal'][i]) )
-        rollout_lengths = np.asarray(rollout_lengths)
-        print('Mean length', rollout_lengths.mean(), 'Std', rollout_lengths.std())
-        print('Min length', rollout_lengths.min(), 'Max length', rollout_lengths.max())
-        print('10% quantile', np.quantile(rollout_lengths, 0.1))
-
         if use_training_buffer:
             if e==0:
                 # init buffers
@@ -507,6 +501,21 @@ def main(args):
         print('====== Done Writing out to the Logger')
         # accounts for all of the different module losses. 
         earlystopping.step(test_loss_dict['loss'])
+
+        print('====== Length of new rollouts in buffer: ')
+        rollout_lengths = []
+        for i in range(len(buffer_train_data['terminal'])):
+            rollout_lengths.append( len(buffer_train_data['terminal'][i]) )
+        rollout_lengths = np.asarray(rollout_lengths)
+        print('Mean length', rollout_lengths.mean(), 'Std', rollout_lengths.std())
+        print('Min length', rollout_lengths.min(), 'Max length', rollout_lengths.max())
+        print('10% quantile', np.quantile(rollout_lengths, 0.1))
+
+        # set the new sequence length for the next rollouts.: 
+        print('dynamically updating sequence length')
+        SEQ_LEN = int(np.quantile(rollout_lengths, 0.1))-1 # number of sequences in a row used during training
+        # needs one more than this for the forward predictions. 
+        BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
 
         if earlystopping.stop:
             print("End of Training because of early stopping at epoch {}".format(e))
