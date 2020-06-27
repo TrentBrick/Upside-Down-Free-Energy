@@ -61,7 +61,7 @@ def main(args):
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
     epochs = 500
     time_limit =1000 # max time limit for the rollouts generated
-    num_vae_mdrnn_training_rollouts_per_worker = 5
+    num_vae_mdrnn_training_rollouts_per_worker = 3
 
     # Planning values
     planner_n_particles = 700
