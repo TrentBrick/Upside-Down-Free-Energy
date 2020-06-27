@@ -1,0 +1,519 @@
+# pylint: disable=no-member
+""" 
+Joint training of the VAE and RNN (forward model) using 
+CEM based probabilistic Planner. 
+"""
+import argparse
+from functools import partial
+from os.path import join, exists
+from os import mkdir, unlink
+import torch
+import torch.nn.functional as f
+from torch.distributions.kl import kl_divergence
+from torch.utils.data import DataLoader
+from torchvision import transforms
+import numpy as np
+import json
+from tqdm import tqdm
+from utils import save_checkpoint, generate_rssm_samples, generate_rollouts_using_planner, GeneratedDataset
+from envs import get_env_params
+import sys
+from models.rssm import RSSModel 
+from torch.distributions.normal import Normal
+from multiprocessing import cpu_count
+from collections import OrderedDict
+import time 
+
+def main(args):
+
+    assert args.num_workers <= cpu_count(), "Providing too many workers! Need one less than total amount." 
+
+    make_vae_samples, make_mdrnn_samples = True, True
+
+    # used for saving which models are the best based upon their train performance. 
+    rssm_cur_best=None
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    use_feef = True # NOTE: currently not actually computing it inside of agent.py simulate!!!!
+
+    include_terminal = False # option to include predicting terminal state. 
+    #include_overshoot = False # no longer support overshoot training. 
+
+    # what to condition rewards upon. (encoder, decoder, rnn)
+    decoder_reward_condition = False
+    decoder_make_sigmas = False
+
+    # get environment parameters: 
+    env_params = get_env_params(args.gamename)
+    
+    # Constants
+    batch_size_to_seq_len_multiple = 4096
+    SEQ_LEN = 12 # number of sequences in a row used during training
+    # needs one more than this for the forward predictions. 
+    BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
+    epochs = 500
+
+    # Planning values
+    planner_n_particles = 700
+    actual_horizon = (env_params['desired_horizon']//env_params['num_action_repeats'])
+    discount_factor = 0.80
+    cem_iters = 7
+
+    # for plotting example horizons:
+    example_length = 8
+    assert example_length<= SEQ_LEN, "Example length must be smaller."
+    memory_adapt_period = example_length - actual_horizon
+    assert memory_adapt_period >0, "need horizon or example length to be longer!"
+
+    # memory buffer:
+    # making a memory buffer for previous rollouts too. 
+    # buffer contains a dictionary full of lists of tensors which correspond to full rollouts. 
+    use_training_buffer = False 
+    print('using training buffer?', use_training_buffer)
+    num_new_rollouts = args.num_workers*env_params['training_rollouts_per_worker']
+    num_prev_epochs_to_store = 4
+    iters_through_buffer_each_epoch = 10 // num_prev_epochs_to_store
+    # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
+    max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
+
+    kl_tolerance=0.5
+    free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
+
+    # Init save filenames 
+    game_dir = join(args.logdir, args.gamename)
+    filenames_dict = { 'rssm_'+bc:join(game_dir, 'rssm_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
+    # make directories if they dont exist
+    samples_dir = join(game_dir, 'samples')
+    for dirr in [game_dir, samples_dir]:
+        if not exists(dirr):
+            mkdir(dirr)
+    logger_filename = join(game_dir, 'logger.txt')
+
+    # init models
+    rssm = RSSModel(
+        env_params['ACTION_SIZE'],
+        env_params['LATENT_RECURRENT_SIZE'],
+        env_params['LATENT_SIZE'],
+        env_params['EMBEDDING_SIZE'],
+        env_params['NODE_SIZE'],
+        decoder_reward_condition,
+        decoder_make_sigmas,
+        device=device,
+    )
+    
+    optimizer = torch.optim.Adam(rssm.parameters(), lr=1e-3)
+
+    # Loading in trained models: 
+    if not args.no_reload:
+        for model_var, name in zip([rssm],['rssm']):
+            load_file = filenames_dict[name+'_best']
+            assert exists(load_file), "Could not find file: " + load_file + " to load in!"
+            state = torch.load(load_file, map_location={'cuda:0': str(device)})
+            print("Loading model_type {} at epoch {} "
+                "with test error {}".format(name,
+                    state['epoch'], state['precision']))
+
+            model_var.load_state_dict(state['state_dict'])
+            rssm_cur_best = state['precision']
+            optimizer.load_state_dict(state["optimizer"])
+                    
+    # save init models
+    if args.no_reload or args.giving_pretrained: 
+        print("Overwriting checkpoint because pretrained models or no reload was called and removing the old logger file!")
+        print("NB! This will overwrite the best and checkpoint models!\nSleeping for 5 seconds to allow you to change your mind...")
+        time.sleep(5.0)
+        for model_var, model_name in zip([rssm],['rssm']):
+            save_checkpoint({
+                "state_dict": model_var.get_save_dict(),
+                "optimizer": optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'earlystopping': earlystopping.state_dict(),
+                "precision": None,
+                "epoch": -1}, True, filenames_dict[model_name+'_checkpoint'],
+                            filenames_dict[model_name+'_best'])
+                        # saves file to is best AND checkpoint
+
+        # unlinking the old logger too
+        if exists(logger_filename):
+            unlink(logger_filename)
+
+    # consider making the learning rate lower because models are already pretrained!
+    if args.giving_pretrained: 
+        optimizer = torch.optim.Adam(rssm.parameters(), lr=1e-3)
+        rssm_cur_best = None
+
+    def train_batch(data, return_for_vae_n_mdrnn_sampling=False):
+
+        obs, acts, rews, terminals = [arr.to(device) for arr in data]
+
+        # need to flip the seq and batch dimensions 
+        # also set the terminals to non terms. 
+        # I am inputting these with batch first. Need to flip this around. 
+        obs = obs.permute(1, 0, 2, 3, 4).contiguous()
+        acts = acts.permute(1,0,2).contiguous()
+        rews = rews.permute(1,0,2).contiguous()
+        terminals = terminals.unsqueeze(-1).permute(1,0,2).contiguous()
+        non_terms = (terminals==0.).float().contiguous()
+
+        # shift everything: 
+        obs = obs[1:]
+        acts = acts[:-1]
+        rews = rews[:-1]
+        non_terms = non_terms[:-1]
+
+        """ (seq_len, batch_size, *dims) """
+        #obs, acts, rews, non_terms = buffer.sample_and_shift(batch_size, seq_len)
+
+        """ (seq_len, batch_size, embedding_size) """
+        encoded_obs = rssm.encode_sequence_obs(obs)
+
+        """ (seq_len, batch_size, dim) """
+        rollout = rssm.perform_rollout(acts, encoder_output=encoded_obs, non_terms=non_terms)
+
+        """ (seq_len, batch_size, *dims) """
+        if decoder_make_sigmas: 
+            decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
+                rollout["hiddens"], rollout["posterior_states"]
+            )
+        else: 
+            decoded_mus = rssm.decode_sequence_obs(
+                rollout["hiddens"], rollout["posterior_states"]
+            )
+
+        """ (seq_len, batch_size) """
+        decoded_reward = rssm.decode_sequence_reward(
+            rollout["hiddens"], rollout["posterior_states"]
+        )
+
+        #print('shape of decoded reward', decoded_reward.shape )
+        posterior = Normal(rollout["posterior_means"], rollout["posterior_stds"])
+        prior = Normal(rollout["prior_means"], rollout["prior_stds"])
+
+        if decoder_make_sigmas:
+            obs_loss = _observation_loss(decoded_mus, obs, decoded_logsigmas)
+        else: 
+            obs_loss = _observation_loss(decoded_mus, obs)
+        reward_loss = _reward_loss(decoded_reward, rews.squeeze())
+        kl_loss = _kl_loss(posterior, prior)
+
+        if return_for_vae_n_mdrnn_sampling: 
+            # return last batch for sample generation! 
+
+            for_vae_n_mdrnn_sampling = [obs[:,0,:,:,:], decoded_mus[:,0,:,:,:], 
+                rollout["hiddens"][:,0,:], rollout["prior_states"][:,0,:],
+                rews[:-1,0,:], rews[1:,0,:], 
+                rollout["posterior_states"][:,0,:], 
+                acts[:,0,:]]
+            # dont need to flip batch dimensions as I get rid of the batch!
+            return obs_loss, reward_loss, kl_loss, for_vae_n_mdrnn_sampling
+        else: 
+            return obs_loss, reward_loss, kl_loss
+
+    def _observation_loss(decoded_mus, obs, decoded_logsigmas=None):
+        #print('obs loss', decoded_mus.shape, obs.shape)
+        if decoded_logsigmas is not None: 
+            # TODO: add a min std value here? 
+            # NOTE: sampling and using mse rather than maximizing log prob of the real observation. 
+            pred_obs = decoded_mus + (decoded_logsigmas.exp() * torch.randn_like(decoded_mus))
+            print('using logsigmas in loss. shape is:', pred_obs.shape, obs.shape )
+        else: 
+            pred_obs = decoded_mus
+        return (
+            f.mse_loss(obs, pred_obs, reduction="none")
+            .sum(dim=(2, 3, 4))
+            .mean(dim=(0, 1))
+        )
+
+    def _reward_loss(decoded_reward, reward):
+        #print(decoded_reward.shape, reward.shape)
+        return f.mse_loss(reward, decoded_reward, reduction="none").mean(dim=(0, 1))
+
+    def _kl_loss(posterior, prior):
+        if free_nats is not None:
+            return torch.max(
+                kl_divergence(posterior, prior).sum(dim=2), free_nats
+            ).mean(dim=(0, 1))
+        else:
+            return kl_divergence(posterior, prior).sum(dim=2).mean(dim=(0, 1))
+
+    def data_pass(epoch, train): # pylint: disable=too-many-locals
+        """One pass through full epoch pass through the data either testing or training (with torch.no_grad()).
+        NB. One epoch here is all of the data collected from the workers using
+        the planning algorithm. 
+        This is num_workers * training_rollouts_per_worker.
+
+        :args:
+            - epoch: int
+            - train: bool
+
+        :returns:
+            - cumloss_dict - All of the losses collected from this epoch. 
+                            Averaged across the batches and sequence lengths 
+                            to be on a per element basis. 
+            if test also returns information used to generate the VAE and MDRNN samples
+            these are useful for evaluating performance: 
+                - first in the batch of:
+                    - obs[0,:,:,:,:]
+                    - pres_reward[0,:,:] 
+                    - next_reward[0,:,:]
+                    - latent_obs[0,:,:]
+                    - latent_next_obs[0,:,:]
+                    - pres_action[0,:,:]
+        """
+        
+        if train:
+            loader = train_loader
+            for model_var in [rssm]:
+                model_var.train()
+            
+        else:
+            loader = test_loader
+            for model_var in [rssm]:
+                model_var.eval()
+
+        pbar = tqdm(total=len(loader.dataset), desc="Epoch {}".format(epoch))
+
+        # store all of the losses for this data pass. 
+        #cumloss_dict = {n:0 for n in ['loss', 'loss_vae', 'loss_mdrnn','kld', 'recon', 'gmm', 'bce', 'mse']}
+        cumloss_dict = {n:0 for n in ['loss', 'obs_loss', 'reward_loss', 'kl_loss']}
+
+        # iterate through an epoch of data. 
+        num_rollouts_shown = 0
+        for i, data in enumerate(loader):
+            # -1 here is the terminals, easiest to load in. 
+            cur_batch_size = data[-1].shape[0]
+            num_rollouts_shown+= cur_batch_size
+
+            if train:
+                obs_loss, reward_loss, kl_loss = train_batch(data)
+                # taking grad step after every batch. 
+                optimizer.zero_grad()
+                (obs_loss + reward_loss + kl_loss).backward()
+                # TODO: consider adding gradient clipping like Ha.  
+                torch.nn.utils.clip_grad_norm_(rssm.parameters(), 1000.0)
+                optimizer.step()
+            else:
+                with torch.no_grad():
+                    obs_loss, reward_loss, kl_loss, for_vae_n_mdrnn_sampling = train_batch(data,return_for_vae_n_mdrnn_sampling=True)
+
+            rssm_loss_dict = dict(obs_loss=obs_loss, reward_loss=reward_loss, kl_loss=kl_loss)
+
+            # add results from each batch to cumulative losses
+            for k in cumloss_dict.keys():
+                for loss_dict in [rssm_loss_dict]:
+                    if k in loss_dict.keys():
+                        cumloss_dict[k] += loss_dict[k].item()*cur_batch_size if hasattr(loss_dict[k], 'item') else \
+                                                loss_dict[k]
+            
+            # store separately vae and mdrnn losses: 
+            for k,v in rssm_loss_dict.items():
+                cumloss_dict['loss'] += v.item()*cur_batch_size
+
+            # Display training progress bar with current losses
+            postfix_str = ""
+            for k,v in cumloss_dict.items():
+                v = (v /num_rollouts_shown)/SEQ_LEN
+                postfix_str+= k+'='+str(round(v,4))+', '
+            pbar.set_postfix_str(postfix_str)
+            pbar.update(cur_batch_size)
+        pbar.close()
+
+        # puts losses on a per element level. independent of batch sizes and seq lengths.
+        cumloss_dict = {k: (v/num_rollouts_shown)/SEQ_LEN for k, v in cumloss_dict.items()}
+        # sort the order so they are added to the logger in the same order!
+        cumloss_dict = OrderedDict(sorted(cumloss_dict.items()))
+        if train: 
+            return cumloss_dict 
+        else: 
+            return cumloss_dict, for_vae_n_mdrnn_sampling
+            # return the last observation and reward to generate the VAE examples. 
+
+    train = partial(data_pass, train=True)
+    test = partial(data_pass, train=False)
+
+    ################## Main Training Loop ############################
+
+    # all of these are static across epochs. 
+    worker_package = [ args.gamename, vae_conditional, mdrnn_conditional,
+                deterministic, use_lstm,
+                time_limit, game_dir, 
+                training_rollouts_per_worker,
+                actual_horizon,
+                num_action_repeats, planner_n_particles, 
+                init_cem_params, cem_iters, discount_factor,
+                use_feef ]
+
+    for e in range(epochs):
+        print('====== New Epoch: ',e)
+        ## run the current policy with the current VAE and MDRNN
+
+        # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
+        print('====== Generating Rollouts to train the MDRNN and VAE') 
+        
+        train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
+                args.num_workers, SEQ_LEN, worker_package)
+
+        if use_training_buffer:
+            if e==0:
+                # init buffers
+                buffer_train_data = train_data
+                buffer_index = len(train_data['terminal'])
+            else:
+                curr_buffer_size = len(buffer_train_data['terminal'])
+                length_data_added = len(train_data['terminal'])
+                # dict agnostic length checker::: len(buffer_train_data[list(buffer_train_data.keys())[0]])
+                if curr_buffer_size < max_buffer_size:
+                    # grow the buffer
+                    print('growing buffer')
+                    for k, v in buffer_train_data.items():
+                        #buffer_train_data[k] = np.concatenate([v, train_data[k]], axis=0)
+                        buffer_train_data[k] += train_data[k]
+                        #buffer_train_data[k] = torch.cat([v, train_data[k]], dim=0)
+                    print('new buffer size', len(buffer_train_data['terminal']))
+                    buffer_index += length_data_added
+                    #if now exceeded buffer size: 
+                    if buffer_index>max_buffer_size:
+                        max_buffer_size=buffer_index
+                        buffer_index = 0
+                else: 
+                    # buffer is max size. Rewrite the correct index.
+                    if buffer_index > max_buffer_size-length_data_added:
+                        print('looping!')
+                        # going to go over so needs to loop around. 
+                        amount_pre_loop = max_buffer_size-buffer_index
+                        amount_post_loop = length_data_added-amount_pre_loop
+
+                        for k in buffer_train_data.keys():
+                            buffer_train_data[k][buffer_index:] = train_data[k][:amount_pre_loop]
+
+                        for k in buffer_train_data.keys():
+                            buffer_train_data[k][:amount_post_loop] = train_data[k][amount_pre_loop:]
+                        buffer_index = amount_post_loop
+                    else: 
+                        print('clean add')
+                        for k in buffer_train_data.keys():
+                            buffer_train_data[k][buffer_index:buffer_index+length_data_added] = train_data[k]
+                        # update the index. 
+                        buffer_index += length_data_added
+                        buffer_index = buffer_index % max_buffer_size
+
+            print('epoch', e, 'size of buffer', len(buffer_train_data['terminal']), 'buffer index', buffer_index)
+        else: 
+            buffer_train_data = train_data
+
+        # NOTE: currently not applying any transformations as saving those that happen when the 
+        # rollouts are actually generated. 
+        train_dataset = GeneratedDataset(None, buffer_train_data, SEQ_LEN)
+        test_dataset = GeneratedDataset(None, test_data, SEQ_LEN)
+        # TODO: set number of workers higher. Here it doesn;t matter much as already have tensors ready. 
+        # (dont need any loading or tranformations) 
+        # and before these workers were clashing with the ray workers for generating rollouts. 
+        
+        for it in range(iters_through_buffer_each_epoch):
+            train_loader = DataLoader(train_dataset,
+                batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
+            print('====== Starting Training of VAE and MDRNN')
+            # train VAE and MDRNN. uses partial(data_pass)
+            train_loss_dict = train(e)
+            print('====== Done Training VAE and MDRNN')
+        
+        test_loader = DataLoader(test_dataset, shuffle=True,
+                batch_size=BATCH_SIZE, num_workers=0, drop_last=False)
+        # returns the last ones in order to produce samples!
+        test_loss_dict, for_vae_n_mdrnn_sampling = test(e)
+        print('====== Done Testing VAE and MDRNN')
+        
+        scheduler.step(test_loss_dict['loss'])
+        # append the planning results to the TEST loss dictionary. 
+        for name, var in zip(['reward_planner', 'feef_planner'], [reward_losses, feef_losses]):
+            test_loss_dict['avg_'+name] = np.mean(var)
+            test_loss_dict['std_'+name] = np.std(var)
+            test_loss_dict['max_'+name] = np.max(var)
+            test_loss_dict['min_'+name] = np.min(var)
+
+        print('========== Test Loss dictionary:', test_loss_dict)
+
+        # checkpointing the rssm. Necessary to ensure the workers load in the most up to date checkpoint.
+        # save_checkpoint function always saves a checkpoint and may also update the best. 
+        is_best = not rssm_cur_best or test_loss_dict['loss'] < rssm_cur_best
+        if is_best:
+            rssm_cur_best = test_loss_dict['loss']
+            print('========== New Best for the Test Loss! Updating *MODEL_best.tar*')
+        for model_var, model_name in zip([rssm],['rssm']):
+            save_checkpoint({
+                "state_dict": model_var.get_save_dict(),
+                "optimizer": optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'earlystopping': earlystopping.state_dict(),
+                "precision": test_loss_dict['loss'],
+                "epoch": e}, is_best, filenames_dict[model_name+'_checkpoint'],
+                            filenames_dict[model_name+'_best'])
+        print('====== Done Saving VAE and MDRNN')
+
+        if make_vae_samples or make_mdrnn_samples:
+            generate_rssm_samples( rssm, for_vae_n_mdrnn_sampling, deterministic, 
+                            samples_dir, SEQ_LEN, example_length,
+                            memory_adapt_period, e, device, 
+                            make_vae_samples=make_vae_samples,
+                            make_mdrnn_samples=make_mdrnn_samples, 
+                            transform_obs=False  )
+        
+        # Header at the top of logger file written once at the start of new training run.
+        if not exists(logger_filename): 
+            header_string = ""
+            for loss_dict, train_or_test in zip([train_loss_dict, test_loss_dict], ['train', 'test']):
+                for k in loss_dict.keys():
+                    header_string+=train_or_test+'_'+k+' '
+            header_string+= '\n'
+            with open(logger_filename, "w") as file:
+                file.write(header_string) 
+
+        # write out all of the logger losses.
+        with open(logger_filename, "a") as file:
+            log_string = ""
+            for loss_dict in [train_loss_dict, test_loss_dict]:
+                for k, v in loss_dict.items():
+                    log_string += str(v)+' '
+            log_string+= '\n'
+            file.write(log_string)
+        print('====== Done Writing out to the Logger')
+        # accounts for all of the different module losses. 
+        earlystopping.step(test_loss_dict['loss'])
+
+        print('====== Length of new rollouts in buffer: ')
+        rollout_lengths = []
+        for i in range(len(buffer_train_data['terminal'])):
+            rollout_lengths.append( len(buffer_train_data['terminal'][i]) )
+        rollout_lengths = np.asarray(rollout_lengths)
+        print('Mean length', rollout_lengths.mean(), 'Std', rollout_lengths.std())
+        print('Min length', rollout_lengths.min(), 'Max length', rollout_lengths.max())
+        print('10% quantile', np.quantile(rollout_lengths, 0.1))
+
+        # set the new sequence length for the next rollouts.: 
+        print('dynamically updating sequence length')
+        SEQ_LEN = int(np.quantile(rollout_lengths, 0.1))-1 # number of sequences in a row used during training
+        # needs one more than this for the forward predictions. 
+        BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
+
+        if earlystopping.stop:
+            print("End of Training because of early stopping at epoch {}".format(e))
+            break
+
+if __name__ =='__main__':
+    parser = argparse.ArgumentParser("Joint training")
+    parser.add_argument('--logdir', type=str, default='exp_dir',
+                        help="Where things are logged and models are loaded from.")
+    parser.add_argument('--gamename', type=str, default='carracing',
+                        help="What Gym environment to train in.")
+    parser.add_argument('--no_reload', action='store_true',
+                        help="Won't load in models for VAE and MDRNN from the joint file. \
+                        NB. This will create new models with random inits and will overwrite \
+                        the best and checkpoints!")
+    parser.add_argument('--giving_pretrained', action='store_true',
+                        help="If pretrained models are being provided, avoids loading in an optimizer \
+                        or previous lowest loss score.")
+    parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
+                        default=16)
+    parser.add_argument('--display', action='store_true', help="Use progress bars if "
+                        "specified.")
+    args = parser.parse_args()
+    main(args)

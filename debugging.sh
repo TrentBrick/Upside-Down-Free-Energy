@@ -1,1 +1,0 @@
-xvfb-run -s "-screen 0 1400x900x24" python3 train_joint.py --logdir exp_dir --num_workers 2

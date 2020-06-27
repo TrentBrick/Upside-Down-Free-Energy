@@ -1,7 +1,6 @@
-""" Models package """
-from models.vae import VAE, Encoder, Decoder
-from models.mdrnn import MDRNN, MDRNNCell
-from models.controller import Controller
-
-__all__ = ['VAE', 'Encoder', 'Decoder',
-           'MDRNN', 'MDRNNCell', 'Controller']
+from .encoder import ConvEncoder, LinearEncoder
+from .decoder import ConvDecoder, LinearDecoder
+from .dynamics import RecurrentDynamics
+from .planner import Planner
+from .rssm import RSSModel
+from .rewards import RewardModel
