@@ -25,6 +25,9 @@ class Agent:
         self.gamename = gamename
         self.env_params = get_env_params(gamename)
 
+        # top, bottom, left, right
+        self.obs_trim = self.env_params['trim_shape']
+
         self.device = 'cpu'#torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.time_limit = self.env_params['time_limit']
 
@@ -58,7 +61,6 @@ class Agent:
             device=self.device,
         )
         load_file = join(logdir, 'rssm_checkpoint.tar')
-
         assert exists(load_file), "Could not find file: " + load_file + " to load in!"
         state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
         print("Loading model_type {} at epoch {} "
@@ -72,7 +74,7 @@ class Agent:
 
         assert str(type(self.env.action_space)) == "<class 'gym.spaces.box.Box'>", "Need to constrain discrete actions in planner and sample from a non Normal distribution!!"
 
-        self.rssm_planner = Planner(
+        self.planner = Planner(
             self.rssm,
             self.env_params['ACTION_SIZE'],
             (self.env.action_space.low, self.env.action_space.high),
@@ -151,7 +153,7 @@ class Agent:
 
         :returns: (cumulative, t, [rollout_dict])
             - cumulative: float. cumulative reward
-            - t: int. timestep of termination
+            - time: int. timestep of termination
             - rollout_dict: OPTIONAL. Dictionary with keys: 'obs', 'rewards',
                 'actions', 'terminal'. Each is a PyTorch Tensor with the first
                 dimension corresponding to time. 
@@ -162,76 +164,98 @@ class Agent:
         np.random.seed(rand_env_seed)
         torch.manual_seed(rand_env_seed)
 
+        # not sure what the need for this is: 
+        dispatch_events = False
+
         obs = self.env.reset()
-
-        if self.use_rssm: 
-            hidden, latent_s, rssm_action = self.rssm.init_hidden_state_action(1)
-
-        else: 
-            hidden = [
-                torch.zeros(1, LATENT_RECURRENT_SIZE).to(self.device)
-                for _ in range(2)]
+        if dispatch_events:
+            self.env.viewer.window.dispatch_events()
+        hidden, state, action = self.rssm.init_hidden_state_action(1)
         reward = 0
         done = 0
-        action = np.array([0.,0.,0.])
+        #action = np.array([0.,0.,0.])
 
-        sim_rewards = []
+        sim_rewards_queue = []
         cumulative = 0
-        t = 0
-        if self.return_events: 
-            rollout_dict = {k:[] for k in ['obs', 'rewards', 'actions', 'terminal']}
-        while True:
-            #print('iteration of the rollout', t)
+        time = 0
 
-            if self.gamename=='carracing':
-                # trims the control panel at the base
-                obs = obs[:84, :, :]
+        if self.return_events:
+            rollout_dict = {k:[] for k in ['obs', 'rewards', 'actions', 'terminal']}
+        
+        while True:
+            #print('iteration of the rollout', time)
+
+            # NOTE: maybe make this unique to carracing here? 
+            if self.obs_trim is not None:
+                # trims the control panel at the base for the carracing environment. 
+                obs = obs[self.obs_trim[0]:self.obs_trim[1], 
+                            self.obs_trim[2]:self.obs_trim[3], 
+                            :]
 
             obs = self.transform(obs).unsqueeze(0).to(self.device)
             reward = torch.Tensor([reward]).to(self.device).unsqueeze(0)
-            
-            # using planner!
-            if self.use_rssm: 
-                action, hidden, rssm_action, latent_s = self.get_action_and_transition(obs, reward, hidden, rssm_action, latent_s)
-            else: 
-                action, hidden = self.get_action_and_transition(obs, reward, hidden)
-            
-            # have this here rather than further down in order to capture the very first 
-            # observation and actions.
-            if self.return_events: 
+
+            encoded_obs = self.rssm.encode_obs(obs)
+            encoded_obs = encoded_obs.unsqueeze(0)
+            action = action.unsqueeze(0)
+
+            rollout = self.rssm.perform_rollout(
+                    action, hidden=hidden, state=state, obs=encoded_obs
+                )
+            hidden = rollout["hiddens"].squeeze(0)
+            state = rollout["posterior_states"].squeeze(0)
+
+            action = self.planner(hidden, state)
+            #action = self._add_action_noise(action, action_noise)
+
+            # needed to accomodate the action repeats. 
+            hit_done = False 
+
+            # using action repeats
+            for _ in range(self.num_action_repeats):
+                next_obs, reward, done, _ = self.env.step(action[0].cpu())
+                if dispatch_events:
+                    self.env.viewer.window.dispatch_events()
+                cumulative += reward
+
+                # if the last n steps (real steps independent of action repeats)
+                # have all given -0.1 reward then cut the rollout early. 
+                # TODO: move into get_env_params? 
+                if self.gamename == 'carracing':
+                    if len(sim_rewards_queue) < 50:
+                        sim_rewards_queue.append(reward)
+                    else: 
+                        sim_rewards_queue.pop(0)
+                        sim_rewards_queue.append(reward)
+                        #print('lenght of sim rewards',  len(sim_rewards_queue),round(sum(sim_rewards_queue),3))
+                        if round(sum(sim_rewards_queue), 3) == -5.0:
+                            done=True
+
+                if done: 
+                    hit_done = True 
+
+            if self.return_events:
+                # NOTE: adding obs not next_obs
                 for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
-                                        [obs, reward, action, done ]):
+                                        [obs, reward, action, hit_done ]):
                     if key == 'actions' or key=='terminal':
                         var = torch.Tensor([var])
                     rollout_dict[key].append(var.squeeze())
 
-            # using action repeats
-            for _ in range(self.num_action_repeats):
-                obs, reward, done, _ = self.env.step(action)
-                cumulative += reward
+            if hit_done or time > self.time_limit:
+            #print('done with this simulation')
+                if self.return_events:
+                    for k,v in rollout_dict.items(): # list of tensors arrays.
+                        rollout_dict[k] = torch.stack(v)
+                    return cumulative, time, rollout_dict # passed back to simulate. 
+                else: 
+                    return cumulative, time # ending time and cum reward
+                
+            obs = next_obs 
+            time += 1
 
-                # if the last 40 steps (real steps independent of action repeats)
-                # have all given -0.1 reward then cut the rollout early. 
-                if self.gamename == 'carracing':
-                    if len(sim_rewards) <40:
-                        sim_rewards.append(reward)
-                    else: 
-                        sim_rewards.pop(0)
-                        sim_rewards.append(reward)
-                        #print('lenght of sim rewards',  len(sim_rewards),round(sum(sim_rewards),3))
-                        if round(sum(sim_rewards), 3) == -4.0:
-                            done=True
-
-                if done or t > self.time_limit:
-                #print('done with this simulation')
-                    if self.return_events:
-                        for k,v in rollout_dict.items(): # list of tensors arrays.
-                            #print(k, v[0].shape, len(v))
-                            rollout_dict[k] = torch.stack(v)
-                        return cumulative, t, rollout_dict # passed back to simulate. 
-                    else: 
-                        return cumulative, t # ending time and cum reward
-                t += 1
+            if render: 
+                self.env.render()
 
     def simulate(self, return_events=False, num_episodes=16, 
         seed=27, compute_feef=False,
@@ -278,23 +302,21 @@ class Agent:
                 self.make_env(seed=rand_env_seed)
                 
                 if self.return_events: 
-                    rew, t, data_dict = self.rollout(rand_env_seed, render=render_mode)
+                    rew, time, data_dict = self.rollout(rand_env_seed, render=render_mode)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
-                
                     data_dict_list.append(data_dict)
                     if compute_feef: 
                         feef_losses_list.append(  0.0 )#self.feef_loss(data_dict)  )
-                    
                 else: 
-                    rew, t = self.rollout(rand_env_seed, render=render_mode)
+                    rew, time = self.rollout(rand_env_seed, render=render_mode)
                 cum_reward_list.append(rew)
-                t_list.append(t)
+                t_list.append(time)
 
                 self.env.close()
 
         if self.return_events: 
             if compute_feef:
-                return cum_reward_list, t_list, data_dict_list, feef_losses_list  # no need to return the data.
+                return cum_reward_list, t_list, data_dict_list, feef_losses_list
             else: 
                 return cum_reward_list, t_list, data_dict_list 
         else: 

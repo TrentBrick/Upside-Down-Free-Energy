@@ -19,12 +19,13 @@ def get_env_params(gamename):
             'IMAGE_RESIZE_DIM': 64,
             'IMAGE_DEFAULT_SIZE': 96,
             # top, bottom, left, right
+            # can set to equal None if dont want any trimming. 
             'trim_shape': (0,84,0,96), 
             # buffer to keep track of rewards and cut 
             # rollout early if it is less than or equal to the 
             # stop_early_value
-            'stop_early_buf_size': 40,
-            'stop_early_value': -4.0
+            #'stop_early_buf_size': 50,
+            #'stop_early_value': -5.0
 
         }
 
