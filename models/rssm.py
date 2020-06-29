@@ -79,20 +79,23 @@ class RSSModel(object):
     def encode_obs(self, obs):
         return self.encoder(obs)
 
+    def encode_sequence_obs(self, obs):
+        return self._bottle(self.encoder, (obs,))
+
     def decode_obs(self, hiddens, posterior_states, rewards=None):
         return self.decoder(hiddens, posterior_states, rewards)
+
+    def decode_sequence_obs(self, hiddens, posterior_states, rewards=None):
+        if rewards is not None: 
+            return self._bottle(self.decoder, (hiddens, posterior_states, rewards))
+        else: 
+            return self._bottle(self.decoder, (hiddens, posterior_states))
 
     def decode_reward(self, hiddens, posterior_states):
         return self.reward_model(hiddens, posterior_states)
 
-    def decode_sequence_obs(self, hiddens, posterior_states):
-        return self._bottle(self.decoder, (hiddens, posterior_states))
-
     def decode_sequence_reward(self, hiddens, posterior_states):
         return self._bottle(self.reward_model, (hiddens, posterior_states))
-
-    def encode_sequence_obs(self, obs):
-        return self._bottle(self.encoder, (obs,))
 
     def init_hidden_state(self, batch_size):
         init_hidden = torch.zeros(batch_size, self.hidden_size).to(self.device)

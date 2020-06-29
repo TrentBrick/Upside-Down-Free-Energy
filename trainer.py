@@ -173,12 +173,12 @@ def main(args):
         rollout = rssm.perform_rollout(acts, encoder_output=encoded_obs, non_terms=non_terms)
 
         """ (seq_len, batch_size, *dims) """
-        if decoder_make_sigmas: 
+        if decoder_reward_condition:
             decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
-                rollout["hiddens"], rollout["posterior_states"]
+                rollout["hiddens"], rollout["posterior_states"], rews
             )
         else: 
-            decoded_mus = rssm.decode_sequence_obs(
+            decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
                 rollout["hiddens"], rollout["posterior_states"]
             )
 
