@@ -410,7 +410,8 @@ def main(args):
 
         if make_vae_samples or make_mdrnn_samples:
             generate_rssm_samples( rssm, for_vae_n_mdrnn_sampling, 
-                            samples_dir, SEQ_LEN, example_length,
+                            samples_dir, SEQ_LEN, env_params['IMAGE_RESIZE_DIM'],
+                            example_length,
                             memory_adapt_period, e, device, 
                             make_vae_samples=make_vae_samples,
                             make_mdrnn_samples=make_mdrnn_samples, 

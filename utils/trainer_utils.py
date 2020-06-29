@@ -14,12 +14,6 @@ from bisect import bisect
 import time
 from torchvision.utils import save_image
 
-generic_transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)),
-    transforms.ToTensor()
-])
-
 def write_logger(logger_filename, train_loss_dict, test_loss_dict):
     # Header at the top of logger file written once at the start of new training run.
     if not exists(logger_filename): 
@@ -50,7 +44,7 @@ def save_checkpoint(state, is_best, filename, best_filename):
     print('seconds taken to save checkpoint.',(time.time()-start_time) )
 
 
-def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_chosen_mus_n_sigs=False):
+"""def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_chosen_mus_n_sigs=False):
     if NUM_GAUSSIANS_IN_MDRNN > 1:
         assert len(mus.shape) == len(latent_s.shape)+1, "Need shape of latent to be one more than sufficient stats! Shape of mus and then latents."+str(mus.shape)+' '+str(latent_s.shape)
         if len(logpi.shape) == 3: 
@@ -83,11 +77,11 @@ def sample_mdrnn_latent(mus, sigmas, logpi, latent_s, no_delta=False, return_cho
     if return_chosen_mus_n_sigs: 
         return latent_s, mus, sigmas
     else: 
-        return latent_s 
+        return latent_s """
 
 
 def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
-                            samples_dir, SEQ_LEN, example_length, 
+                            samples_dir, SEQ_LEN, IMAGE_RESIZE_DIM, example_length, 
                             memory_adapt_period, e, device,
                             make_vae_samples=False,
                             make_mdrnn_samples=True, 

@@ -26,7 +26,7 @@ def set_seq_and_batch_vals(inp, batch_size_to_seq_len_multiple, dim=1):
     return SEQ_LEN, BATCH_SIZE
 
 
-def combine_worker_rollouts(inp, batch_size_to_seq_len_multiple, dim=1):
+def combine_worker_rollouts(inp, seq_len, dim=1):
     """Combine data across the workers and their rollouts (making each rollout a separate element in a batch)
     
     :args:

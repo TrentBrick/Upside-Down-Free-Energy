@@ -7,8 +7,7 @@ from torch.nn import functional as F
 
 
 class Planner(nn.Module):
-    def __init__(
-        self,
+    def __init__(self,
         model,
         action_size,
         actions_low_n_high,

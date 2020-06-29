@@ -1,3 +1,8 @@
+# pylint: disable=not-callable
+# pylint: disable=no-member
+import torch 
+from torch.distributions.normal import Normal
+
 def importance_sampling(self, num_samps, real_obs, latent_s, encoder_mu, 
         encoder_logsigma, cond_reward, delta_prediction=False, pres_latent_s=None):
         """

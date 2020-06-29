@@ -13,7 +13,7 @@ from torch.distributions.normal import Normal
 #from utils import sample_mdrnn_latent
 from models import RSSModel 
 from control import Planner
-from env import get_env_params
+from envs import get_env_params
 
 class Agent:
     def __init__(self, gamename, logdir, decoder_reward_condition,
@@ -86,7 +86,7 @@ class Agent:
         )
 
         # TODO: make an RSSM ensemble. 
-       ''' self.mdrnn_ensemble = [self.rssm]
+        '''self.mdrnn_ensemble = [self.rssm]
         self.ensemble_size = len(self.mdrnn_ensemble)
         assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
         self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size '''
@@ -133,7 +133,7 @@ class Agent:
         else:
             mu, logsigma = self.vae.encoder(obs, reward)
             latent_s =  mu + logsigma.exp() * torch.randn_like(mu) 
-            assert latent_s.shape == (1, LATENT_SIZE), 'latent z in controller is the wrong shape!!'
+            assert latent_s.shape == (1, self.env_params['LATENT_SIZE']), 'latent z in controller is the wrong shape!!'
             action = self.planner(latent_s, hidden, reward)
             if self.deterministic:
                 _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, reward, last_hidden=hidden)
@@ -200,7 +200,7 @@ class Agent:
             action = action.unsqueeze(0)
 
             rollout = self.rssm.perform_rollout(
-                    action, hidden=hidden, state=state, obs=encoded_obs
+                    action, hidden=hidden, state=state, encoder_output=encoded_obs
                 )
             hidden = rollout["hiddens"].squeeze(0)
             state = rollout["posterior_states"].squeeze(0)
