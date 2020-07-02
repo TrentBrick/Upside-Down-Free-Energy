@@ -2,7 +2,10 @@
 # pylint: disable=no-member
 
 import torch
-from models import ConvEncoder, ConvDecoder, RewardModel, RecurrentDynamics
+from .decoder import ConvDecoder
+from .encoder import ConvEncoder
+from .dynamics import RecurrentDynamics 
+from .rewards import RewardModel
 
 class RSSModel(object):
     def __init__(
@@ -86,10 +89,7 @@ class RSSModel(object):
         return self.decoder(hiddens, posterior_states, rewards)
 
     def decode_sequence_obs(self, hiddens, posterior_states, rewards=None):
-        if rewards is not None: 
-            return self._bottle(self.decoder, (hiddens, posterior_states, rewards))
-        else: 
-            return self._bottle(self.decoder, (hiddens, posterior_states))
+        return self._bottle(self.decoder, (hiddens, posterior_states, rewards))
 
     def decode_reward(self, hiddens, posterior_states):
         return self.reward_model(hiddens, posterior_states)
@@ -135,7 +135,7 @@ class RSSModel(object):
                 lambda x: x[0].view(x[1][0] * x[1][1], *x[1][2:]), zip(x_tuple, x_sizes)
             )
         )
-        if self.decoder_make_sigmas:
+        if type(y)==tuple and len(y)==2:
             # should work for anything where the NN has multiple outputs. 
             val1, val2 = y[0], y[1]
             return val1.view(x_sizes[0][0], x_sizes[0][1], *val1.size()[1:]), \

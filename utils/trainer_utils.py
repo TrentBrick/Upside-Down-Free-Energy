@@ -79,6 +79,27 @@ def save_checkpoint(state, is_best, filename, best_filename):
     else: 
         return latent_s """
 
+def combine_single_worker(rollouts_dict_list, seq_len):
+    first_iter = True
+    for rollout_data_dict in rollouts_dict_list: # this is pulling from a list!
+        if len(rollout_data_dict[list(rollout_data_dict.keys())[0]])-seq_len <= 0:
+            # this rollout is too small so it is being ignored. 
+            # getting one of the keys from the dictionary in a dict agnostic way.
+            # NOTE: assumes that all keys in the dictionary correspond to lists of the same length
+            print('!!!!!! Combine_worker_rollouts is ignoring rollout of length', len(rollout_data_dict[list(rollout_data_dict.keys())[0]]), 'for being smaller than the sequence length')
+            continue
+        if first_iter:
+            # init the combo dictionary with lists for each key. 
+            combo_dict = {k:[v] for k, v in rollout_data_dict.items()} 
+            first_iter = False
+        else: 
+            # append items to the list for each key
+            for k, v in combo_dict.items():
+                v.append(rollout_data_dict[k])
+    return combo_dict
+
+def reshape_to_img(tensor, IMAGE_RESIZE_DIM):
+    return tensor.view(tensor.shape[0],3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
 
 def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
                             samples_dir, SEQ_LEN, IMAGE_RESIZE_DIM, example_length, 
@@ -97,16 +118,14 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
 
     last_test_observations, last_test_decoded_obs, \
     last_test_hiddens, last_test_prior_states, \
-    last_test_pres_rewards, last_test_next_rewards, \
-    last_test_latent_obs, \
-    last_test_actions = [var[start_sample_ind:end_sample_ind] for var in for_vae_n_mdrnn_sampling]
+    last_test_actions, last_test_rewards, = [var[start_sample_ind:end_sample_ind] for var in for_vae_n_mdrnn_sampling]
 
     last_test_encoded_obs = rssm.encode_sequence_obs(last_test_observations.unsqueeze(1))
 
     print('last test obs before reshaping:', last_test_observations.shape)
 
-    last_test_observations = last_test_observations.view(last_test_observations.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
-    last_test_decoded_obs = last_test_decoded_obs.view(last_test_decoded_obs.shape[0], 3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
+    last_test_observations = reshape_to_img(last_test_observations, IMAGE_RESIZE_DIM)
+    last_test_decoded_obs = reshape_to_img(last_test_decoded_obs, IMAGE_RESIZE_DIM) 
 
     if make_vae_samples:
         with torch.no_grad():
@@ -122,8 +141,8 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
         with torch.no_grad():
             # print examples of the prior
 
-            horizon_one_step = rssm.decode_obs(last_test_hiddens, last_test_prior_states)
-            horizon_one_step_obs = horizon_one_step.view(horizon_one_step.shape[0],3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
+            horizon_one_step, logsigmas = rssm.decode_obs(last_test_hiddens, last_test_prior_states, last_test_rewards)
+            horizon_one_step_obs = reshape_to_img(horizon_one_step, IMAGE_RESIZE_DIM) 
             
             # print multi horizon examples. 
 
@@ -132,9 +151,9 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
             adapt_dict = rssm.perform_rollout(last_test_actions[:memory_adapt_period], 
                 encoder_output=last_test_encoded_obs[:memory_adapt_period] ) 
             #print('into decoder:', adapt_dict['hiddens'].shape, adapt_dict['posterior_states'].shape)
-            adapt_obs = rssm.decode_sequence_obs(adapt_dict['hiddens'], adapt_dict['posterior_states'])
-            adapt_obs = adapt_obs.view(adapt_obs.shape[0], 3, adapt_obs.shape[-1], adapt_obs.shape[-1])
-
+            adapt_obs, adapt_sigmas = rssm.decode_sequence_obs(adapt_dict['hiddens'], adapt_dict['posterior_states'], last_test_rewards[:memory_adapt_period])
+            adapt_obs = reshape_to_img(adapt_obs, IMAGE_RESIZE_DIM) 
+        
             #print('adapt dict keys', adapt_dict.keys())
             #print('into horizon predictions', last_test_actions[memory_adapt_period:].shape, 
             #    adapt_dict['hiddens'][-1].shape , 
@@ -142,12 +161,12 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
 
             horizon_multi_step_dict = rssm.perform_rollout(last_test_actions[memory_adapt_period:], hidden=adapt_dict['hiddens'][-1] , 
                 state=adapt_dict['posterior_states'][-1] )
+            pred_rewards = rssm.decode_sequence_reward(horizon_multi_step_dict['hiddens'], horizon_multi_step_dict['prior_states'])
+            horizon_multi_step_obs, adapt_sigmas = rssm.decode_sequence_obs(horizon_multi_step_dict['hiddens'], horizon_multi_step_dict['prior_states'], pred_rewards)
+            horizon_multi_step_obs = reshape_to_img(horizon_multi_step_obs, IMAGE_RESIZE_DIM) 
             
-            horizon_multi_step_obs = rssm.decode_sequence_obs(horizon_multi_step_dict['hiddens'], horizon_multi_step_dict['prior_states'])
-            horizon_multi_step_obs = horizon_multi_step_obs.view(horizon_multi_step_obs.shape[0],3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM)
-
             to_save = torch.cat([last_test_observations, last_test_decoded_obs, 
-                horizon_one_step_obs.cpu(), adapt_obs.cpu(), horizon_multi_step_obs.cpu()], dim=0)
+                horizon_one_step_obs, adapt_obs, horizon_multi_step_obs], dim=0)
 
             print('Generating MDRNN samples of the shape:', to_save.shape)
             save_image(to_save,

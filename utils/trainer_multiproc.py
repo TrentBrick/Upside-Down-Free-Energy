@@ -8,7 +8,7 @@ def set_seq_and_batch_vals(inp, batch_size_to_seq_len_multiple, dim=1):
 
     # get all of the rollout lengths: 
     rollout_lengths = []
-    for worker_rollouts in inp: 
+    for worker_rollouts in inp:
         # iterate through each of the rollouts within the list of rollouts inside this worker.
         for rollout_data_dict in worker_rollouts[dim]: # this is pulling from a list!
             rollout_lengths.append( len(rollout_data_dict[list(rollout_data_dict.keys())[0]]))
@@ -24,7 +24,6 @@ def set_seq_and_batch_vals(inp, batch_size_to_seq_len_multiple, dim=1):
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
 
     return SEQ_LEN, BATCH_SIZE
-
 
 def combine_worker_rollouts(inp, seq_len, dim=1):
     """Combine data across the workers and their rollouts (making each rollout a separate element in a batch)
@@ -74,16 +73,16 @@ def worker(inp): # run lots of rollouts
     gamename, decoder_reward_condition, logdir, \
         training_rollouts_per_worker, planner_n_particles, \
         cem_iters, discount_factor, \
-        compute_feef, seed = inp
+        compute_feef, antithetic, seed = inp
     
-    env_simulator = Agent(gamename, logdir, decoder_reward_condition,
+    agent = Agent(gamename, logdir, decoder_reward_condition,
             planner_n_particles = planner_n_particles, 
             cem_iters=cem_iters, 
             discount_factor=discount_factor)
 
-    return env_simulator.simulate(return_events=True,
+    return agent.simulate(return_events=True,
             compute_feef=compute_feef,
-            num_episodes=training_rollouts_per_worker, seed=seed)
+            num_episodes=training_rollouts_per_worker, seed=seed, antithetic=antithetic)
 
 
 def generate_rollouts_using_planner(num_workers, batch_size_to_seq_len_multiple, worker_package): 
@@ -108,6 +107,7 @@ def generate_rollouts_using_planner(num_workers, batch_size_to_seq_len_multiple,
     ninety_perc = int(num_workers-ten_perc)
 
     # generate a random number to give as a random seed to each pool worker. 
+    # TODO: add antithetic sampling. 
     rand_ints = np.random.randint(0, 1e9, num_workers)
 
     worker_data = []

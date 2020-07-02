@@ -19,7 +19,8 @@ class Agent:
     def __init__(self, gamename, logdir, decoder_reward_condition,
         planner_n_particles=100,
         cem_iters=10, 
-        discount_factor=0.90):
+        discount_factor=0.90, model_version = 'checkpoint',
+        return_plan_images=False):
         """ Build vae, forward model, and environment. """
 
         self.gamename = gamename
@@ -45,6 +46,7 @@ class Agent:
         # the real horizon 
         self.horizon = self.env_params['actual_horizon']
         self.planner_n_particles = planner_n_particles
+        self.give_raw_pixels = self.env_params['give_raw_pixels']
 
         self.cem_iters = cem_iters 
         self.discount_factor = discount_factor
@@ -60,7 +62,7 @@ class Agent:
             False, #decoder make sigmas
             device=self.device,
         )
-        load_file = join(logdir, 'rssm_checkpoint.tar')
+        load_file = join(logdir, 'rssm_'+model_version+'.tar')
         assert exists(load_file), "Could not find file: " + load_file + " to load in!"
         state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
         print("Loading model_type {} at epoch {} "
@@ -78,12 +80,19 @@ class Agent:
             self.rssm,
             self.env_params['ACTION_SIZE'],
             (self.env.action_space.low, self.env.action_space.high),
+            self.env_params['init_cem_params'],
             plan_horizon=self.horizon,
             optim_iters=self.cem_iters,
-            candidates=self.planner_n_particles,
-            top_candidates=self.k_top,
-            init_cem_params=self.env_params['init_cem_params']
+            num_particles=self.planner_n_particles,
+            k_top=self.k_top,
+            discount_factor=discount_factor,
+            return_plan_images = return_plan_images
         )
+
+        # can be set to true inside Simulate. 
+        self.return_events = False
+
+        self.env.close()
 
         # TODO: make an RSSM ensemble. 
         '''self.mdrnn_ensemble = [self.rssm]
@@ -91,58 +100,19 @@ class Agent:
         assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
         self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size '''
         
-    def make_env(self, seed=-1, render_mode=False, full_episode=False):
+    def make_env(self, seed=None, render_mode=False, full_episode=False):
         """ Called every time a new rollout occurs. Creates a new environment and 
         sets a new random seed for it."""
         self.render_mode = render_mode
         self.env = gym.make(self.env_params['env_name'])
+        self.env.reset()
+        if not seed: 
+            seed = np.random.randint(0,1e9,1)[0]
+
         self.env.seed(int(seed))
-        self.env.render('rgb_array')
+        self.env.render(mode='rgb_array')
 
-    def get_action_and_transition(self, obs, reward, hidden, action=None, latent_s=None):
-        """ Get action and transition.
-
-        Encode obs to latent using the VAE, then obtain estimation for next
-        latent and next hidden state using the MDRNN and compute the controller
-        corresponding action.
-
-        :args:
-            - obs: current observation (1 x 3 x 64 x 64) torch tensor
-            - hidden: current hidden state (1 x 256) torch tensor
-
-        :returns: (action, next_hidden)
-            - action: 1D np array
-            - next_hidden (1 x 256) torch tensor
-        """
-
-        # why is none of this batched?? Because can't run lots of environments at a single point in parallel I guess. 
-        
-        if self.use_rssm: 
-            encoder_obs = self.rssm.encode_obs(obs)
-            encoder_obs = encoder_obs.unsqueeze(0)
-
-            if action is not None: 
-                action = action.unsqueeze(0)
-
-            dyn_dict = self.rssm.perform_rollout(action, hidden=hidden, state=latent_s, encoder_output=encoder_obs)
-            next_hidden = dyn_dict['hiddens'].squeeze(0)
-            latent_s = dyn_dict['posterior_states'].squeeze(0)
-            action = self.rssm_planner(hidden, latent_s)
-            return action.squeeze().cpu().numpy(), next_hidden, action, latent_s
-
-        else:
-            mu, logsigma = self.vae.encoder(obs, reward)
-            latent_s =  mu + logsigma.exp() * torch.randn_like(mu) 
-            assert latent_s.shape == (1, self.env_params['LATENT_SIZE']), 'latent z in controller is the wrong shape!!'
-            action = self.planner(latent_s, hidden, reward)
-            if self.deterministic:
-                _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, reward, last_hidden=hidden)
-            else: 
-                _, _, _, _, _, next_hidden = self.mdrnn(action, latent_s, hidden, reward)
-    
-            return action.squeeze().cpu().numpy(), next_hidden
-
-    def rollout(self, rand_env_seed, render=False):
+    def rollout(self, rand_env_seed, render=False, display_monitor=None):
         """ Executes a rollout and returns cumulative reward along with
         the time point the rollout stopped and 
         optionally, all observations/actions/rewards/terminal outputted 
@@ -164,16 +134,12 @@ class Agent:
         np.random.seed(rand_env_seed)
         torch.manual_seed(rand_env_seed)
 
-        # not sure what the need for this is: 
-        dispatch_events = False
-
         obs = self.env.reset()
-        if dispatch_events:
-            self.env.viewer.window.dispatch_events()
+
+        if self.give_raw_pixels:
+            obs = self.env.render(mode='rgb_array')
+            #self.env.viewer.window.dispatch_events()
         hidden, state, action = self.rssm.init_hidden_state_action(1)
-        reward = 0
-        done = 0
-        #action = np.array([0.,0.,0.])
 
         sim_rewards_queue = []
         cumulative = 0
@@ -193,8 +159,6 @@ class Agent:
                             :]
 
             obs = self.transform(obs).unsqueeze(0).to(self.device)
-            reward = torch.Tensor([reward]).to(self.device).unsqueeze(0)
-
             encoded_obs = self.rssm.encode_obs(obs)
             encoded_obs = encoded_obs.unsqueeze(0)
             action = action.unsqueeze(0)
@@ -205,17 +169,17 @@ class Agent:
             hidden = rollout["hiddens"].squeeze(0)
             state = rollout["posterior_states"].squeeze(0)
 
-            action = self.planner(hidden, state)
+            action = self.planner(hidden, state, time)
             #action = self._add_action_noise(action, action_noise)
 
             # needed to accomodate the action repeats. 
             hit_done = False 
-
             # using action repeats
             for _ in range(self.num_action_repeats):
-                next_obs, reward, done, _ = self.env.step(action[0].cpu())
-                if dispatch_events:
-                    self.env.viewer.window.dispatch_events()
+                next_obs, reward, done, _ = self.env.step(action[0].cpu().numpy())
+                if self.give_raw_pixels:
+                    next_obs = self.env.render(mode='rgb_array')
+                    #self.env.viewer.window.dispatch_events()
                 cumulative += reward
 
                 # if the last n steps (real steps independent of action repeats)
@@ -238,7 +202,7 @@ class Agent:
                 # NOTE: adding obs not next_obs
                 for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
                                         [obs, reward, action, hit_done ]):
-                    if key == 'actions' or key=='terminal':
+                    if key == 'rewards' or key=='terminal':
                         var = torch.Tensor([var])
                     rollout_dict[key].append(var.squeeze())
 
@@ -255,11 +219,14 @@ class Agent:
             time += 1
 
             if render: 
+                if display_monitor:
+                    display_monitor.set_data(obs)
                 self.env.render()
+                
 
     def simulate(self, return_events=False, num_episodes=16, 
         seed=27, compute_feef=False,
-        render_mode=False):
+        render_mode=False, antithetic=False):
         """ Runs lots of rollouts with different random seeds. Optionally,
         can keep track of all outputs from the environment in each rollout 
         (adding each to a list which contains dictionaries for the rollout). 
@@ -297,9 +264,16 @@ class Agent:
         with torch.no_grad():
             for i in range(num_episodes):
 
-                rand_env_seed = np.random.randint(0,1e9,1)[0]
-
-                self.make_env(seed=rand_env_seed)
+                # for every second rollout. reset the rand seed
+                # as given to the rollout for numpy and torch rand numbers
+                # but dont reset the environment!
+                if antithetic and i%2==0:
+                    # uses the previous rand_seed
+                    self.make_env(seed=rand_env_seed)
+                    rand_env_seed = np.random.randint(0,1e9,1)[0]
+                else: 
+                    rand_env_seed = np.random.randint(0,1e9,1)[0]
+                    self.make_env(seed=rand_env_seed)
                 
                 if self.return_events: 
                     rew, time, data_dict = self.rollout(rand_env_seed, render=render_mode)

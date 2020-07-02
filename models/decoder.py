@@ -18,7 +18,8 @@ class ConvDecoder(nn.Module):
             self.fc1 = nn.Linear(embedding_size, embedding_size)
         else: 
             self.fc_1 = nn.Linear(hidden_size + state_size, embedding_size)
-        self.fc_logsigma1 = nn.Linear(embedding_size, 3*64*64)
+        if self.make_sigmas:
+            self.fc_logsigma1 = nn.Linear(embedding_size, 3*64*64)
         self.conv_1 = nn.ConvTranspose2d(embedding_size, 128, 5, stride=2)
         self.conv_2 = nn.ConvTranspose2d(128, 64, 5, stride=2)
         self.conv_3 = nn.ConvTranspose2d(64, 32, 6, stride=2)
@@ -44,7 +45,7 @@ class ConvDecoder(nn.Module):
             # TODO: constrain variance for out to distribution based on min and max training data as in Appendix A1 here: https://arxiv.org/pdf/1805.12114.pdf
             return obs, logsigma
         else:
-            return obs
+            return obs, torch.zeros_like(obs)
 
 class LinearDecoder(nn.Module):
     def __init__(self, obs_size, hidden_size, state_size, node_size, act_fn="relu"):

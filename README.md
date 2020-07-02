@@ -59,6 +59,8 @@ conda init
 exit
 ### reopen terminal. Conda was there but couldn't be deactivated till you do this!
 conda deactivate
+## deleta conda (if you want, else will need to call conda deactivate) every time
+sudo rm -rf ../../opt/conda/
 git clone https://github.com/TrentBrick/fem.git
 pip3 install torch==1.5.0+cu101 torchvision==0.6.0+cu101 -f https://download.pytorch.org/whl/torch_stable.html
 pip3 install -r fem/requirements.txt
@@ -77,7 +79,7 @@ sudo chmod +x NVIDIA-Linux-x86_64-418.126.02.run
 sudo chmod +x cuda_10.1.105_418.39_linux.run
 ./cuda_10.1.105_418.39_linux.run -extract=~/Downloads/nvidia/
 
-### Uninstall old stuff
+### Uninstall old stuff. Choose default options. You may get some warning messages. Which is fine. 
 sudo apt-get --purge remove nvidia-*
 sudo nvidia-uninstall
 
@@ -86,7 +88,7 @@ sudo ./cuda_10.1.105_418.39_linux.run --no-opengl-libs
 ### Verify installation
 nvidia-smi
 ```
-Your server should now be fully set up to run all of the following experiments!
+Your server should now be fully set up to run all of the following experiments! Please don't post Issues on installation as I won't be able to provide any further support and have already provided a lot more than most other ML code reproductions/support!
 NB. If you are not using Conda be sure either uninstall it or to call `conda deactivate` every time you SSH in and whenever you start a new tmux terminal.
 
 

@@ -15,14 +15,16 @@ from torchvision import transforms
 import numpy as np
 import json
 from tqdm import tqdm
-from utils import save_checkpoint, generate_rssm_samples, generate_rollouts_using_planner, GeneratedDataset, TrainBufferDataset, write_logger
+from utils import save_checkpoint, generate_rssm_samples, generate_rollouts_using_planner, GeneratedDataset, TrainBufferDataset, write_logger, combine_single_worker
 from envs import get_env_params
 import sys
 from models.rssm import RSSModel 
 from torch.distributions.normal import Normal
 from multiprocessing import cpu_count
 from collections import OrderedDict
+from control import Agent 
 import time 
+from utils import set_seq_and_batch_vals
 
 def main(args):
 
@@ -33,14 +35,16 @@ def main(args):
     # used for saving which models are the best based upon their train performance. 
     rssm_cur_best=None
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    use_feef = True # NOTE: currently not actually computing it inside of agent.py simulate!!!!
+    compute_feef = True # NOTE: currently not actually computing it inside of agent.py simulate!!!!
 
-    include_terminal = False # option to include predicting terminal state. 
-    #include_overshoot = False # no longer support overshoot training. 
+    # TODO: enable predicting the terminal state. 
+    #include_terminal = False # option to include predicting terminal state. 
+    #include_overshoot = False #NOTE: no longer support overshoot training. have old code for this though.  
 
     # what to condition rewards upon. (encoder, decoder, rnn)
     decoder_reward_condition = False
     decoder_make_sigmas = False
+    antithetic = True 
 
     # get environment parameters: 
     env_params = get_env_params(args.gamename)
@@ -52,15 +56,15 @@ def main(args):
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
     epochs = 500
 
-    training_rollouts_per_worker = 3
+    training_rollouts_per_worker = 2
 
     # Planning values
     planner_n_particles = 700
-    discount_factor = 0.80
+    discount_factor = 0.90
     cem_iters = 7
 
     # for plotting example horizons:
-    example_length = 8
+    example_length = 12
     assert example_length<= SEQ_LEN, "Example length must be smaller."
     memory_adapt_period = example_length - env_params['actual_horizon']
     assert memory_adapt_period >0, "need horizon or example length to be longer!"
@@ -68,7 +72,7 @@ def main(args):
     # memory buffer:
     # making a memory buffer for previous rollouts too. 
     # buffer contains a dictionary full of lists of tensors which correspond to full rollouts. 
-    use_training_buffer = False 
+    use_training_buffer = True  
     print('using training buffer?', use_training_buffer)
     num_new_rollouts = args.num_workers*training_rollouts_per_worker
     num_prev_epochs_to_store = 4
@@ -140,18 +144,23 @@ def main(args):
             unlink(logger_filename)
 
     # consider making the learning rate lower because models are already pretrained!
-    if args.giving_pretrained: 
+    if args.giving_pretrained:
         optimizer = torch.optim.Adam(rssm.parameters(), lr=1e-3)
         rssm_cur_best = None
 
-    def train_batch(data, return_for_vae_n_mdrnn_sampling=False):
+    def train_batch(data, return_for_rssm_sampling=False):
 
         obs, acts, rews, terminals = [arr.to(device) for arr in data]
 
         # need to flip the seq and batch dimensions 
         # also set the terminals to non terms. 
         # I am inputting these with batch first. Need to flip this around. 
+
+        print('data shapes', obs.shape, acts.shape, rews.shape, terminals.shape)
+
         obs = obs.permute(1, 0, 2, 3, 4).contiguous()
+        if args.gamename=='pendulum':
+            acts = acts.unsqueeze(-1)
         acts = acts.permute(1,0,2).contiguous()
         rews = rews.permute(1,0,2).contiguous()
         terminals = terminals.unsqueeze(-1).permute(1,0,2).contiguous()
@@ -173,14 +182,10 @@ def main(args):
         rollout = rssm.perform_rollout(acts, encoder_output=encoded_obs, non_terms=non_terms)
 
         """ (seq_len, batch_size, *dims) """
-        if decoder_reward_condition:
-            decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
-                rollout["hiddens"], rollout["posterior_states"], rews
-            )
-        else: 
-            decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
-                rollout["hiddens"], rollout["posterior_states"]
-            )
+        decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
+            rollout["hiddens"], rollout["posterior_states"], rews
+        )
+        
 
         """ (seq_len, batch_size) """
         decoded_reward = rssm.decode_sequence_reward(
@@ -198,16 +203,13 @@ def main(args):
         reward_loss = _reward_loss(decoded_reward, rews.squeeze())
         kl_loss = _kl_loss(posterior, prior)
 
-        if return_for_vae_n_mdrnn_sampling: 
+        if return_for_rssm_sampling: 
             # return last batch for sample generation! 
-
-            for_vae_n_mdrnn_sampling = [obs[:,0,:,:,:], decoded_mus[:,0,:,:,:], 
-                rollout["hiddens"][:,0,:], rollout["prior_states"][:,0,:],
-                rews[:-1,0,:], rews[1:,0,:], 
-                rollout["posterior_states"][:,0,:], 
-                acts[:,0,:]]
+            for_rssm_sampling = [obs[:,0,:,:,:], decoded_mus[:,0,:,:,:], 
+                rollout["hiddens"][:,0,:], rollout["prior_states"][:,0,:], 
+                acts[:,0,:], rews[:,0,:]]
             # dont need to flip batch dimensions as I get rid of the batch!
-            return obs_loss, reward_loss, kl_loss, for_vae_n_mdrnn_sampling
+            return obs_loss, reward_loss, kl_loss, for_rssm_sampling
         else: 
             return obs_loss, reward_loss, kl_loss
 
@@ -252,7 +254,7 @@ def main(args):
             - cumloss_dict - All of the losses collected from this epoch. 
                             Averaged across the batches and sequence lengths 
                             to be on a per element basis. 
-            if test also returns information used to generate the VAE and MDRNN samples
+            if test also returns information used to generate the RSSM samples
             these are useful for evaluating performance: 
                 - first in the batch of:
                     - obs[0,:,:,:,:]
@@ -296,7 +298,7 @@ def main(args):
                 optimizer.step()
             else:
                 with torch.no_grad():
-                    obs_loss, reward_loss, kl_loss, for_vae_n_mdrnn_sampling = train_batch(data,return_for_vae_n_mdrnn_sampling=True)
+                    obs_loss, reward_loss, kl_loss, for_rssm_sampling = train_batch(data,return_for_rssm_sampling=True)
 
             rssm_loss_dict = dict(obs_loss=obs_loss, reward_loss=reward_loss, kl_loss=kl_loss)
 
@@ -327,7 +329,7 @@ def main(args):
         if train: 
             return cumloss_dict 
         else: 
-            return cumloss_dict, for_vae_n_mdrnn_sampling
+            return cumloss_dict, for_rssm_sampling
             # return the last observation and reward to generate the VAE examples. 
 
     train = partial(data_pass, train=True)
@@ -340,17 +342,34 @@ def main(args):
                 game_dir, training_rollouts_per_worker,
                 planner_n_particles, 
                 cem_iters, discount_factor,
-                use_feef ]
+                compute_feef, antithetic ]
 
     for e in range(epochs):
         print('====== New Epoch:', e)
         ## run the current policy with the current VAE and MDRNN
 
         # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
-        print('====== Generating Rollouts to train the MDRNN and VAE') 
+        print('====== Generating Rollouts to train the RSSM') 
         
-        SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
-                args.num_workers, batch_size_to_seq_len_multiple, worker_package)
+        # TODO: antithetic sampling. use same seed twice. 
+        if args.num_workers <= 1:
+            # dont use multiprocessing. 
+            agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
+                planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
+            seed = np.random.randint(0, 1e9, 1)[0]
+            output = agent.simulate(return_events=True,
+                                    compute_feef=compute_feef,
+                                    num_episodes=training_rollouts_per_worker, seed=seed)
+            # reward_losses, terminals, sim_data, feef_losses 
+            # TODO: clean this up.
+            SEQ_LEN, BATCH_SIZE = set_seq_and_batch_vals([output], batch_size_to_seq_len_multiple,dim=2)
+            train_data = combine_single_worker(output[2][:-1], SEQ_LEN )
+            test_data = {k:[v]for k, v in output[2][-1].items()}
+            reward_losses, feef_losses = output[0], output[3]
+
+        else: 
+            SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
+                    args.num_workers, batch_size_to_seq_len_multiple, worker_package)
 
         if use_training_buffer:
             if e==0:
@@ -380,7 +399,7 @@ def main(args):
         test_loader = DataLoader(test_dataset, shuffle=True,
                 batch_size=BATCH_SIZE, num_workers=0, drop_last=False)
         # returns the last ones in order to produce samples!
-        test_loss_dict, for_vae_n_mdrnn_sampling = test(e)
+        test_loss_dict, for_rssm_sampling = test(e)
         print('====== Done Testing Models')
         
         #scheduler.step(test_loss_dict['loss'])
@@ -409,7 +428,7 @@ def main(args):
         print('====== Done Saving VAE and MDRNN')
 
         if make_vae_samples or make_mdrnn_samples:
-            generate_rssm_samples( rssm, for_vae_n_mdrnn_sampling, 
+            generate_rssm_samples( rssm, for_rssm_sampling, 
                             samples_dir, SEQ_LEN, env_params['IMAGE_RESIZE_DIM'],
                             example_length,
                             memory_adapt_period, e, device, 
@@ -423,10 +442,10 @@ def main(args):
 
 if __name__ =='__main__':
     parser = argparse.ArgumentParser("Training Script")
+    parser.add_argument('--gamename', type=str,
+                        help="What Gym environment to train in.")
     parser.add_argument('--logdir', type=str, default='exp_dir',
                         help="Where things are logged and models are loaded from.")
-    parser.add_argument('--gamename', type=str, default='carracing',
-                        help="What Gym environment to train in.")
     parser.add_argument('--no_reload', action='store_true',
                         help="Won't load in models for VAE and MDRNN from the joint file. \
                         NB. This will create new models with random inits and will overwrite \

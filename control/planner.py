@@ -4,19 +4,20 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-
+from torchvision.utils import save_image
+from os.path import join
 
 class Planner(nn.Module):
     def __init__(self,
         model,
         action_size,
         actions_low_n_high,
+        init_cem_params,
         plan_horizon=12,
         optim_iters=10,
         num_particles=1000,
-        k_top=100,
-        init_cem_params
-    ):
+        k_top=100, discount_factor=0.9,
+        return_plan_images=False ):
         super().__init__()
         self.model = model
         self.action_size = action_size
@@ -26,6 +27,8 @@ class Planner(nn.Module):
         self.optim_iters = optim_iters
         self.num_particles = num_particles
         self.k_top = k_top
+        self.discount_factor = discount_factor
+        self.return_plan_images = return_plan_images
 
         # TODO: actually use these for the sampling. 
         self.init_action_mean = init_cem_params[0]
@@ -37,7 +40,7 @@ class Planner(nn.Module):
             actions[:,:,ind] = torch.clamp(actions[:,:,ind], min=l, max=h)
         return actions
 
-    def forward(self, hidden, state):
+    def forward(self, hidden, state, timepoint=1):
         """ (batch_size, dim) """
         batch_size = hidden.size(0)
         hidden_size = hidden.size(1)
@@ -90,7 +93,11 @@ class Planner(nn.Module):
 
             """ (batch_size, num_particles) """
             returns = self.model.decode_reward(_hiddens, _states)
+
+            # can run all of these through FEEF instead!
             returns = returns.view(self.plan_horizon, -1)
+            # discounting: 
+            returns = returns*torch.pow(torch.Tensor([self.discount_factor]), torch.arange(0,self.plan_horizon).float()).unsqueeze(1)
             returns = returns.sum(dim=0)
             returns = returns.reshape(batch_size, self.num_particles)
 
@@ -98,7 +105,28 @@ class Planner(nn.Module):
                 actions, returns, batch_size
             )
 
-        return action_mean[0].squeeze(dim=1)
+        if self.return_plan_images:
+
+            best_rew, best_actions_ind = torch.max(returns, dim=1)
+            worst_rew, worst_actions_ind = torch.min(returns, dim=1)
+            print('From this planning iteration, best reward is:', best_rew, 'worst reward is:', worst_rew)
+
+            _states = _states.view(self.plan_horizon, batch_size, self.num_particles, -1)
+            _hiddens = _hiddens.view(self.plan_horizon, batch_size, self.num_particles, -1)
+            obs = []
+            for ind in [best_actions_ind, worst_actions_ind]:
+                decoded_mus, decoded_logsigmas = self.model.decode_sequence_obs(_hiddens[:,:,ind,:], _states[:,:,ind,:])
+                temp_obs = decoded_mus.view(decoded_mus.shape[0],3, 64, 64).cpu()
+                obs.append(temp_obs)
+                # need to append and then save these out. 
+
+            obs = torch.stack(obs)
+            save_image(obs,
+                    join('exp_dir/simulations/', 'planning_best_n_worst'+str(timepoint)+'.png'))
+            return action_mean[0].squeeze(dim=1)
+
+        else:
+            return action_mean[0].squeeze(dim=1)
 
     def _fit_gaussian(self, actions, returns, batch_size):
         _, topk = returns.topk(self.k_top, dim=1, largest=True, sorted=False)
