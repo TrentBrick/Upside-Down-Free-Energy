@@ -29,7 +29,7 @@ class Agent:
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
 
-        self.device = 'cpu'#torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.time_limit = self.env_params['time_limit']
 
         # transform used on environment generated observations. 
