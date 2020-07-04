@@ -267,7 +267,7 @@ class Agent:
                 # for every second rollout. reset the rand seed
                 # as given to the rollout for numpy and torch rand numbers
                 # but dont reset the environment!
-                if antithetic and i%2==0:
+                if antithetic and i%2==1:
                     # uses the previous rand_seed
                     self.make_env(seed=rand_env_seed)
                     rand_env_seed = np.random.randint(0,1e9,1)[0]

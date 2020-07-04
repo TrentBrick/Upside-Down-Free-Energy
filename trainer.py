@@ -72,7 +72,10 @@ def main(args):
     # memory buffer:
     # making a memory buffer for previous rollouts too. 
     # buffer contains a dictionary full of lists of tensors which correspond to full rollouts. 
-    use_training_buffer = True  
+    use_training_buffer = False  
+    # TODO: need to purge buffer elements that are shorter than the new seq length!
+    # or keep the seq len to satisfy the buffer rather than just the new training data. 
+    # TODO: keep better track of the sequence length anyways... and compute it more efficiently. 
     print('using training buffer?', use_training_buffer)
     num_new_rollouts = args.num_workers*training_rollouts_per_worker
     num_prev_epochs_to_store = 4

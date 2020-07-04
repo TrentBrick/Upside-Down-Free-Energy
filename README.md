@@ -62,11 +62,13 @@ conda deactivate
 ## deleta conda (if you want, else will need to call conda deactivate) every time
 sudo rm -rf ../../opt/conda/
 git clone https://github.com/TrentBrick/fem.git
+sudo apt-get update
+
+pip3 install --upgrade pip
 pip3 install torch==1.5.0+cu101 torchvision==0.6.0+cu101 -f https://download.pytorch.org/whl/torch_stable.html
 pip3 install -r fem/requirements.txt
 sudo apt-get update -y
 sudo apt-get install -y xvfb
-sudo apt install python-opengl
 
 ###Setting up the GPU:::
 
@@ -87,6 +89,9 @@ sudo ./NVIDIA-Linux-x86_64-418.126.02.run --no-opengl-files
 sudo ./cuda_10.1.105_418.39_linux.run --no-opengl-libs
 ### Verify installation
 nvidia-smi
+
+# install opengl.
+sudo apt-get install python-opengl
 ```
 Your server should now be fully set up to run all of the following experiments! Please don't post Issues on installation as I won't be able to provide any further support and have already provided a lot more than most other ML code reproductions/support!
 NB. If you are not using Conda be sure either uninstall it or to call `conda deactivate` every time you SSH in and whenever you start a new tmux terminal.

@@ -4,3 +4,4 @@ gym[box2d]
 box2d
 tqdm
 numpy
+ray
