@@ -56,7 +56,7 @@ def main(args):
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
     epochs = 500
 
-    training_rollouts_per_worker = 2
+    training_rollouts_per_worker = 1
 
     # Planning values
     planner_n_particles = 700
@@ -83,9 +83,9 @@ def main(args):
     max_buffer_size = num_new_rollouts*num_prev_epochs_to_store
 
     if use_training_buffer:
-        iters_through_buffer_each_epoch =10 // num_prev_epochs_to_store
+        iters_through_buffer_each_epoch = 1 #10 // num_prev_epochs_to_store
     else: 
-        iters_through_buffer_each_epoch = 5
+        iters_through_buffer_each_epoch = 1
 
     kl_tolerance=0.5
     free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
