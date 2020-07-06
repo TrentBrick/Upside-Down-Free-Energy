@@ -2,8 +2,8 @@
 # pylint: disable=no-member
 
 import torch
-from .decoder import ConvDecoder
-from .encoder import ConvEncoder
+from .encoder import ConvEncoder, StateEncoder
+from .decoder import ConvDecoder, StateDecoder
 from .dynamics import RecurrentDynamics 
 from .rewards import RewardModel
 
@@ -15,6 +15,7 @@ class RSSModel(object):
         state_size,
         embedding_size,
         node_size,
+        use_vae,
         decoder_reward_condition,
         decoder_make_sigmas,
         device="cpu",
@@ -25,14 +26,19 @@ class RSSModel(object):
         self.state_size = state_size
         self.embedding_size = embedding_size
         self.node_size = node_size
+        self.use_vae = use_vae 
         self.decoder_reward_condition = decoder_reward_condition
         self.decoder_make_sigmas = decoder_make_sigmas
         self.device = device
 
-        self.encoder = ConvEncoder(embedding_size).to(device)
-        self.decoder = ConvDecoder(hidden_size, state_size, embedding_size, self.decoder_reward_condition, self.decoder_make_sigmas).to(device)
-        self.reward_model = RewardModel(hidden_size, state_size, node_size).to(device)
+        if self.use_vae: 
+            self.encoder = ConvEncoder(embedding_size).to(device)
+            self.decoder = ConvDecoder(hidden_size, state_size, embedding_size, self.decoder_reward_condition, self.decoder_make_sigmas).to(device)
+        else:
+            self.encoder = StateEncoder(state_size).to(device)
+            self.decoder = StateDecoder(state_size, self.decoder_reward_condition).to(device)
 
+        self.reward_model = RewardModel(hidden_size, state_size, node_size).to(device)
         self.dynamics = RecurrentDynamics(
             hidden_size, state_size, action_size, node_size, embedding_size
         ).to(device)

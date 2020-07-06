@@ -18,7 +18,7 @@ class RecurrentDynamics(nn.Module):
         min_std=0.1,
     ):
         super().__init__()
-        self.act_fn = getattr(F, act_fn)
+        self.act_fn = getattr(torch, act_fn)
         self.min_std = min_std
 
         self.fc_embed_state_action = nn.Linear(state_size + action_size, hidden_size)

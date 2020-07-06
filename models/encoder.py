@@ -9,7 +9,7 @@ from torch.nn import functional as F
 class ConvEncoder(nn.Module):
     def __init__(self, embedding_size, act_fn="relu"):
         super().__init__()
-        self.act_fn = getattr(F, act_fn)
+        self.act_fn = getattr(torch, act_fn)
         self.embedding_size = embedding_size
         self.conv_1 = nn.Conv2d(3, 32, 4, stride=2)
         self.conv_2 = nn.Conv2d(32, 64, 4, stride=2)
@@ -30,11 +30,20 @@ class ConvEncoder(nn.Module):
         out = self.fc_1(out)
         return out
 
+class StateEncoder(nn.Module):
+    def __init__(self, state_size, act_fn="tanh"):
+        super().__init__()
+        self.act_fn = getattr(torch, act_fn)
+        self.fc_1 = nn.Linear(state_size, state_size)
+
+    def forward(self, obs):
+        out = self.act_fn(self.fc_1(obs))
+        return out
 
 class LinearEncoder(nn.Module):
     def __init__(self, obs_size, embedding_size, node_size, act_fn="relu"):
         super().__init__()
-        self.act_fn = getattr(F, act_fn)
+        self.act_fn = getattr(torch, act_fn)
         self.fc_1 = nn.Linear(obs_size, node_size)
         self.fc_2 = nn.Linear(node_size, node_size)
         self.fc_3 = nn.Linear(node_size, embedding_size)

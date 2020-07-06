@@ -17,7 +17,7 @@ class Planner(nn.Module):
         optim_iters=10,
         num_particles=1000,
         k_top=100, discount_factor=0.9,
-        return_plan_images=False ):
+        return_plan_images=False, compute_feef=False ):
         super().__init__()
         self.model = model
         self.action_size = action_size
@@ -29,6 +29,7 @@ class Planner(nn.Module):
         self.k_top = k_top
         self.discount_factor = discount_factor
         self.return_plan_images = return_plan_images
+        self.compute_feef = compute_feef
 
         # TODO: actually use these for the sampling. 
         self.init_action_mean = init_cem_params[0]
@@ -84,22 +85,26 @@ class Planner(nn.Module):
             # constrain actions: 
             actions = self.constrain_actions(actions)
 
-            """ (plan_horizon, batch_size * num_particles, dim) """
-            rollout = self.model.perform_rollout(actions, hidden=hidden, state=state)
+            if self.compute_feef:
+                # compute feef: 
+                feefs = feef_loss(self.model, actions, hidden, state)
 
-            """ (plan_horizon * batch_size * num_particles, dim) """
-            _hiddens = rollout["hiddens"].view(-1, hidden_size)
-            _states = rollout["prior_states"].view(-1, state_size)
+            else: 
 
-            """ (batch_size, num_particles) """
-            returns = self.model.decode_reward(_hiddens, _states)
+                """ (plan_horizon, batch_size * num_particles, dim) """
+                rollout = self.model.perform_rollout(actions, hidden=hidden, state=state)
+                
+                """ (plan_horizon * batch_size * num_particles, dim) """
+                _hiddens = rollout["hiddens"].view(-1, hidden_size)
+                _states = rollout["prior_states"].view(-1, state_size)
 
-            # can run all of these through FEEF instead!
-            returns = returns.view(self.plan_horizon, -1)
-            # discounting: 
-            returns = returns*torch.pow(torch.Tensor([self.discount_factor]), torch.arange(0,self.plan_horizon).float()).unsqueeze(1)
-            returns = returns.sum(dim=0)
-            returns = returns.reshape(batch_size, self.num_particles)
+                """ (batch_size, num_particles) """
+                returns = self.model.decode_reward(_hiddens, _states)
+                returns = returns.view(self.plan_horizon, -1)
+                # discounting: 
+                returns = returns*torch.pow(torch.Tensor([self.discount_factor]), torch.arange(0,self.plan_horizon).float()).unsqueeze(1)
+                returns = returns.sum(dim=0)
+                returns = returns.reshape(batch_size, self.num_particles)
 
             action_mean, action_std_dev = self._fit_gaussian(
                 actions, returns, batch_size

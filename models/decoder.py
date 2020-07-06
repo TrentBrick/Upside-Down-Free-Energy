@@ -9,7 +9,7 @@ class ConvDecoder(nn.Module):
     def __init__(self, hidden_size, state_size, embedding_size, 
             reward_condition, make_sigmas, act_fn="relu"):
         super().__init__()
-        self.act_fn = getattr(F, act_fn)
+        self.act_fn = getattr(torch, act_fn)
         self.embedding_size = embedding_size
         self.reward_condition = reward_condition
         self.make_sigmas = make_sigmas
@@ -47,10 +47,21 @@ class ConvDecoder(nn.Module):
         else:
             return obs, torch.zeros_like(obs)
 
+class StateDecoder(nn.Module):
+    def __init__(self, state_size, reward_condition, act_fn="tanh"):
+        super().__init__()
+        self.act_fn = getattr(torch, act_fn)
+        self.fc_1 = nn.Linear(state_size, state_size)
+
+    def forward(self, obs):
+        out = self.act_fn(self.fc_1(obs))
+        return out
+
+
 class LinearDecoder(nn.Module):
     def __init__(self, obs_size, hidden_size, state_size, node_size, act_fn="relu"):
         super().__init__()
-        self.act_fn = getattr(F, act_fn)
+        self.act_fn = getattr(torch, act_fn)
         self.fc_1 = nn.Linear(hidden_size + state_size, node_size)
         self.fc_2 = nn.Linear(node_size, node_size)
         self.fc_3 = nn.Linear(node_size, obs_size)

@@ -30,7 +30,7 @@ def main(args):
 
     assert args.num_workers <= cpu_count(), "Providing too many workers! Need one less than total amount." 
 
-    make_vae_samples, make_mdrnn_samples = True, True
+    make_vae_samples, make_mdrnn_samples = False, False 
 
     # used for saving which models are the best based upon their train performance. 
     rssm_cur_best=None
@@ -107,11 +107,11 @@ def main(args):
         env_params['LATENT_SIZE'],
         env_params['EMBEDDING_SIZE'],
         env_params['NODE_SIZE'],
+        env_params['use_vae'],
         decoder_reward_condition,
         decoder_make_sigmas,
         device=device,
     )
-    
     optimizer = torch.optim.Adam(rssm.parameters(), lr=1e-3)
 
     # Loading in trained models: 
@@ -161,7 +161,11 @@ def main(args):
 
         print('data shapes', obs.shape, acts.shape, rews.shape, terminals.shape)
 
-        obs = obs.permute(1, 0, 2, 3, 4).contiguous()
+        if env_params['use_vae']:
+            obs = obs.permute(1, 0, 2, 3, 4).contiguous()
+        else: 
+            obs = obs.permute(1, 0, 2).contiguous()
+            print('obs shape in train batch', obs.shape)
         if args.gamename=='pendulum':
             acts = acts.unsqueeze(-1)
         acts = acts.permute(1,0,2).contiguous()
@@ -184,34 +188,45 @@ def main(args):
         """ (seq_len, batch_size, dim) """
         rollout = rssm.perform_rollout(acts, encoder_output=encoded_obs, non_terms=non_terms)
 
-        """ (seq_len, batch_size, *dims) """
-        decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
-            rollout["hiddens"], rollout["posterior_states"], rews
-        )
-        
+        if env_params['use_vae']:
+            """ (seq_len, batch_size, *dims) """
+            decoded_mus, decoded_logsigmas = rssm.decode_sequence_obs(
+                rollout["hiddens"], rollout["posterior_states"], rews
+            )
+            
+            if decoder_make_sigmas:
+                obs_loss = _observation_loss(decoded_mus, obs, decoded_logsigmas)
+            else: 
+                obs_loss = _observation_loss(decoded_mus, obs)
+
+        else: 
+            # NOTE: not sure i need this because of the KLD loss. 
+            obs_loss = f.mse_loss(rollout["posterior_states"], rollout["prior_states"],
+                reduction='none').sum(dim=2).mean(dim=(0,1))
 
         """ (seq_len, batch_size) """
         decoded_reward = rssm.decode_sequence_reward(
             rollout["hiddens"], rollout["posterior_states"]
         )
+        reward_loss = _reward_loss(decoded_reward, rews.squeeze())
 
         #print('shape of decoded reward', decoded_reward.shape )
+        # NOTE: do I also need this KLD loss here? this is on its own sufficient? 
         posterior = Normal(rollout["posterior_means"], rollout["posterior_stds"])
         prior = Normal(rollout["prior_means"], rollout["prior_stds"])
-
-        if decoder_make_sigmas:
-            obs_loss = _observation_loss(decoded_mus, obs, decoded_logsigmas)
-        else: 
-            obs_loss = _observation_loss(decoded_mus, obs)
-        reward_loss = _reward_loss(decoded_reward, rews.squeeze())
         kl_loss = _kl_loss(posterior, prior)
 
         if return_for_rssm_sampling: 
-            # return last batch for sample generation! 
-            for_rssm_sampling = [obs[:,0,:,:,:], decoded_mus[:,0,:,:,:], 
-                rollout["hiddens"][:,0,:], rollout["prior_states"][:,0,:], 
-                acts[:,0,:], rews[:,0,:]]
-            # dont need to flip batch dimensions as I get rid of the batch!
+
+            if env_params['use_vae']:
+                # return last batch for sample generation! 
+                for_rssm_sampling = [obs[:,0,:,:,:], decoded_mus[:,0,:,:,:], 
+                    rollout["hiddens"][:,0,:], rollout["prior_states"][:,0,:], 
+                    acts[:,0,:], rews[:,0,:]]
+                # dont need to flip batch dimensions as I get rid of the batch!
+            else: 
+                for_rssm_sampling = None
+                print('prior and posterior states', rollout["prior_states"][:10,0,:],  rollout["posterior_states"][:10,0,:])
             return obs_loss, reward_loss, kl_loss, for_rssm_sampling
         else: 
             return obs_loss, reward_loss, kl_loss

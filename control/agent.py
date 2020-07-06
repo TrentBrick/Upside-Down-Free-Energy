@@ -58,6 +58,7 @@ class Agent:
             self.env_params['LATENT_SIZE'],
             self.env_params['EMBEDDING_SIZE'],
             self.env_params['NODE_SIZE'],
+            self.env_params['use_vae'],
             decoder_reward_condition,
             False, #decoder make sigmas
             device=self.device,
@@ -158,7 +159,10 @@ class Agent:
                             self.obs_trim[2]:self.obs_trim[3], 
                             :]
 
-            obs = self.transform(obs).unsqueeze(0).to(self.device)
+            if self.env_params['use_vae']:
+                obs = self.transform(obs).unsqueeze(0).to(self.device)
+            else: 
+                obs = torch.Tensor(obs).unsqueeze(0).to(self.device)
             encoded_obs = self.rssm.encode_obs(obs)
             encoded_obs = encoded_obs.unsqueeze(0)
             action = action.unsqueeze(0)

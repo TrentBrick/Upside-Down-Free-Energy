@@ -21,12 +21,10 @@ def get_env_params(gamename):
             # top, bottom, left, right
             # can set to equal None if dont want any trimming. 
             'trim_shape': (0,84,0,96), 
-            'give_raw_pixels':False
-            # buffer to keep track of rewards and cut 
-            # rollout early if it is less than or equal to the 
-            # stop_early_value
-            #'stop_early_buf_size': 50,
-            #'stop_early_value': -5.0
+            'give_raw_pixels':False, # for environments that are otherwise state based. 
+            'use_vae':True,
+            'reward_prior_mu': 4.0, 
+            'reward_prior_sigma':0.1
         }
 
     elif gamename == "pendulum":
@@ -34,21 +32,24 @@ def get_env_params(gamename):
             'env_name': 'Pendulum-v0',
             'desired_horizon': 30,
             'num_action_repeats': 3,
-            'time_limit':300, # max time limit for the rollouts generated
+            'time_limit':60, # max time limit for the rollouts generated
             'NUM_IMG_CHANNELS': 3,
             'ACTION_SIZE': 1,
             'init_cem_params': ( torch.Tensor([0.]), 
                         torch.Tensor([2.]) ),
-            'LATENT_SIZE': 32, 
-            'LATENT_RECURRENT_SIZE': 512,
-            'EMBEDDING_SIZE': 256,
+            'LATENT_SIZE': 3, 
+            'LATENT_RECURRENT_SIZE': 256,
+            'EMBEDDING_SIZE': 3,
             'NODE_SIZE': 256,
             'IMAGE_RESIZE_DIM': 64,
             'IMAGE_DEFAULT_SIZE': 96,
             # top, bottom, left, right
             # can set to equal None if dont want any trimming. 
             'trim_shape': None,
-            'give_raw_pixels':True
+            'give_raw_pixels':False,
+            'use_vae':False, 
+            'reward_prior_mu': 0.0, 
+            'reward_prior_sigma':0.2
         }
 
     elif gamename == "cartpole":

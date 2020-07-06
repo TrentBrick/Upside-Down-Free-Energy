@@ -8,7 +8,7 @@ from torch.nn import functional as F
 class RewardModel(nn.Module):
     def __init__(self, hidden_size, state_size, node_size, act_fn="relu"):
         super().__init__()
-        self.act_fn = getattr(F, act_fn)
+        self.act_fn = getattr(torch, act_fn)
         self.fc_1 = nn.Linear(hidden_size + state_size, node_size)
         self.fc_2 = nn.Linear(node_size, node_size)
         self.fc_3 = nn.Linear(node_size, 1)
