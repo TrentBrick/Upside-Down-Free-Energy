@@ -11,6 +11,7 @@ wm_codebase/*
 
 exp_dir/*
 !exp_dir/carracing/
+!exp_dir/pendulum/
 
 exp_dir/carracing/*
 !exp_dir/carracing/logger.txt
