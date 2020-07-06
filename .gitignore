@@ -8,8 +8,14 @@ dock_config.json
 .mypy_cache
 .DS_Store
 wm_codebase/*
+
 exp_dir/*
+!exp_dir/carracing/
+
+exp_dir/carracing/*
 !exp_dir/carracing/logger.txt
 !exp_dir/carracing/samples/
+
+exp_dir/pendulum/*
 !exp_dir/pendulum/logger.txt
 !exp_dir/pendulum/samples/
