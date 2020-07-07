@@ -55,12 +55,13 @@ def main(args):
     # needs one more than this for the forward predictions. 
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
     epochs = 500
+    random_action_epochs = 100
 
     training_rollouts_per_worker = 1
 
     # Planning values
     planner_n_particles = 700
-    discount_factor = 0.90
+    discount_factor = 0.95
     cem_iters = 7
 
     # for plotting example horizons:
@@ -215,7 +216,9 @@ def main(args):
         decoded_reward = rssm.decode_sequence_reward(
             rollout["hiddens"], rollout["posterior_states"]
         )
-        reward_loss = _reward_loss(decoded_reward, rews.squeeze())
+        
+        print('going into reward loss', decoded_reward.shape, rews.squeeze(-1).shape)
+        reward_loss = _reward_loss(decoded_reward, rews.squeeze(-1))
 
         if return_for_rssm_sampling: 
             if env_params['use_vae']:
@@ -227,6 +230,8 @@ def main(args):
             else: 
                 for_rssm_sampling = None
                 print('prior and posterior states', rollout["prior_states"][:10,0,:],  rollout["posterior_states"][:10,0,:])
+                print('reward prediction vs reality. :', decoded_reward[:10,0], rews.squeeze(-1)[:10,0])
+                print('actions taken', acts[:10, 0])
             return obs_loss, reward_loss, kl_loss, for_rssm_sampling
         else: 
             return obs_loss, reward_loss, kl_loss
@@ -389,8 +394,17 @@ def main(args):
             reward_losses, feef_losses = output[0], output[3]
 
         else: 
-            SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
-                    args.num_workers, batch_size_to_seq_len_multiple, worker_package)
+
+            if e<random_action_epochs:
+                SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, \
+                reward_losses = generate_rollouts_using_planner( 
+                        args.num_workers, batch_size_to_seq_len_multiple, 
+                        worker_package, take_rand_actions=True)
+
+            else: 
+            #if e==0: # can be used to overfit to a single rollout for debugging. 
+                SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, reward_losses = generate_rollouts_using_planner( 
+                        args.num_workers, batch_size_to_seq_len_multiple, worker_package)
 
         if use_training_buffer:
             if e==0:

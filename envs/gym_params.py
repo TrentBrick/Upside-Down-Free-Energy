@@ -32,7 +32,7 @@ def get_env_params(gamename):
             'env_name': 'Pendulum-v0',
             'desired_horizon': 30,
             'num_action_repeats': 3,
-            'time_limit':100, # max time limit for the rollouts generated
+            'time_limit':1000, # max time limit for the rollouts generated
             'NUM_IMG_CHANNELS': 3,
             'ACTION_SIZE': 1,
             'init_cem_params': ( torch.Tensor([0.]), 
@@ -49,7 +49,8 @@ def get_env_params(gamename):
             'give_raw_pixels':False,
             'use_vae':False, 
             'reward_prior_mu': 0.0, 
-            'reward_prior_sigma':0.2
+            'reward_prior_sigma':0.2,
+            'action_noise' :0.3
         }
 
     elif gamename == "cartpole":

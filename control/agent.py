@@ -17,6 +17,7 @@ from envs import get_env_params
 
 class Agent:
     def __init__(self, gamename, logdir, decoder_reward_condition,
+        take_rand_actions = False,
         planner_n_particles=100,
         cem_iters=10, 
         discount_factor=0.90, model_version = 'checkpoint',
@@ -25,6 +26,8 @@ class Agent:
 
         self.gamename = gamename
         self.env_params = get_env_params(gamename)
+        self.action_noise = self.env_params['action_noise']
+        self.take_rand_actions = take_rand_actions
 
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
@@ -52,7 +55,12 @@ class Agent:
         self.discount_factor = discount_factor
         self.k_top = int(planner_n_particles*0.10)
 
-        self.rssm = RSSModel(
+        self.make_env()
+
+        assert str(type(self.env.action_space)) == "<class 'gym.spaces.box.Box'>", "Need to constrain discrete actions in planner and sample from a non Normal distribution!!"
+
+        if not self.take_rand_actions:
+            self.rssm = RSSModel(
             self.env_params['ACTION_SIZE'],
             self.env_params['LATENT_RECURRENT_SIZE'],
             self.env_params['LATENT_SIZE'],
@@ -62,33 +70,29 @@ class Agent:
             decoder_reward_condition,
             False, #decoder make sigmas
             device=self.device,
-        )
-        load_file = join(logdir, 'rssm_'+model_version+'.tar')
-        assert exists(load_file), "Could not find file: " + load_file + " to load in!"
-        state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
-        print("Loading model_type {} at epoch {} "
-            "with test error {}".format('rssm',
-                state['epoch'], state['precision']))
+            )
+            load_file = join(logdir, 'rssm_'+model_version+'.tar')
+            assert exists(load_file), "Could not find file: " + load_file + " to load in!"
+            state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
+            print("Loading model_type {} at epoch {} "
+                "with test error {}".format('rssm',
+                    state['epoch'], state['precision']))
 
-        self.rssm.load_state_dict(state['state_dict'])
-        self.rssm.eval()
+            self.rssm.load_state_dict(state['state_dict'])
+            self.rssm.eval()
 
-        self.make_env()
-
-        assert str(type(self.env.action_space)) == "<class 'gym.spaces.box.Box'>", "Need to constrain discrete actions in planner and sample from a non Normal distribution!!"
-
-        self.planner = Planner(
-            self.rssm,
-            self.env_params['ACTION_SIZE'],
-            (self.env.action_space.low, self.env.action_space.high),
-            self.env_params['init_cem_params'],
-            plan_horizon=self.horizon,
-            optim_iters=self.cem_iters,
-            num_particles=self.planner_n_particles,
-            k_top=self.k_top,
-            discount_factor=discount_factor,
-            return_plan_images = return_plan_images
-        )
+            self.planner = Planner(
+                self.rssm,
+                self.env_params['ACTION_SIZE'],
+                (self.env.action_space.low, self.env.action_space.high),
+                self.env_params['init_cem_params'],
+                plan_horizon=self.horizon,
+                optim_iters=self.cem_iters,
+                num_particles=self.planner_n_particles,
+                k_top=self.k_top,
+                discount_factor=discount_factor,
+                return_plan_images = return_plan_images
+            )
 
         # can be set to true inside Simulate. 
         self.return_events = False
@@ -112,6 +116,11 @@ class Agent:
 
         self.env.seed(int(seed))
         self.env.render(mode='rgb_array')
+
+    def _add_action_noise(self, action, noise):
+        if noise is not None:
+            action = action + noise * torch.randn_like(action)
+        return action
 
     def rollout(self, rand_env_seed, render=False, display_monitor=None):
         """ Executes a rollout and returns cumulative reward along with
@@ -140,7 +149,8 @@ class Agent:
         if self.give_raw_pixels:
             obs = self.env.render(mode='rgb_array')
             #self.env.viewer.window.dispatch_events()
-        hidden, state, action = self.rssm.init_hidden_state_action(1)
+        if not self.take_rand_actions:
+            hidden, state, action = self.rssm.init_hidden_state_action(1)
 
         sim_rewards_queue = []
         cumulative = 0
@@ -163,18 +173,22 @@ class Agent:
                 obs = self.transform(obs).unsqueeze(0).to(self.device)
             else: 
                 obs = torch.Tensor(obs).unsqueeze(0).to(self.device)
-            encoded_obs = self.rssm.encode_obs(obs)
-            encoded_obs = encoded_obs.unsqueeze(0)
-            action = action.unsqueeze(0)
 
-            rollout = self.rssm.perform_rollout(
-                    action, hidden=hidden, state=state, encoder_output=encoded_obs
-                )
-            hidden = rollout["hiddens"].squeeze(0)
-            state = rollout["posterior_states"].squeeze(0)
+            if self.take_rand_actions:
+                action = torch.Tensor([self.env.action_space.sample()])
+            else: 
+                # prepare for and use planner. 
+                encoded_obs = self.rssm.encode_obs(obs)
+                encoded_obs = encoded_obs.unsqueeze(0)
+                action = action.unsqueeze(0)
 
-            action = self.planner(hidden, state, time)
-            #action = self._add_action_noise(action, action_noise)
+                rollout = self.rssm.perform_rollout(
+                        action, hidden=hidden, state=state, encoder_output=encoded_obs
+                    )
+                hidden = rollout["hiddens"].squeeze(0)
+                state = rollout["posterior_states"].squeeze(0)
+                action = self.planner(hidden, state, time)
+                action = self._add_action_noise(action, self.action_noise)
 
             # needed to accomodate the action repeats. 
             hit_done = False 

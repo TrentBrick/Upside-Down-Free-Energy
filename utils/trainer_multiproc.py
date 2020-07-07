@@ -73,9 +73,10 @@ def worker(inp): # run lots of rollouts
     gamename, decoder_reward_condition, logdir, \
         training_rollouts_per_worker, planner_n_particles, \
         cem_iters, discount_factor, \
-        compute_feef, antithetic, seed = inp
+        compute_feef, antithetic, take_rand_actions, seed = inp
     
     agent = Agent(gamename, logdir, decoder_reward_condition,
+            take_rand_actions=take_rand_actions,
             planner_n_particles = planner_n_particles, 
             cem_iters=cem_iters, 
             discount_factor=discount_factor)
@@ -85,7 +86,9 @@ def worker(inp): # run lots of rollouts
             num_episodes=training_rollouts_per_worker, seed=seed, antithetic=antithetic)
 
 
-def generate_rollouts_using_planner(num_workers, batch_size_to_seq_len_multiple, worker_package): 
+def generate_rollouts_using_planner(num_workers, 
+    batch_size_to_seq_len_multiple, worker_package, 
+    take_rand_actions=False ): 
 
     """ Uses ray.util.multiprocessing Pool to create workers that each 
     run environment rollouts using planning with CEM (Cross Entropy Method). 
@@ -115,6 +118,7 @@ def generate_rollouts_using_planner(num_workers, batch_size_to_seq_len_multiple,
     for i in range(num_workers):
 
         package_w_rand = copy.copy(worker_package)
+        package_w_rand.append(take_rand_actions)
         package_w_rand.append(rand_ints[i])
 
         worker_data.append( tuple(package_w_rand)  )

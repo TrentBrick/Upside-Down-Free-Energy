@@ -37,8 +37,8 @@ class StateEncoder(nn.Module):
         self.fc_1 = nn.Linear(state_size, state_size)
 
     def forward(self, obs):
-        out = self.act_fn(self.fc_1(obs))
-        return out
+        #obs = self.act_fn(self.fc_1(obs))
+        return obs
 
 class LinearEncoder(nn.Module):
     def __init__(self, obs_size, embedding_size, node_size, act_fn="relu"):

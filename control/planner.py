@@ -90,7 +90,6 @@ class Planner(nn.Module):
                 feefs = feef_loss(self.model, actions, hidden, state)
 
             else: 
-
                 """ (plan_horizon, batch_size * num_particles, dim) """
                 rollout = self.model.perform_rollout(actions, hidden=hidden, state=state)
                 
