@@ -15,7 +15,7 @@ class RecurrentDynamics(nn.Module):
         node_size,
         embedding_size,
         act_fn="relu",
-        min_std=0.1,
+        min_std=0.001,
     ):
         super().__init__()
         self.act_fn = getattr(torch, act_fn)

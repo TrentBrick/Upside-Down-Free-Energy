@@ -199,10 +199,17 @@ def main(args):
             else: 
                 obs_loss = _observation_loss(decoded_mus, obs)
 
+            #print('shape of decoded reward', decoded_reward.shape )
+            # NOTE: do I also need this KLD loss here? this is on its own sufficient? 
+            posterior = Normal(rollout["posterior_means"], rollout["posterior_stds"])
+            prior = Normal(rollout["prior_means"], rollout["prior_stds"])
+            kl_loss = _kl_loss(posterior, prior)
+
         else: 
             # NOTE: not sure i need this because of the KLD loss. 
             obs_loss = f.mse_loss(rollout["posterior_states"], rollout["prior_states"],
                 reduction='none').sum(dim=2).mean(dim=(0,1))
+            kl_loss = torch.Tensor([0])
 
         """ (seq_len, batch_size) """
         decoded_reward = rssm.decode_sequence_reward(
@@ -210,14 +217,7 @@ def main(args):
         )
         reward_loss = _reward_loss(decoded_reward, rews.squeeze())
 
-        #print('shape of decoded reward', decoded_reward.shape )
-        # NOTE: do I also need this KLD loss here? this is on its own sufficient? 
-        posterior = Normal(rollout["posterior_means"], rollout["posterior_stds"])
-        prior = Normal(rollout["prior_means"], rollout["prior_stds"])
-        kl_loss = _kl_loss(posterior, prior)
-
         if return_for_rssm_sampling: 
-
             if env_params['use_vae']:
                 # return last batch for sample generation! 
                 for_rssm_sampling = [obs[:,0,:,:,:], decoded_mus[:,0,:,:,:], 
@@ -310,7 +310,10 @@ def main(args):
                 obs_loss, reward_loss, kl_loss = train_batch(data)
                 # taking grad step after every batch. 
                 optimizer.zero_grad()
-                (obs_loss + reward_loss + kl_loss).backward()
+                if env_params['use_vae']:
+                    (obs_loss + reward_loss + kl_loss).backward()
+                else:
+                    (obs_loss + reward_loss).backward()
                 # TODO: consider adding gradient clipping like Ha.  
                 torch.nn.utils.clip_grad_norm_(rssm.parameters(), 1000.0)
                 optimizer.step()
