@@ -24,7 +24,7 @@ for t in range(1000):
         im_frame = im_frame[200:800, 200:800, :]
         print('im frame is:', im_frame.shape)
         frames.append(  transform_train(im_frame)  )
-        states.append(observation)
+        states.append((observation, reward))
     else:
         done=True
     if done: 
