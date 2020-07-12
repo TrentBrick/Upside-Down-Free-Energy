@@ -30,19 +30,23 @@ def get_env_params(gamename):
     elif gamename == "pendulum":
         env_params = {
             'env_name': 'Pendulum-v0',
+            'continuous_actions':True,
+            'desired_reward':10,
             'desired_horizon': 30,
-            'num_action_repeats': 3,
+            'num_action_repeats': 1,
             'time_limit':1000, # max time limit for the rollouts generated
             'NUM_IMG_CHANNELS': 3,
             'ACTION_SIZE': 1,
+            'STORED_STATE_SIZE': 3,
             'init_cem_params': ( torch.Tensor([0.]), 
                         torch.Tensor([2.]) ),
             'LATENT_SIZE': 3, 
             'LATENT_RECURRENT_SIZE': 256,
             'EMBEDDING_SIZE': 3,
-            'NODE_SIZE': 256,
+            'NODE_SIZE': 128,
             'IMAGE_RESIZE_DIM': 64,
             'IMAGE_DEFAULT_SIZE': 96,
+            'desires_size' : 1, # just reward for now. 
             # top, bottom, left, right
             # can set to equal None if dont want any trimming. 
             'trim_shape': None,
@@ -51,6 +55,37 @@ def get_env_params(gamename):
             'reward_prior_mu': 0.0, 
             'reward_prior_sigma':0.2,
             'action_noise' :0.3
+        }
+
+    elif gamename == "lunarlander":
+        env_params = {
+            'env_name': 'LunarLander-v2',
+            'continuous_actions':False,
+            'desired_reward':200,
+            'desired_horizon': 30,
+            'num_action_repeats': 1,
+            'time_limit':1000, # max time limit for the rollouts generated
+            'NUM_IMG_CHANNELS': 3,
+            'ACTION_SIZE': 4, # number possible actions
+            'STORED_ACTION_SIZE': 1,
+            'STORED_STATE_SIZE': 8,
+            'init_cem_params': ( torch.Tensor([0.]), 
+                        torch.Tensor([2.]) ),
+            'LATENT_SIZE': 3, 
+            'LATENT_RECURRENT_SIZE': 256,
+            'EMBEDDING_SIZE': 3,
+            'NODE_SIZE': 128,
+            'IMAGE_RESIZE_DIM': 64,
+            'IMAGE_DEFAULT_SIZE': 96,
+            'desires_size' : 1, # just reward for now. 
+            # top, bottom, left, right
+            # can set to equal None if dont want any trimming. 
+            'trim_shape': None,
+            'give_raw_pixels':False,
+            'use_vae':False, 
+            'reward_prior_mu': 0.0, 
+            'reward_prior_sigma':0.2,
+            'action_noise' : 1.0#0.05 # lower the value the more uniform it is
         }
 
     elif gamename == "cartpole":

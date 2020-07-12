@@ -9,7 +9,7 @@ transform_train = transforms.Compose([
         transforms.ToTensor(),
     ])
 
-env = gym.make('Pendulum-v0')
+env = gym.make('LunarLander-v2')
 obs = env.reset()
 print(obs.shape)
 print('action space', env.action_space.__dict__)
@@ -19,7 +19,8 @@ for t in range(1000):
     im_frame = env.render(mode='rgb_array')
     env.viewer.window.dispatch_events()
     observation, reward, done, info = env.step(env.action_space.sample()) # take a random action
-    print(t, reward, observation, observation.shape, info, im_frame.shape, env.action_space.sample())
+    print('obs shape', observation.shape)
+    print(t, reward, observation, observation.shape, info, im_frame.shape, 'sample action', env.action_space.sample(), type(env.action_space.sample()))
     if t< 1000:
         im_frame = im_frame[200:800, 200:800, :]
         print('im frame is:', im_frame.shape)

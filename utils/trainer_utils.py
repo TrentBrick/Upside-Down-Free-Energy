@@ -101,7 +101,7 @@ def combine_single_worker(rollouts_dict_list, seq_len):
 def reshape_to_img(tensor, IMAGE_RESIZE_DIM):
     return tensor.view(tensor.shape[0],3, IMAGE_RESIZE_DIM, IMAGE_RESIZE_DIM).cpu()
 
-def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
+def generate_model_samples(rssm, for_vae_n_mdrnn_sampling,
                             samples_dir, SEQ_LEN, IMAGE_RESIZE_DIM, example_length, 
                             memory_adapt_period, e, device,
                             make_vae_samples=False,
@@ -171,50 +171,3 @@ def generate_rssm_samples(rssm, for_vae_n_mdrnn_sampling,
             print('Generating MDRNN samples of the shape:', to_save.shape)
             save_image(to_save,
                     join(samples_dir, 'horizon_pred_sample_' + str(e) + '.png'))
-
-
-class GeneratedDataset(torch.utils.data.Dataset):
-    """ This dataset is inspired by those from dataset/loaders.py but it 
-    doesn't need to apply any transformations to the data or load in any 
-    files.
-
-    :args:
-        - transform: any tranforms desired. Currently these are done by each rollout
-        and sent back to avoid performing redundant transforms.
-        - data: a dictionary containing a list of Pytorch Tensors. 
-                Each element of the list corresponds to a separate full rollout.
-                Each full rollout has its first dimension corresponding to time. 
-        - seq_len: desired length of rollout sequences. Anything shorter must have 
-        already been dropped. (currently done in 'combine_worker_rollouts()')
-
-    :returns:
-        - a subset of length 'seq_len' from one of the rollouts with all of its relevant features.
-    """
-    def __init__(self, transform, data, seq_len): 
-        self._transform = transform
-        self.data = data
-        self._cum_size = [0]
-        self._buffer_index = 0
-        self._seq_len = seq_len
-
-        # set the cum size tracker by iterating through the data:
-        for d in self.data['terminal']:
-            self._cum_size += [self._cum_size[-1] +
-                                   (len(d)-self._seq_len)]
-
-    def __getitem__(self, i): # kind of like the modulo operator but within rollouts of batch size. 
-        # binary search through cum_size
-        rollout_index = bisect(self._cum_size, i) - 1 # because it finds the index to the right of the element. 
-        # within a specific rollout. will linger on one rollout for a while iff random sampling not used. 
-        seq_index = i - self._cum_size[rollout_index] # references the previous file length. so normalizes to within this file's length. 
-        obs_data = self.data['obs'][rollout_index][seq_index:seq_index + self._seq_len + 1]
-        if self._transform:
-            obs_data = self._transform(obs_data.astype(np.float32))
-        action = self.data['actions'][rollout_index][seq_index:seq_index + self._seq_len + 1]
-        reward, terminal = [self.data[key][rollout_index][seq_index:
-                                      seq_index + self._seq_len + 1]
-                            for key in ('rewards', 'terminal')]
-        return obs_data, action, reward.unsqueeze(1), terminal
-        
-    def __len__(self):
-        return self._cum_size[-1]

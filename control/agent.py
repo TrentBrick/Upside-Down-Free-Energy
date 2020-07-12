@@ -9,15 +9,30 @@ import numpy as np
 import pickle
 import gym 
 import gym.envs.box2d
-from torch.distributions.normal import Normal
+from torch.distributions import Normal, Categorical 
 #from utils import sample_mdrnn_latent
 from models import RSSModel 
+from models import UpsdModel 
 from control import Planner
 from envs import get_env_params
+
+class WeightedNormal:
+    def __init__(self, mu, sigma, beta=1):
+        self.normal = Normal(mu, sigma)
+        self.beta = beta
+
+    def sample(self, nsamps):
+        s = self.normal.sample([nsamps])
+        s = s*torch.exp(s/self.beta)
+        print("desired reward sampled", s)
+        return s
 
 class Agent:
     def __init__(self, gamename, logdir, decoder_reward_condition,
         take_rand_actions = False,
+        desired_reward_stats=None,
+        desired_reward_dist_beta = 1.0,
+        use_planner=False,
         planner_n_particles=100,
         cem_iters=10, 
         discount_factor=0.90, model_version = 'checkpoint',
@@ -28,7 +43,14 @@ class Agent:
         self.env_params = get_env_params(gamename)
         self.action_noise = self.env_params['action_noise']
         self.take_rand_actions = take_rand_actions
+        self.use_planner = use_planner
 
+        if desired_reward_stats:
+            # TODO: pass these params and the beta param
+            print('the desired stats are:', desired_reward_stats)
+            self.desired_reward_dist = WeightedNormal(desired_reward_stats[0], 
+                desired_reward_stats[1], beta=desired_reward_dist_beta)
+        
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
 
@@ -46,21 +68,16 @@ class Agent:
         # NOTE: the checkpoint, ie most up to date model. Is being loaded in. 
         
         self.num_action_repeats = self.env_params['num_action_repeats']
-        # the real horizon 
-        self.horizon = self.env_params['actual_horizon']
-        self.planner_n_particles = planner_n_particles
+        
         self.give_raw_pixels = self.env_params['give_raw_pixels']
 
-        self.cem_iters = cem_iters 
-        self.discount_factor = discount_factor
-        self.k_top = int(planner_n_particles*0.10)
-
         self.make_env()
-
-        assert str(type(self.env.action_space)) == "<class 'gym.spaces.box.Box'>", "Need to constrain discrete actions in planner and sample from a non Normal distribution!!"
-
+            
         if not self.take_rand_actions:
-            self.rssm = RSSModel(
+
+            self.model = UpsdModel(self.env_params['STORED_STATE_SIZE'],self.env_params['desires_size'], self.env_params['ACTION_SIZE'], self.env_params['NODE_SIZE'])
+
+            '''self.model = RSSModel(
             self.env_params['ACTION_SIZE'],
             self.env_params['LATENT_RECURRENT_SIZE'],
             self.env_params['LATENT_SIZE'],
@@ -70,19 +87,28 @@ class Agent:
             decoder_reward_condition,
             False, #decoder make sigmas
             device=self.device,
-            )
-            load_file = join(logdir, 'rssm_'+model_version+'.tar')
+            )'''
+            load_file = join(logdir, 'model_'+model_version+'.tar')
             assert exists(load_file), "Could not find file: " + load_file + " to load in!"
             state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
             print("Loading model_type {} at epoch {} "
-                "with test error {}".format('rssm',
+                "with test error {}".format('model',
                     state['epoch'], state['precision']))
 
-            self.rssm.load_state_dict(state['state_dict'])
-            self.rssm.eval()
+            self.model.load_state_dict(state['state_dict'])
+            self.model.eval()
+
+        if use_planner:
+
+            # the real horizon 
+            self.horizon = self.env_params['actual_horizon']
+            self.planner_n_particles = planner_n_particles
+            self.cem_iters = cem_iters 
+            self.discount_factor = discount_factor
+            self.k_top = int(planner_n_particles*0.10)
 
             self.planner = Planner(
-                self.rssm,
+                self.model,
                 self.env_params['ACTION_SIZE'],
                 (self.env.action_space.low, self.env.action_space.high),
                 self.env_params['init_cem_params'],
@@ -100,7 +126,7 @@ class Agent:
         self.env.close()
 
         # TODO: make an RSSM ensemble. 
-        '''self.mdrnn_ensemble = [self.rssm]
+        '''self.mdrnn_ensemble = [self.model]
         self.ensemble_size = len(self.mdrnn_ensemble)
         assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
         self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size '''
@@ -115,12 +141,19 @@ class Agent:
             seed = np.random.randint(0,1e9,1)[0]
 
         self.env.seed(int(seed))
-        self.env.render(mode='rgb_array')
+        if render_mode: 
+            self.env.render(mode='rgb_array')
 
     def _add_action_noise(self, action, noise):
         if noise is not None:
             action = action + noise * torch.randn_like(action)
         return action
+
+    def constrain_actions(self, actions):
+        """ Ensures actions sampled from the gaussians are within the game bounds."""
+        for ind, (l, h) in enumerate(zip(self.env.action_space.low, self.env.action_space.high)):
+            actions[:,ind] = torch.clamp(actions[:,ind], min=l, max=h)
+        return actions
 
     def rollout(self, rand_env_seed, render=False, display_monitor=None):
         """ Executes a rollout and returns cumulative reward along with
@@ -146,18 +179,22 @@ class Agent:
 
         obs = self.env.reset()
 
+        # sample a desired reward
+        if not self.take_rand_actions:
+            curr_desired_reward = self.desired_reward_dist.sample(1)
+
         if self.give_raw_pixels:
             obs = self.env.render(mode='rgb_array')
             #self.env.viewer.window.dispatch_events()
-        if not self.take_rand_actions:
-            hidden, state, action = self.rssm.init_hidden_state_action(1)
+        if not self.take_rand_actions and self.use_planner:
+            hidden, state, action = self.model.init_hidden_state_action(1)
 
         sim_rewards_queue = []
         cumulative = 0
         time = 0
 
         if self.return_events:
-            rollout_dict = {k:[] for k in ['obs', 'rewards', 'actions', 'terminal']}
+            rollout_dict = {k:[] for k in ['obs', 'obs2', 'rew', 'act', 'terminal']}
         
         while True:
             #print('iteration of the rollout', time)
@@ -175,26 +212,47 @@ class Agent:
                 obs = torch.Tensor(obs).unsqueeze(0).to(self.device)
 
             if self.take_rand_actions:
-                action = torch.Tensor([self.env.action_space.sample()])
-            else: 
+                action = self.env.action_space.sample()
+            
+            elif self.use_planner: 
                 # prepare for and use planner. 
-                encoded_obs = self.rssm.encode_obs(obs)
+                encoded_obs = self.model.encode_obs(obs)
                 encoded_obs = encoded_obs.unsqueeze(0)
                 action = action.unsqueeze(0)
 
-                rollout = self.rssm.perform_rollout(
+                rollout = self.model.perform_rollout(
                         action, hidden=hidden, state=state, encoder_output=encoded_obs
                     )
                 hidden = rollout["hiddens"].squeeze(0)
                 state = rollout["posterior_states"].squeeze(0)
                 action = self.planner(hidden, state, time)
                 action = self._add_action_noise(action, self.action_noise)
-
+            else: 
+                # use upside down model: 
+                action = self.model(obs, curr_desired_reward)
+                # need to constrain the action! 
+                if self.env_params['continuous_actions']:
+                    action = self._add_action_noise(action, self.action_noise)
+                    action = self.constrain_actions(action)
+                    action = action[0].cpu().numpy()
+                else: 
+                    #sample action
+                    # to do add temperature noise. 
+                    #print('action is:', action)
+                    action = Categorical(logits=action*self.action_noise).sample([1]).squeeze().cpu().numpy()
+                
             # needed to accomodate the action repeats. 
             hit_done = False 
             # using action repeats
             for _ in range(self.num_action_repeats):
-                next_obs, reward, done, _ = self.env.step(action[0].cpu().numpy())
+                next_obs, reward, done, _ = self.env.step(action)
+
+                if not self.take_rand_actions:
+                    pass
+                    #curr_desired_reward -= reward
+
+                #print('new curr des reward', curr_desired_reward)
+                
                 if self.give_raw_pixels:
                     next_obs = self.env.render(mode='rgb_array')
                     #self.env.viewer.window.dispatch_events()
@@ -218,17 +276,24 @@ class Agent:
 
             if self.return_events:
                 # NOTE: adding obs not next_obs
-                for key, var in zip(['obs', 'rewards', 'actions', 'terminal'], 
-                                        [obs, reward, action, hit_done ]):
-                    if key == 'rewards' or key=='terminal':
-                        var = torch.Tensor([var])
-                    rollout_dict[key].append(var.squeeze())
+                for key, var in zip(['obs', 'obs2', 'rew', 'act', 'terminal'], 
+                                        [obs, next_obs, reward, action, hit_done ]):
+                    if key=='obs':
+                        var = var.squeeze().cpu().numpy()
+                    elif key=='obs2' and self.env_params['use_vae']:
+                        var = self.transform(var).numpy()
+                    rollout_dict[key].append(var)
 
             if hit_done or time > self.time_limit:
             #print('done with this simulation')
                 if self.return_events:
                     for k,v in rollout_dict.items(): # list of tensors arrays.
-                        rollout_dict[k] = torch.stack(v)
+                        # rewards to go here. 
+                        if k =='rew':
+                            rollout_dict[k] = np.asarray(v)[::-1].cumsum()[::-1]
+                        else: 
+                            rollout_dict[k] = np.asarray(v) #torch.stack(v)
+
                     return cumulative, time, rollout_dict # passed back to simulate. 
                 else: 
                     return cumulative, time # ending time and cum reward

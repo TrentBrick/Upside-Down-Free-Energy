@@ -21,7 +21,12 @@ def set_seq_and_batch_vals(inp, batch_size_to_seq_len_multiple, dim=1):
     print('dynamically updating sequence length')
     SEQ_LEN = int(np.quantile(rollout_lengths, 0.1))-1 # number of sequences in a row used during training
     # needs one more than this for the forward predictions. 
+
+
+    # TODO: get rid of this if I am not using sequence length in my training!!!
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
+
+    print('new batch size is: ', BATCH_SIZE)
 
     return SEQ_LEN, BATCH_SIZE
 
@@ -86,7 +91,7 @@ def worker(inp): # run lots of rollouts
             num_episodes=training_rollouts_per_worker, seed=seed, antithetic=antithetic)
 
 
-def generate_rollouts_using_planner(num_workers, 
+def generate_rollouts(num_workers, 
     batch_size_to_seq_len_multiple, worker_package, 
     take_rand_actions=False ): 
 
@@ -137,8 +142,10 @@ def generate_rollouts_using_planner(num_workers,
             li += worker_rollouts[ind]
 
     # TODO: make this more efficient. 
-    seq_len, batch_size = set_seq_and_batch_vals(res, batch_size_to_seq_len_multiple, dim=2)
-
+    # TODO: get rid of this if I am not using sequence length in my training!!!
+    #seq_len, batch_size = set_seq_and_batch_vals(res, batch_size_to_seq_len_multiple, dim=2)
+    seq_len, batch_size = 1, batch_size_to_seq_len_multiple
+    
     print("Number of rollouts being given to test:", len(res[ninety_perc:]))
 
     return seq_len, batch_size, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), \
