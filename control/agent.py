@@ -15,6 +15,7 @@ from models import RSSModel
 from models import UpsdModel 
 from control import Planner
 from envs import get_env_params
+import random 
 
 class WeightedNormal:
     def __init__(self, mu, sigma, beta=1):
@@ -47,9 +48,12 @@ def discount_cumsum(x, discount):
 
 class Agent:
     def __init__(self, gamename, logdir, decoder_reward_condition,
+        model = None, 
         take_rand_actions = False,
-        desired_reward_stats=None,
+        desired_reward_stats=(1,1),
+        Levine_Implementation = False, 
         desired_reward_dist_beta = 1.0,
+        desired_horizon = 250, 
         use_planner=False,
         planner_n_particles=100,
         cem_iters=10, 
@@ -63,13 +67,17 @@ class Agent:
         self.take_rand_actions = take_rand_actions
         self.use_planner = use_planner
         self.discount_factor = discount_factor
+        self.Levine_Implementation = Levine_Implementation
 
-        if desired_reward_stats:
-            # TODO: pass these params and the beta param
+        if self.Levine_Implementation:
             print('the desired stats are:', desired_reward_stats)
             self.desired_reward_dist = WeightedNormal(desired_reward_stats[0], 
                 desired_reward_stats[1], beta=desired_reward_dist_beta)
-        
+
+        else: 
+            
+            self.desired_rew_mu, self.desired_rew_std, self.desired_horizon = desired_reward_stats[0], desired_reward_stats[1], desired_horizon
+            print('mu std horiz', self.desired_rew_mu, self.desired_rew_std, self.desired_horizon)
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
 
@@ -91,8 +99,12 @@ class Agent:
         self.give_raw_pixels = self.env_params['give_raw_pixels']
 
         self.make_env()
+
+        if model:
+            self.model = model 
+            self.model.eval()
             
-        if not self.take_rand_actions:
+        elif not self.take_rand_actions and model is None:
 
             self.model = UpsdModel(self.env_params['STORED_STATE_SIZE'],self.env_params['desires_size'], self.env_params['ACTION_SIZE'], self.env_params['NODE_SIZE'])
 
@@ -117,7 +129,7 @@ class Agent:
             self.model.load_state_dict(state['state_dict'])
             self.model.eval()
 
-        if use_planner:
+        elif use_planner:
 
             # the real horizon 
             self.horizon = self.env_params['actual_horizon']
@@ -159,7 +171,10 @@ class Agent:
         if not seed: 
             seed = np.random.randint(0,1e9,1)[0]
 
+        print('seed the env is being made with', seed )
+
         self.env.seed(int(seed))
+        self.env.action_space.np_random.seed(int(seed))
         if render_mode: 
             self.env.render(mode='rgb_array')
 
@@ -174,7 +189,8 @@ class Agent:
             actions[:,ind] = torch.clamp(actions[:,ind], min=l, max=h)
         return actions
 
-    def rollout(self, rand_env_seed, render=False, display_monitor=None):
+    def rollout(self, render=False, display_monitor=None,
+            greedy=False):
         """ Executes a rollout and returns cumulative reward along with
         the time point the rollout stopped and 
         optionally, all observations/actions/rewards/terminal outputted 
@@ -191,16 +207,17 @@ class Agent:
                 dimension corresponding to time. 
         """
 
-        # base random seed set. Then sample new random numbers
-        # for each individual rollout. 
-        np.random.seed(rand_env_seed)
-        torch.manual_seed(rand_env_seed)
-
         obs = self.env.reset()
 
         # sample a desired reward
+
         if not self.take_rand_actions:
-            curr_desired_reward = self.desired_reward_dist.sample(1)
+            if self.Levine_Implementation:
+                curr_desired_reward = self.desired_reward_dist.sample(1)
+            else: 
+                curr_desired_reward = np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)
+                curr_desired_reward = torch.Tensor([min(curr_desired_reward, self.env_params['max_reward']  )])
+                curr_desired_horizon = torch.Tensor([self.desired_horizon])
 
         if self.give_raw_pixels:
             obs = self.env.render(mode='rgb_array')
@@ -248,7 +265,8 @@ class Agent:
                 action = self._add_action_noise(action, self.action_noise)
             else: 
                 # use upside down model: 
-                action = self.model(obs, curr_desired_reward)
+                desires = torch.cat([curr_desired_reward.unsqueeze(1), torch.Tensor([time]).unsqueeze(1)], dim=1)
+                action = self.model(obs, desires )
                 # need to constrain the action! 
                 if self.env_params['continuous_actions']:
                     action = self._add_action_noise(action, self.action_noise)
@@ -258,8 +276,13 @@ class Agent:
                     #sample action
                     # to do add temperature noise. 
                     #print('action is:', action)
-                    action = Categorical(logits=action*self.action_noise).sample([1])
-                    action = action.squeeze().cpu().numpy()
+                    #if self.Levine_Implementation:
+                    if greedy: 
+                        action = torch.argmax(action).squeeze().cpu().numpy()
+                    else: 
+                        action = torch.softmax(action*self.action_noise, dim=1)
+                        action = Categorical(probs=action).sample([1])
+                        action = action.squeeze().cpu().numpy()
                 
             # needed to accomodate the action repeats. 
             hit_done = False 
@@ -268,10 +291,13 @@ class Agent:
                 next_obs, reward, done, _ = self.env.step(action)
 
                 if not self.take_rand_actions:
-                    #curr_desired_reward -= reward
-                    pass
-
-                #print('new curr des reward', curr_desired_reward)
+                    if self.Levine_Implementation:
+                        #curr_desired_reward -= reward
+                        pass
+                    else: 
+                        curr_desired_reward -= reward
+                        curr_desired_reward = torch.Tensor( [min(curr_desired_reward, self.env_params['max_reward'])])
+                        curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
                 
                 if self.give_raw_pixels:
                     next_obs = self.env.render(mode='rgb_array')
@@ -294,6 +320,11 @@ class Agent:
                 if done: 
                     hit_done = True 
 
+            if not hit_done and time>self.time_limit:
+                # has gone over and still not crashed: 
+                reward = self.env_params(['over_max_time_limit'])
+                hit_done = True 
+
             if self.return_events:
                 # NOTE: adding obs not next_obs
                 for key, var in zip(['obs', 'obs2', 'rew', 'act', 'terminal'], 
@@ -306,16 +337,18 @@ class Agent:
             time += 1
 
             if hit_done or time > self.time_limit:
-            #print('done with this simulation')
+                #print('time at end of rollout!!!', time)
+                #print('done with this simulation')
                 if self.return_events:
                     for k,v in rollout_dict.items(): # list of tensors arrays.
-                        # rewards to go here. 
-                        if k =='rew':
+                        # rewards to go here for levine
+                        if self.Levine_Implementation and k =='rew':
                             rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
                         else: 
                             rollout_dict[k] = np.asarray(v) #torch.stack(v)
                     # repeat the cum reward up to length times. 
                     rollout_dict['terminal_rew'] = np.repeat(cumulative, time)
+                    rollout_dict['time'] = np.arange(time, 0, -1)
                     return cumulative, time, rollout_dict # passed back to simulate. 
                 else: 
                     return cumulative, time # ending time and cum reward
@@ -329,7 +362,7 @@ class Agent:
 
     def simulate(self, return_events=False, num_episodes=16, 
         seed=27, compute_feef=False,
-        render_mode=False, antithetic=False):
+        render_mode=False, antithetic=False, greedy=False):
         """ Runs lots of rollouts with different random seeds. Optionally,
         can keep track of all outputs from the environment in each rollout 
         (adding each to a list which contains dictionaries for the rollout). 
@@ -349,13 +382,13 @@ class Agent:
         # have these here in case I wanted to use them. 
         # Render also currently doesnt do anything. 
         recording_mode = False
-        penalize_turning = False
 
         self.return_events = return_events
 
-        #random(seed)
+        random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
+        self.make_env(seed=seed)
 
         cum_reward_list = []
         t_list = []
@@ -366,31 +399,28 @@ class Agent:
 
         with torch.no_grad():
             for i in range(num_episodes):
-                #print("episode:", i)
-
-                # for every second rollout. reset the rand seed
-                # as given to the rollout for numpy and torch rand numbers
-                # but dont reset the environment!
+                # for every second rollout. reset the rand seed if using antithetic. 
                 if antithetic and i%2==1:
                     # uses the previous rand_seed
-                    self.make_env(seed=rand_env_seed)
+                    self.env.seed(int(rand_env_seed))
                     rand_env_seed = np.random.randint(0,1e9,1)[0]
                 else: 
                     rand_env_seed = np.random.randint(0,1e9,1)[0]
-                    self.make_env(seed=rand_env_seed)
-                
+                    self.env.seed(int(rand_env_seed))
+
                 if self.return_events: 
-                    rew, time, data_dict = self.rollout(rand_env_seed, render=render_mode)
+                    rew, time, data_dict = self.rollout(render=render_mode, greedy=greedy)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                     data_dict_list.append(data_dict)
                     if compute_feef: 
                         feef_losses_list.append(  0.0 )#self.feef_loss(data_dict)  )
                 else: 
-                    rew, time = self.rollout(rand_env_seed, render=render_mode)
+                    rew, time = self.rollout(render=render_mode, greedy=greedy)
+                
                 cum_reward_list.append(rew)
                 t_list.append(time)
 
-                self.env.close()
+        self.env.close()
 
         if self.return_events: 
             if compute_feef:

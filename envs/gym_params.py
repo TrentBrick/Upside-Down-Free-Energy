@@ -64,7 +64,8 @@ def get_env_params(gamename):
             'desired_reward':200,
             'desired_horizon': 30,
             'num_action_repeats': 1,
-            'time_limit':1000, # max time limit for the rollouts generated
+            'time_limit':300, # max time limit for the rollouts generated
+            'over_max_time_limit':-50,
             'NUM_IMG_CHANNELS': 3,
             'ACTION_SIZE': 4, # number possible actions
             'STORED_ACTION_SIZE': 1,
@@ -74,10 +75,11 @@ def get_env_params(gamename):
             'LATENT_SIZE': 3, 
             'LATENT_RECURRENT_SIZE': 256,
             'EMBEDDING_SIZE': 3,
-            'NODE_SIZE': 128,
+            'NODE_SIZE': 32,
             'IMAGE_RESIZE_DIM': 64,
             'IMAGE_DEFAULT_SIZE': 96,
-            'desires_size' : 1, # just reward for now. 
+            'desires_size' : 2, # just reward for now. 
+            'max_reward':250,
             # top, bottom, left, right
             # can set to equal None if dont want any trimming. 
             'trim_shape': None,

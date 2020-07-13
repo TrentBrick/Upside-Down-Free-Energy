@@ -15,16 +15,19 @@ from torchvision import transforms
 import numpy as np
 import json
 from tqdm import tqdm
-from utils import save_checkpoint, generate_model_samples, generate_rollouts, write_logger, ReplayBuffer, combine_single_worker
+from utils import save_checkpoint, generate_model_samples, \
+    generate_rollouts, write_logger, ReplayBuffer, \
+    RingBuffer, combine_single_worker
 from envs import get_env_params
 import sys
 #from models.rssm import RSSModel 
-from models import UpsdModel 
+from models import UpsdModel, UpsdBehavior
 from torch.distributions.normal import Normal
 from multiprocessing import cpu_count
 from collections import OrderedDict
 from control import Agent 
 import time 
+import random 
 from utils import set_seq_and_batch_vals
 
 def main(args):
@@ -32,6 +35,13 @@ def main(args):
     assert args.num_workers <= cpu_count(), "Providing too many workers! Need one less than total amount." 
 
     make_vae_samples, make_mdrnn_samples = False, False 
+
+    Levine_Implementation = False 
+    if args.seed:
+        print('Setting the random seed!!!')
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
 
     # used for saving which models are the best based upon their train performance. 
     model_cur_best=None
@@ -42,60 +52,61 @@ def main(args):
     env_params = get_env_params(args.gamename)
 
     # Constants
-    batch_size_to_seq_len_multiple = 256 #4096
+    if Levine_Implementation:
+        batch_size_to_seq_len_multiple = 256 #4096
+    else: 
+        batch_size_to_seq_len_multiple = 768
     SEQ_LEN = 1 # number of sequences in a row used during training
     # needs one more than this for the forward predictions. 
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
     epochs = 2000
-    random_action_epochs = 50
+    random_action_epochs = 1
+    evaluate_every = 10
 
     desired_reward_dist_beta = 1000
     weight_loss = True
 
-    training_rollouts_total = 24
+    training_rollouts_total = 20
     training_rollouts_per_worker = training_rollouts_total//args.num_workers
     if args.num_workers==1: 
         assert training_rollouts_per_worker>1, "need more workers to also make test data!"
 
-    # TODO: delete many of these!!
+    num_new_rollouts = args.num_workers*training_rollouts_per_worker
+    #num_prev_epochs_to_store = random_action_epochs
+    # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
+    
+    if Levine_Implementation:
+        num_iters_in_buffer = 100000
+        max_buffer_size = num_iters_in_buffer #num_new_rollouts*num_prev_epochs_to_store
+        training_num_grad_steps = 1000 #max_buffer_size//BATCH_SIZE
+        discount_factor = 0.99
+        train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=max_buffer_size)
+        test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
+            act_dim=env_params['STORED_ACTION_SIZE'], size=batch_size_to_seq_len_multiple*10)
+        desire_scalings = None
+    else: 
+        max_buffer_size = 500 
+        training_num_grad_steps = 100
+        desire_scalings = (0.02, 0.01) # reward then horizon
+        discount_factor = 1.0
+        last_few = 75
+        train_buffer = ReplayBuffer(max_buffer_size, args.seed)
+        test_buffer = ReplayBuffer(batch_size_to_seq_len_multiple*10, args.seed)
+
+    # Planner and Forward Model Parameters!
     planner_n_particles = 700
-    discount_factor = 0.99
     cem_iters = 7
     decoder_reward_condition = False
     decoder_make_sigmas = False
     antithetic = True 
 
-    # for plotting example horizons:
+    # for plotting example horizons. Useful with VAE:
     #example_length = 12
     #assert example_length<= SEQ_LEN, "Example length must be smaller."
     #memory_adapt_period = example_length - env_params['actual_horizon']
     #assert memory_adapt_period >0, "need horizon or example length to be longer!"
-
-    # memory buffer:
-    # making a memory buffer for previous rollouts too. 
-    # buffer contains a dictionary full of lists of tensors which correspond to full rollouts. 
-    use_training_buffer = True   
-    # TODO: need to purge buffer elements that are shorter than the new seq length!
-    # or keep the seq len to satisfy the buffer rather than just the new training data. 
-    # TODO: keep better track of the sequence length anyways... and compute it more efficiently. 
-    print('using training buffer?', use_training_buffer)
-    num_new_rollouts = args.num_workers*training_rollouts_per_worker
-    #num_prev_epochs_to_store = random_action_epochs
-    # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
-    
-    num_iters_in_buffer = 100000
-    max_buffer_size = num_iters_in_buffer #num_new_rollouts*num_prev_epochs_to_store
-
-    # TODO: modify this!!!
-    training_num_grad_steps = 1000 #max_buffer_size//BATCH_SIZE
-
-    # Experience buffer
-    train_buffer = ReplayBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=max_buffer_size)
-    test_buffer = ReplayBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
-        act_dim=env_params['STORED_ACTION_SIZE'], size=batch_size_to_seq_len_multiple*10)
-
-    iters_through_buffer_each_epoch = 1
-
+        
+    #iters_through_buffer_each_epoch = 1
     kl_tolerance=0.5
     free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
 
@@ -121,8 +132,18 @@ def main(args):
         decoder_make_sigmas,
         device=device,
     )'''
-
-    model = UpsdModel(env_params['STORED_STATE_SIZE'], env_params['desires_size'], env_params['ACTION_SIZE'], env_params['NODE_SIZE'])
+    if Levine_Implementation:
+        model = UpsdModel(env_params['STORED_STATE_SIZE'], 
+            env_params['desires_size'], 
+            env_params['ACTION_SIZE'], 
+            env_params['NODE_SIZE'], desire_scalings=desire_scalings)
+        lr = 0.0003
+    else: 
+        model = UpsdBehavior(env_params['STORED_STATE_SIZE'], 
+            env_params['desires_size'], 
+            env_params['ACTION_SIZE'], 
+            env_params['NODE_SIZE'], desire_scalings=desire_scalings)
+        lr = 0.0003
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # Loading in trained models: 
@@ -163,7 +184,12 @@ def main(args):
         model_cur_best = None
 
     def train_batch(data, return_for_model_sampling=False):
-        obs, obs2, act, rew, terminal, terminal_rew = data['obs'].to(device), data['obs2'].to(device), data['act'].to(device), data['rew'].to(device), data['terminal'].to(device), data['terminal_rew'].to(device)
+
+        if Levine_Implementation: 
+            obs, obs2, act, rew, terminal, terminal_rew, time = data['obs'].to(device), data['obs2'].to(device), data['act'].to(device), data['rew'].to(device), data['terminal'].to(device), data['terminal_rew'].to(device), data['time'].to(device)
+        else: 
+            # this is actually delta time. 
+            obs, act, rew, time = data['obs'].to(device), data['act'].to(device), data['rew'].to(device), data['time'].to(device)
         # need to flip the seq and batch dimensions 
         # also set the terminals to non terms. 
         # I am inputting these with batch first. Need to flip this around. 
@@ -171,12 +197,14 @@ def main(args):
         #print('data shapes', obs.shape, obs[0:5], obs2.shape, act.shape, rew.shape, terminal.shape)
         
         # feed obs and rew into the forward model. 
-        pred_action = model.forward(obs, rew.unsqueeze(1))
+        if not Levine_Implementation: 
+            desires = torch.cat([rew.unsqueeze(1), time.unsqueeze(1)], dim=1)
+        pred_action = model.forward(obs, desires)
         if not env_params['continuous_actions']:
             #pred_action = torch.sigmoid(pred_action)
             act = act.squeeze().long()
         pred_loss = _pred_loss(pred_action, act, continous=env_params['continuous_actions'])
-        if weight_loss:
+        if Levine_Implementation and weight_loss:
             #print('weights used ', torch.exp(rew/desired_reward_dist_beta))
             pred_loss = pred_loss*torch.exp(terminal_rew/desired_reward_dist_beta)
         pred_loss = pred_loss.mean(dim=0)
@@ -238,12 +266,8 @@ def main(args):
         # iterate through an epoch of data. 
         num_iters_shown = 0
         for i in range(num_grad_steps):
-
-            if train:
-                data = buffer.sample_batch(BATCH_SIZE)
-            else: 
-                data = buffer.sample_batch(BATCH_SIZE) 
-
+            data = buffer.sample_batch(BATCH_SIZE)
+        
             # -1 here is the terminals, easiest to load in. 
             #BATCH_SIZE = len(data) #data[-1].shape[0]
             num_iters_shown+= BATCH_SIZE
@@ -319,9 +343,6 @@ def main(args):
                 cem_iters, discount_factor,
                 compute_feef, antithetic ]
 
-    # placeholder as should have random actions to init first. 
-    mean_reward_from_epoch = env_params['desired_reward']
-
     for e in range(epochs):
         print('====== New Epoch:', e)
         ## run the current policy with the current VAE and MDRNN
@@ -340,23 +361,21 @@ def main(args):
 
         else: 
             agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
+                model = model, 
+                Levine_Implementation= Levine_Implementation,
                 desired_reward_stats = reward_from_epoch_stats, 
+                desired_horizon = desired_horizon,
                 desired_reward_dist_beta=desired_reward_dist_beta,
                 planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
+        
         seed = np.random.randint(0, 1e9, 1)[0]
         
         output = agent.simulate(return_events=True,
                                 compute_feef=compute_feef,
                                 num_episodes=training_rollouts_per_worker, seed=seed)
-        # reward_losses, terminals, sim_data, feef_losses 
-        # TODO: clean this up.
         #SEQ_LEN, BATCH_SIZE = set_seq_and_batch_vals([output], batch_size_to_seq_len_multiple,dim=2)
         train_data = combine_single_worker(output[2][:-1], SEQ_LEN )
         test_data = {k:[v]for k, v in output[2][-1].items()}
-        #train_reward_losses = output[0][:-1]
-        #test_reward_losses = output[0][-1]
-        #train_data = output[2][:-1]
-        #test_data = [output[2][-1]]
         reward_losses, feef_losses = output[0], output[3]
 
         '''else: 
@@ -377,18 +396,25 @@ def main(args):
         # dictionary of items with lists inside of each rollout. 
 
         # add data to the buffer. 
+        if Levine_Implementation: 
+            train_buffer.add_rollouts(train_data)
+            test_buffer.add_rollouts(test_data)
+        else: 
+            for r in range(len(train_data['terminal'])):
+                train_buffer.add_sample(  train_data['obs'][r], train_data['act'][r], 
+                    train_data['rew'][r], len(train_data['terminal'][r]) )
 
-        train_buffer.add_rollouts(train_data)
-        test_buffer.add_rollouts(test_data)
+            for r in range(len(test_data['terminal'])):
+                test_buffer.add_sample(  test_data['obs'][r], test_data['act'][r], 
+                    test_data['rew'][r], len(test_data['terminal'][r]) )
 
-        for it in range(iters_through_buffer_each_epoch):
-            #train_loader = DataLoader(train_dataset,
-            #    batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
-            print('====== Starting Training Models')
-            # train VAE and MDRNN. uses partial(data_pass)
-            train_loss_dict = train(e)
-            print('====== Done Training Models')
-        
+        #for it in range(iters_through_buffer_each_epoch):
+        #train_loader = DataLoader(train_dataset,
+        #    batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
+        print('====== Starting Training Models')
+        # train VAE and MDRNN. uses partial(data_pass)
+        train_loss_dict = train(e)
+        print('====== Done Training Models')
         #test_loader = DataLoader(test_dataset, shuffle=True,
         #        batch_size=BATCH_SIZE, num_workers=0, drop_last=False)
         # returns the last ones in order to produce samples!
@@ -403,8 +429,13 @@ def main(args):
             test_loss_dict['max_'+name] = np.max(var)
             test_loss_dict['min_'+name] = np.min(var)
 
-        reward_from_epoch_stats = (test_loss_dict['avg_reward'], test_loss_dict['std_reward'])
-
+        if Levine_Implementation:
+            desired_horizon = 99999 
+            reward_from_epoch_stats = (test_loss_dict['avg_reward'], test_loss_dict['std_reward'])
+        else: 
+            last_few_mean_returns, last_few_std_returns, desired_horizon  = train_buffer.get_desires(last_few=last_few)
+            reward_from_epoch_stats = (last_few_mean_returns, last_few_std_returns)
+    
         print('====== Test Loss dictionary:', test_loss_dict)
 
         # checkpointing the model. Necessary to ensure the workers load in the most up to date checkpoint.
@@ -435,6 +466,12 @@ def main(args):
         write_logger(logger_filename, train_loss_dict, test_loss_dict)
         print('====== Done Writing out to the Logger')
 
+        if e%evaluate_every==0:
+            print('======= Evaluating the agent')
+            seed = np.random.randint(0, 1e9, 1)[0]
+            cum_rewards, finish_times = agent.simulate(num_episodes=5, greedy=True)
+            print('Evaluation, mean reward:', np.mean(cum_rewards), 'mean horizon length:', np.mean(finish_times))
+            print('===========================')
 if __name__ =='__main__':
     parser = argparse.ArgumentParser("Training Script")
     parser.add_argument('--gamename', type=str,
@@ -452,5 +489,7 @@ if __name__ =='__main__':
                         default=16)
     parser.add_argument('--display', action='store_true', help="Use progress bars if "
                         "specified.")
+    parser.add_argument('--seed', type=int, default=27,
+                        help="Starter seed for reproducible results")
     args = parser.parse_args()
     main(args)

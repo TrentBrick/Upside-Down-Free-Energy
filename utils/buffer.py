@@ -1,13 +1,105 @@
-
+# pylint: disable=no-member
 import numpy as np 
 import torch 
+import random 
 def combined_shape(length, shape=None):
     # taken from openAI spinning up. 
     if shape is None:
         return (length,)
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
-class ReplayBuffer:
+class ReplayBuffer():
+    def __init__(self, max_size, seed):
+        self.max_size = max_size
+        self.buffer = []
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        
+    def add_sample(self, states, actions, rewards, length):
+        #assert length < 300, "episode is too long!"
+        episode = {"states": states, "actions":actions, 
+            "rewards": rewards, "summed_rewards":sum(rewards), 
+            "length":length}
+        self.buffer.append(episode)
+        
+    def sort(self):
+        #sort buffer
+        self.buffer = sorted(self.buffer, key = lambda i: i["summed_rewards"],reverse=True)
+        # keep the max buffer size
+        self.buffer = self.buffer[:self.max_size]
+    
+    def get_episodes(self, batch_size):
+        self.sort()
+        idxs = np.random.randint(0, len(self.buffer), batch_size)
+        batch = [self.buffer[idx] for idx in idxs]
+        # returns a list of dictionaries that contain full rollouts.  
+        return batch
+
+    def sample_batch(self, batch_size):
+
+        episodes = self.get_episodes(batch_size)
+        
+        batch_states = []
+        batch_rewards = []
+        batch_horizons = []
+        batch_actions = []
+        
+        for episode in episodes:
+            # this is from a named tuple. 
+            # samples one thing from each episode?????? this is weird. 
+            T = episode['length']
+            t1 = np.random.randint(0, T)
+            t2 = np.random.randint(t1+1, T+1)
+            dr = sum(episode['rewards'][t1:t2])
+            dh = t2 - t1
+            
+            st1 = episode['states'][t1]
+            at1 = episode['actions'][t1]
+            
+            batch_states.append(st1)
+            batch_actions.append(at1)
+            batch_rewards.append(dr)
+            batch_horizons.append(dh)
+        
+        batch_states = torch.FloatTensor(batch_states)
+        batch_rewards = torch.FloatTensor(batch_rewards)
+        batch_horizons = torch.FloatTensor(batch_horizons)
+        batch_actions = torch.LongTensor(batch_actions)
+
+        return dict(obs=batch_states, rew=batch_rewards, time=batch_horizons, act=batch_actions)
+
+    def get_nbest(self, n):
+        self.sort()
+        return self.buffer[:n]
+
+    def get_desires(self, last_few = 75):
+        """
+        This function calculates the new desired reward and new desired horizon based on the replay buffer.
+        New desired horizon is calculted by the mean length of the best last X episodes. 
+        New desired reward is sampled from a uniform distribution given the mean and the std calculated from the last best X performances.
+        where X is the hyperparameter last_few.
+        """
+        
+        top_X = self.get_nbest(last_few)
+        #The exploratory desired horizon dh0 is set to the mean of the lengths of the selected episodes
+        #print([len(i["states"]) for i in top_X])
+        #print([i["length"] for i in top_X])
+        new_desired_horizon = np.mean([len(i["states"]) for i in top_X])
+        # save all top_X cumulative returns in a list 
+        returns = [i["summed_rewards"] for i in top_X]
+        # from these returns calc the mean and std
+        mean_returns = np.mean(returns)
+        std_returns = np.std(returns)
+        # sample desired reward from a uniform distribution given the mean and the std
+        #new_desired_reward = np.random.uniform(mean_returns, mean_returns+std_returns)
+
+        return mean_returns, std_returns, new_desired_horizon
+    
+    def __len__(self):
+        return len(self.buffer)
+
+class RingBuffer:
     """
     A simple FIFO experience replay buffer for DDPG agents.
     # Taken from OpenAI spinning up. 
@@ -19,6 +111,7 @@ class ReplayBuffer:
         self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.terminal_rew = np.zeros(size, dtype=np.float32)
+        self.time = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
 
@@ -34,8 +127,9 @@ class ReplayBuffer:
     def add_rollouts(self, rollouts_dict):
         for np_buf, key in zip([self.obs_buf, self.obs2_buf, 
                             self.act_buf, 
-                            self.rew_buf, self.done_buf, self.terminal_rew],
-                            ['obs', 'obs2','act', 'rew', 'terminal', 'terminal_rew'] ):
+                            self.rew_buf, self.done_buf, 
+                            self.terminal_rew, self.time],
+                            ['obs', 'obs2','act', 'rew', 'terminal', 'terminal_rew', 'time'] ):
             # TODO: combine these from the rollouts much earlier on. 
             temp_flat = None
             for rollout in rollouts_dict[key]:
@@ -68,7 +162,8 @@ class ReplayBuffer:
                      act=self.act_buf[idxs],
                      rew=self.rew_buf[idxs],
                      terminal=self.done_buf[idxs],
-                     terminal_rew=self.terminal_rew[idxs])
+                     terminal_rew=self.terminal_rew[idxs],
+                     time=self.time[idxs])
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 class TrainBufferDataset:
