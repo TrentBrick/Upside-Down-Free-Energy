@@ -8,7 +8,8 @@ from torch.nn import functional as F
 class UpsdModel(nn.Module):
     """ Using Fig.1 from Reward Conditioned Policies 
         https://arxiv.org/pdf/1912.13465.pdf """
-    def __init__(self, state_size, desires_size, action_size, node_size, act_fn="relu"):
+    def __init__(self, state_size, desires_size, 
+        action_size, node_size, act_fn="relu"):
         super().__init__()
         self.act_fn = getattr(torch, act_fn)
 

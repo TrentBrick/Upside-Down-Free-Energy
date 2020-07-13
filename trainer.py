@@ -42,24 +42,24 @@ def main(args):
     env_params = get_env_params(args.gamename)
 
     # Constants
-    batch_size_to_seq_len_multiple = 4096
+    batch_size_to_seq_len_multiple = 256 #4096
     SEQ_LEN = 1 # number of sequences in a row used during training
     # needs one more than this for the forward predictions. 
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
-    epochs = 1000
-    random_action_epochs = 10
+    epochs = 2000
+    random_action_epochs = 50
 
     desired_reward_dist_beta = 1000
     weight_loss = True
 
-    training_rollouts_total = 32
+    training_rollouts_total = 24
     training_rollouts_per_worker = training_rollouts_total//args.num_workers
     if args.num_workers==1: 
         assert training_rollouts_per_worker>1, "need more workers to also make test data!"
 
     # TODO: delete many of these!!
     planner_n_particles = 700
-    discount_factor = 0.95
+    discount_factor = 0.99
     cem_iters = 7
     decoder_reward_condition = False
     decoder_make_sigmas = False
@@ -92,13 +92,9 @@ def main(args):
     # Experience buffer
     train_buffer = ReplayBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=max_buffer_size)
     test_buffer = ReplayBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
-        act_dim=env_params['STORED_ACTION_SIZE'], size=batch_size_to_seq_len_multiple)
+        act_dim=env_params['STORED_ACTION_SIZE'], size=batch_size_to_seq_len_multiple*10)
 
-
-    if use_training_buffer:
-        iters_through_buffer_each_epoch = 1 #10 // num_prev_epochs_to_store
-    else: 
-        iters_through_buffer_each_epoch = 1
+    iters_through_buffer_each_epoch = 1
 
     kl_tolerance=0.5
     free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
@@ -127,7 +123,7 @@ def main(args):
     )'''
 
     model = UpsdModel(env_params['STORED_STATE_SIZE'], env_params['desires_size'], env_params['ACTION_SIZE'], env_params['NODE_SIZE'])
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # Loading in trained models: 
     if not args.no_reload:
@@ -167,29 +163,36 @@ def main(args):
         model_cur_best = None
 
     def train_batch(data, return_for_model_sampling=False):
-        obs, obs2, act, rew, terminal = data['obs'].to(device), data['obs2'].to(device), data['act'].to(device), data['rew'].to(device), data['terminal'].to(device)
+        obs, obs2, act, rew, terminal, terminal_rew = data['obs'].to(device), data['obs2'].to(device), data['act'].to(device), data['rew'].to(device), data['terminal'].to(device), data['terminal_rew'].to(device)
         # need to flip the seq and batch dimensions 
         # also set the terminals to non terms. 
         # I am inputting these with batch first. Need to flip this around. 
         
-        #print('data shapes', obs.shape, obs2.shape, act.shape, rew.shape, terminal.shape)
+        #print('data shapes', obs.shape, obs[0:5], obs2.shape, act.shape, rew.shape, terminal.shape)
         
         # feed obs and rew into the forward model. 
         pred_action = model.forward(obs, rew.unsqueeze(1))
+        if not env_params['continuous_actions']:
+            #pred_action = torch.sigmoid(pred_action)
+            act = act.squeeze().long()
         pred_loss = _pred_loss(pred_action, act, continous=env_params['continuous_actions'])
         if weight_loss:
-            pred_loss = pred_loss*torch.exp(rew/desired_reward_dist_beta)
+            #print('weights used ', torch.exp(rew/desired_reward_dist_beta))
+            pred_loss = pred_loss*torch.exp(terminal_rew/desired_reward_dist_beta)
         pred_loss = pred_loss.mean(dim=0)
 
+        #print('loss from this train batch', pred_loss)
+
         if return_for_model_sampling: 
-            return pred_loss, (rew[0:5], pred_action[0:5], pred_action[-5:], act[0:5])
+            return pred_loss, (rew[0:5], pred_action[0:5], pred_action[0:5].argmax(-1), act[0:5])
         return pred_loss 
 
     def _pred_loss(pred_action, real_action, continous=True):
         if continous:
+            # add a sigmoid activation layer.: 
             return f.mse_loss(pred_action, real_action ,reduction='none').sum(dim=1)
         else: 
-            return f.cross_entropy(pred_action, real_action.squeeze().long(), reduction='none')
+            return f.cross_entropy(pred_action, real_action, reduction='none')
 
     def data_pass(epoch, train): # pylint: disable=too-many-locals
         """One pass through full epoch pass through the data either testing or training (with torch.no_grad()).
@@ -225,7 +228,7 @@ def main(args):
         else:
             buffer = test_buffer
             model.eval()
-            num_grad_steps = 1
+            num_grad_steps = 5
 
         pbar = tqdm(total=BATCH_SIZE*num_grad_steps, desc="Epoch {}".format(epoch))
 
@@ -254,12 +257,21 @@ def main(args):
                 #else:
                 pred_loss.backward()
                 # TODO: consider adding gradient clipping like Ha.  
-                #torch.nn.utils.clip_grad_norm_(model.parameters(), 1000.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1000.0)
                 optimizer.step()
             else:
                 with torch.no_grad():
                     pred_loss, for_upsd_sampling = train_batch(data,return_for_model_sampling=True)
-                    print('reward, pred, and real action', for_upsd_sampling)
+                    if i == num_grad_steps-1:
+                        print('reward, pred, and real action', for_upsd_sampling)
+                        print('action probs', for_upsd_sampling[1].softmax(-1))
+                        print("pred action", for_upsd_sampling[-2])
+                        print('real action', for_upsd_sampling[-1])
+                        # getting the diversity of actions taken. 
+                        acts_observed, counts = np.unique(for_upsd_sampling[-2].cpu().numpy(), return_counts=True)
+                        print("diversity of the pred actions", acts_observed, counts/len(for_upsd_sampling[-1]) )
+                        acts_observed, counts = np.unique(for_upsd_sampling[-1].cpu().numpy(), return_counts=True)
+                        print("diversity of the real actions", acts_observed, counts/len(for_upsd_sampling[-1]) )
 
             upsd_loss_dict = dict(pred_loss=pred_loss)
 
@@ -270,8 +282,8 @@ def main(args):
                         cumloss_dict[k] += loss_dict[k].item()*BATCH_SIZE if hasattr(loss_dict[k], 'item') else \
                                                 loss_dict[k]
             
-            # store separately vae and mdrnn losses: 
             for k,v in upsd_loss_dict.items():
+                # the total overall loss combining all separate losses: 
                 cumloss_dict['loss'] += v.item()*BATCH_SIZE
 
             # Display training progress bar with current losses
@@ -318,37 +330,38 @@ def main(args):
         print('====== Generating Rollouts to train the Model') 
         
         # TODO: antithetic sampling. use same seed twice. 
-        if args.num_workers <= 1:
+        #if args.num_workers <= 1:
             # dont use multiprocessing. 
-            if e<random_action_epochs:
+        if e<random_action_epochs:
 
-                agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
-                    take_rand_actions=True,
-                    planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
-
-            else: 
-                agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
-                    desired_reward_stats = reward_from_epoch_stats, 
-                    desired_reward_dist_beta=desired_reward_dist_beta,
-                    planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
-            seed = np.random.randint(0, 1e9, 1)[0]
-            
-            output = agent.simulate(return_events=True,
-                                    compute_feef=compute_feef,
-                                    num_episodes=training_rollouts_per_worker, seed=seed)
-            # reward_losses, terminals, sim_data, feef_losses 
-            # TODO: clean this up.
-            #SEQ_LEN, BATCH_SIZE = set_seq_and_batch_vals([output], batch_size_to_seq_len_multiple,dim=2)
-            
-            train_data = combine_single_worker(output[2][:-1], SEQ_LEN )
-            test_data = {k:[v]for k, v in output[2][-1].items()}
-            reward_losses, feef_losses = output[0], output[3]
+            agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
+                take_rand_actions=True,
+                planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
 
         else: 
+            agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
+                desired_reward_stats = reward_from_epoch_stats, 
+                desired_reward_dist_beta=desired_reward_dist_beta,
+                planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
+        seed = np.random.randint(0, 1e9, 1)[0]
+        
+        output = agent.simulate(return_events=True,
+                                compute_feef=compute_feef,
+                                num_episodes=training_rollouts_per_worker, seed=seed)
+        # reward_losses, terminals, sim_data, feef_losses 
+        # TODO: clean this up.
+        #SEQ_LEN, BATCH_SIZE = set_seq_and_batch_vals([output], batch_size_to_seq_len_multiple,dim=2)
+        train_data = combine_single_worker(output[2][:-1], SEQ_LEN )
+        test_data = {k:[v]for k, v in output[2][-1].items()}
+        #train_reward_losses = output[0][:-1]
+        #test_reward_losses = output[0][-1]
+        #train_data = output[2][:-1]
+        #test_data = [output[2][-1]]
+        reward_losses, feef_losses = output[0], output[3]
+
+        '''else: 
             print('need to give the agents the current reward that is desired. ')
-
-            break
-
+            
             if e<random_action_epochs:
                 SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, \
                 reward_losses = generate_rollouts( 
@@ -358,12 +371,13 @@ def main(args):
             else: 
             #if e==0: # can be used to overfit to a single rollout for debugging. 
                 SEQ_LEN, BATCH_SIZE, train_data, test_data, feef_losses, reward_losses = generate_rollouts( 
-                        args.num_workers, batch_size_to_seq_len_multiple, worker_package)
+                        args.num_workers, batch_size_to_seq_len_multiple, worker_package)'''
 
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
 
         # add data to the buffer. 
+
         train_buffer.add_rollouts(train_data)
         test_buffer.add_rollouts(test_data)
 

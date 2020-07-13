@@ -18,6 +18,7 @@ class ReplayBuffer:
         self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
+        self.terminal_rew = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
 
@@ -33,8 +34,8 @@ class ReplayBuffer:
     def add_rollouts(self, rollouts_dict):
         for np_buf, key in zip([self.obs_buf, self.obs2_buf, 
                             self.act_buf, 
-                            self.rew_buf, self.done_buf],
-                            ['obs', 'obs2','act', 'rew', 'terminal'] ):
+                            self.rew_buf, self.done_buf, self.terminal_rew],
+                            ['obs', 'obs2','act', 'rew', 'terminal', 'terminal_rew'] ):
             # TODO: combine these from the rollouts much earlier on. 
             temp_flat = None
             for rollout in rollouts_dict[key]:
@@ -44,14 +45,14 @@ class ReplayBuffer:
                     temp_flat = np.concatenate([temp_flat, rollout], axis=0)
             temp_flat = np.asarray(temp_flat)
             if key =='rew':
-                print('number of iters being added', temp_flat.shape)
+                print('number of iters being added', key, temp_flat.shape)
+            #print('shape of cum rewards overall', len(cum_rewards_per_rollout))
             temp_flat = temp_flat.reshape(combined_shape(-1, np_buf.shape[1:]))
             iters_adding = len(temp_flat)
            
             if (self.ptr+iters_adding)>self.max_size:
                 amount_pre_loop = self.max_size-self.ptr
                 amount_post_loop = iters_adding-amount_pre_loop
-
                 np_buf[self.ptr:] = temp_flat[:amount_pre_loop]
                 np_buf[:amount_post_loop] = temp_flat[amount_pre_loop:]
             else: 
@@ -66,7 +67,8 @@ class ReplayBuffer:
                      obs2=self.obs2_buf[idxs],
                      act=self.act_buf[idxs],
                      rew=self.rew_buf[idxs],
-                     terminal=self.done_buf[idxs])
+                     terminal=self.done_buf[idxs],
+                     terminal_rew=self.terminal_rew[idxs])
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 class TrainBufferDataset:

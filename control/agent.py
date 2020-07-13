@@ -24,8 +24,26 @@ class WeightedNormal:
     def sample(self, nsamps):
         s = self.normal.sample([nsamps])
         s = s*torch.exp(s/self.beta)
-        print("desired reward sampled", s)
+        #print("desired reward sampled", s)
         return s
+
+import scipy.signal
+def discount_cumsum(x, discount):
+    """
+    magic from rllab for computing discounted cumulative sums of vectors.
+
+    input: 
+        vector x, 
+        [x0, 
+         x1, 
+         x2]
+
+    output:
+        [x0 + discount * x1 + discount^2 * x2,  
+         x1 + discount * x2,
+         x2]
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 class Agent:
     def __init__(self, gamename, logdir, decoder_reward_condition,
@@ -35,7 +53,7 @@ class Agent:
         use_planner=False,
         planner_n_particles=100,
         cem_iters=10, 
-        discount_factor=0.90, model_version = 'checkpoint',
+        discount_factor=0.99, model_version = 'checkpoint',
         return_plan_images=False):
         """ Build vae, forward model, and environment. """
 
@@ -44,6 +62,7 @@ class Agent:
         self.action_noise = self.env_params['action_noise']
         self.take_rand_actions = take_rand_actions
         self.use_planner = use_planner
+        self.discount_factor = discount_factor
 
         if desired_reward_stats:
             # TODO: pass these params and the beta param
@@ -239,7 +258,8 @@ class Agent:
                     #sample action
                     # to do add temperature noise. 
                     #print('action is:', action)
-                    action = Categorical(logits=action*self.action_noise).sample([1]).squeeze().cpu().numpy()
+                    action = Categorical(logits=action*self.action_noise).sample([1])
+                    action = action.squeeze().cpu().numpy()
                 
             # needed to accomodate the action repeats. 
             hit_done = False 
@@ -248,8 +268,8 @@ class Agent:
                 next_obs, reward, done, _ = self.env.step(action)
 
                 if not self.take_rand_actions:
-                    pass
                     #curr_desired_reward -= reward
+                    pass
 
                 #print('new curr des reward', curr_desired_reward)
                 
@@ -283,6 +303,7 @@ class Agent:
                     elif key=='obs2' and self.env_params['use_vae']:
                         var = self.transform(var).numpy()
                     rollout_dict[key].append(var)
+            time += 1
 
             if hit_done or time > self.time_limit:
             #print('done with this simulation')
@@ -290,17 +311,16 @@ class Agent:
                     for k,v in rollout_dict.items(): # list of tensors arrays.
                         # rewards to go here. 
                         if k =='rew':
-                            rollout_dict[k] = np.asarray(v)[::-1].cumsum()[::-1]
+                            rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
                         else: 
                             rollout_dict[k] = np.asarray(v) #torch.stack(v)
-
+                    # repeat the cum reward up to length times. 
+                    rollout_dict['terminal_rew'] = np.repeat(cumulative, time)
                     return cumulative, time, rollout_dict # passed back to simulate. 
                 else: 
                     return cumulative, time # ending time and cum reward
                 
             obs = next_obs 
-            time += 1
-
             if render: 
                 if display_monitor:
                     display_monitor.set_data(obs)
@@ -346,6 +366,7 @@ class Agent:
 
         with torch.no_grad():
             for i in range(num_episodes):
+                #print("episode:", i)
 
                 # for every second rollout. reset the rand seed
                 # as given to the rollout for numpy and torch rand numbers
