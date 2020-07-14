@@ -29,11 +29,10 @@ import time
 import random 
 from utils import set_seq_and_batch_vals
 
+
 def main(args):
 
-    assert args.num_workers <= cpu_count(), "Providing too many workers! Need one less than total amount." 
-
-    make_vae_samples, make_mdrnn_samples = False, False 
+    assert args.num_workers <= cpu_count(), "Providing too many workers!" 
 
     Levine_Implementation = False 
     if args.seed:
@@ -71,8 +70,6 @@ def main(args):
         assert training_rollouts_per_worker>1, "need more workers to also make test data!"
 
     num_new_rollouts = args.num_workers*training_rollouts_per_worker
-    #num_prev_epochs_to_store = random_action_epochs
-    # NOTE: this is a lower bound. could go over this depending on how stochastic the buffer adding is!
     
     if Levine_Implementation:
         num_iters_in_buffer = 100000
@@ -88,20 +85,21 @@ def main(args):
         desire_scalings = (0.02, 0.01) # reward then horizon
         discount_factor = 1.0
         last_few = 75
+        # TODO: do I need to provide seeds to the buffer like this? 
         train_buffer = ReplayBuffer(max_buffer_size, args.seed)
         test_buffer = ReplayBuffer(batch_size_to_seq_len_multiple*10, args.seed)
 
-    antithetic = True 
+    antithetic = False  
 
     # for plotting example horizons. Useful with VAE:
-    #example_length = 12
-    #assert example_length<= SEQ_LEN, "Example length must be smaller."
-    #memory_adapt_period = example_length - env_params['actual_horizon']
-    #assert memory_adapt_period >0, "need horizon or example length to be longer!"
-        
-    #iters_through_buffer_each_epoch = 1
-    kl_tolerance=0.5
-    free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
+    if env_params['use_vae']:
+        make_vae_samples = True 
+        example_length = 12
+        assert example_length<= SEQ_LEN, "Example length must be smaller."
+        memory_adapt_period = example_length - env_params['actual_horizon']
+        assert memory_adapt_period >0, "need horizon or example length to be longer!"
+        kl_tolerance=0.5
+        free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
 
     # Init save filenames 
     base_game_dir = join(args.logdir, args.gamename)
@@ -129,7 +127,7 @@ def main(args):
             env_params['ACTION_SIZE'], 
             env_params['NODE_SIZE'], desire_scalings=desire_scalings)
         lr = 0.0003
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # Loading in trained models: 
     if not args.no_reload:
@@ -451,13 +449,13 @@ def main(args):
                             filenames_dict[model_name+'_best'])
         print('====== Done Saving MODEL')
 
-        if make_vae_samples or make_mdrnn_samples:
+        if make_vae_samples:
             generate_model_samples( model, for_upsd_sampling, 
                             samples_dir, SEQ_LEN, env_params['IMAGE_RESIZE_DIM'],
                             example_length,
                             memory_adapt_period, e, device, 
                             make_vae_samples=make_vae_samples,
-                            make_mdrnn_samples=make_mdrnn_samples, 
+                            make_mdrnn_samples=False, 
                             transform_obs=False  )
             print('====== Done Generating Samples')
         

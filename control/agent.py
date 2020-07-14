@@ -88,33 +88,8 @@ class Agent:
                 transforms.ToTensor()
             ])
 
-        # Loading world model and vae
-        # NOTE: the checkpoint, ie most up to date model. Is being loaded in. 
-        
-        if model:
+        if model: 
             self.model = model 
-            self.model.eval()
-            
-        elif not self.take_rand_actions and model is None:
-
-
-            if Levine_Implementation: 
-                self.model = UpsdModel(self.env_params['STORED_STATE_SIZE'],self.env_params['desires_size'], self.env_params['ACTION_SIZE'], self.env_params['NODE_SIZE'])
-
-            else: 
-                self.model = UpsdBehavior(self.env_params['STORED_STATE_SIZE'], 
-                self.env_params['desires_size'], 
-                self.env_params['ACTION_SIZE'], 
-                self.env_params['NODE_SIZE'], desire_scalings=desire_scalings)
-            
-            load_file = join(logdir, 'model_'+model_version+'.tar')
-            assert exists(load_file), "Could not find file: " + load_file + " to load in!"
-            state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
-            print("Loading model_type {} at epoch {} "
-                "with test error {}".format('model',
-                    state['epoch'], state['precision']))
-
-            self.model.load_state_dict(state['state_dict'])
             self.model.eval()
 
         # can be set to true inside Simulate. 
@@ -392,7 +367,3 @@ class Agent:
                 return cum_reward_list, t_list, data_dict_list 
         else: 
             return cum_reward_list, t_list
-
-
-    
-

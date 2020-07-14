@@ -2,6 +2,7 @@
 import numpy as np 
 import torch 
 import random 
+import bisect
 def combined_shape(length, shape=None):
     # taken from openAI spinning up. 
     if shape is None:
@@ -9,9 +10,11 @@ def combined_shape(length, shape=None):
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
 class ReplayBuffer():
-    def __init__(self, max_size, seed):
+    def __init__(self, max_size, seed, batch_size, num_grad_steps):
         self.max_size = max_size
         self.buffer = []
+        self.batch_size = batch_size
+        self.num_grad_steps = num_grad_steps
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -96,8 +99,11 @@ class ReplayBuffer():
 
         return mean_returns, std_returns, new_desired_horizon
     
+    def __getitem__(self, idx):
+        return self.get_episodes(self.batch_size)
+
     def __len__(self):
-        return len(self.buffer)
+        return self.num_grad_steps
 
 class RingBuffer:
     """
