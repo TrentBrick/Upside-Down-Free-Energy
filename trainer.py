@@ -59,7 +59,7 @@ def main(args):
     SEQ_LEN = 1 # number of sequences in a row used during training
     # needs one more than this for the forward predictions. 
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
-    epochs = 2000
+    epochs = 700
     random_action_epochs = 1
     evaluate_every = 10
 
@@ -78,7 +78,7 @@ def main(args):
     if Levine_Implementation:
         num_iters_in_buffer = 100000
         max_buffer_size = num_iters_in_buffer #num_new_rollouts*num_prev_epochs_to_store
-        training_num_grad_steps = 1000 #max_buffer_size//BATCH_SIZE
+        args.num_grad_steps = 1000 #max_buffer_size//BATCH_SIZE
         discount_factor = 0.99
         train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=max_buffer_size)
         test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
@@ -86,7 +86,6 @@ def main(args):
         desire_scalings = None
     else: 
         max_buffer_size = 500 
-        training_num_grad_steps = 100
         desire_scalings = (0.02, 0.01) # reward then horizon
         discount_factor = 1.0
         last_few = 75
@@ -111,7 +110,7 @@ def main(args):
     free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
 
     # Init save filenames 
-    game_dir = join(args.logdir, args.gamename)
+    game_dir = join(args.logdir, args.gamename, 'seed_'+str(args.seed)+'_gradsteps_'+str(args.num_grad_steps))
     filenames_dict = { 'model_'+bc:join(game_dir, 'model_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
     # make directories if they dont exist
     samples_dir = join(game_dir, 'samples')
@@ -251,7 +250,7 @@ def main(args):
             buffer = train_buffer
             model.train()
             # TODO: I need to adjust this!!!
-            num_grad_steps = training_num_grad_steps
+            num_grad_steps = args.num_grad_steps
             
         else:
             buffer = test_buffer
@@ -343,9 +342,11 @@ def main(args):
                 cem_iters, discount_factor,
                 compute_feef, antithetic ]
 
+    cum_iters_generated = 0
+
     for e in range(epochs):
         print('====== New Epoch:', e)
-        ## run the current policy with the current VAE and MDRNN
+        ## run the current policy with the current MODEL
 
         # NOTE: each worker loads in the checkpoint model not the best model! Want to use up to date. 
         print('====== Generating Rollouts to train the Model') 
@@ -370,9 +371,9 @@ def main(args):
         
         seed = np.random.randint(0, 1e9, 1)[0]
         
-        output = agent.simulate(return_events=True,
+        output = agent.simulate(seed, return_events=True,
                                 compute_feef=compute_feef,
-                                num_episodes=training_rollouts_per_worker, seed=seed)
+                                num_episodes=training_rollouts_per_worker)
         #SEQ_LEN, BATCH_SIZE = set_seq_and_batch_vals([output], batch_size_to_seq_len_multiple,dim=2)
         train_data = combine_single_worker(output[2][:-1], SEQ_LEN )
         test_data = {k:[v]for k, v in output[2][-1].items()}
@@ -396,6 +397,7 @@ def main(args):
         # dictionary of items with lists inside of each rollout. 
 
         # add data to the buffer. 
+        iters_generated = 0
         if Levine_Implementation: 
             train_buffer.add_rollouts(train_data)
             test_buffer.add_rollouts(test_data)
@@ -403,16 +405,17 @@ def main(args):
             for r in range(len(train_data['terminal'])):
                 train_buffer.add_sample(  train_data['obs'][r], train_data['act'][r], 
                     train_data['rew'][r], len(train_data['terminal'][r]) )
+                iters_generated+= len(train_data['terminal'][r])
 
             for r in range(len(test_data['terminal'])):
                 test_buffer.add_sample(  test_data['obs'][r], test_data['act'][r], 
                     test_data['rew'][r], len(test_data['terminal'][r]) )
-
+        cum_iters_generated+= iters_generated
         #for it in range(iters_through_buffer_each_epoch):
         #train_loader = DataLoader(train_dataset,
         #    batch_size=BATCH_SIZE, num_workers=0, shuffle=True, drop_last=False)
         print('====== Starting Training Models')
-        # train VAE and MDRNN. uses partial(data_pass)
+        # train MODEL. uses partial(data_pass)
         train_loss_dict = train(e)
         print('====== Done Training Models')
         #test_loader = DataLoader(test_dataset, shuffle=True,
@@ -436,6 +439,12 @@ def main(args):
             last_few_mean_returns, last_few_std_returns, desired_horizon  = train_buffer.get_desires(last_few=last_few)
             reward_from_epoch_stats = (last_few_mean_returns, last_few_std_returns)
     
+            for name, var in zip(['mu', 'std', 'horizon'], [last_few_mean_returns, last_few_std_returns, desired_horizon]):
+                test_loss_dict[name] = var
+
+            test_loss_dict['cum_num_iters']=cum_iters_generated
+
+
         print('====== Test Loss dictionary:', test_loss_dict)
 
         # checkpointing the model. Necessary to ensure the workers load in the most up to date checkpoint.
@@ -451,7 +460,7 @@ def main(args):
                 "precision": test_loss_dict['loss'],
                 "epoch": e}, is_best, filenames_dict[model_name+'_checkpoint'],
                             filenames_dict[model_name+'_best'])
-        print('====== Done Saving VAE and MDRNN')
+        print('====== Done Saving MODEL')
 
         if make_vae_samples or make_mdrnn_samples:
             generate_model_samples( model, for_upsd_sampling, 
@@ -469,9 +478,11 @@ def main(args):
         if e%evaluate_every==0:
             print('======= Evaluating the agent')
             seed = np.random.randint(0, 1e9, 1)[0]
-            cum_rewards, finish_times = agent.simulate(num_episodes=5, greedy=True)
+            cum_rewards, finish_times = agent.simulate(seed, num_episodes=5, greedy=True)
             print('Evaluation, mean reward:', np.mean(cum_rewards), 'mean horizon length:', np.mean(finish_times))
             print('===========================')
+
+
 if __name__ =='__main__':
     parser = argparse.ArgumentParser("Training Script")
     parser.add_argument('--gamename', type=str,
@@ -479,7 +490,7 @@ if __name__ =='__main__':
     parser.add_argument('--logdir', type=str, default='exp_dir',
                         help="Where things are logged and models are loaded from.")
     parser.add_argument('--no_reload', action='store_true',
-                        help="Won't load in models for VAE and MDRNN from the joint file. \
+                        help="Won't load in models for MODEL from the joint file. \
                         NB. This will create new models with random inits and will overwrite \
                         the best and checkpoints!")
     parser.add_argument('--giving_pretrained', action='store_true',
@@ -491,5 +502,7 @@ if __name__ =='__main__':
                         "specified.")
     parser.add_argument('--seed', type=int, default=27,
                         help="Starter seed for reproducible results")
+    parser.add_argument('--num_grad_steps', type=int, default=100,
+                        help="Grad steps per data collection")
     args = parser.parse_args()
     main(args)

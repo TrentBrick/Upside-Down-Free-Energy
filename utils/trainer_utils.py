@@ -34,7 +34,6 @@ def write_logger(logger_filename, train_loss_dict, test_loss_dict):
         log_string+= '\n'
         file.write(log_string)
 
-
 def save_checkpoint(state, is_best, filename, best_filename):
     """ Save state in filename. Also save in best_filename if is_best. """
     start_time = time.time()

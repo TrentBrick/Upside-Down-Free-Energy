@@ -86,9 +86,9 @@ def worker(inp): # run lots of rollouts
             cem_iters=cem_iters, 
             discount_factor=discount_factor)
 
-    return agent.simulate(return_events=True,
+    return agent.simulate(seed, return_events=True,
             compute_feef=compute_feef,
-            num_episodes=training_rollouts_per_worker, seed=seed, antithetic=antithetic)
+            num_episodes=training_rollouts_per_worker, antithetic=antithetic)
 
 
 def generate_rollouts(num_workers, 
@@ -145,7 +145,7 @@ def generate_rollouts(num_workers,
     # TODO: get rid of this if I am not using sequence length in my training!!!
     #seq_len, batch_size = set_seq_and_batch_vals(res, batch_size_to_seq_len_multiple, dim=2)
     seq_len, batch_size = 1, batch_size_to_seq_len_multiple
-    
+
     print("Number of rollouts being given to test:", len(res[ninety_perc:]))
 
     return seq_len, batch_size, combine_worker_rollouts(res[:ninety_perc], seq_len, dim=2), \
