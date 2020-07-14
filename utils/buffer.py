@@ -100,7 +100,7 @@ class ReplayBuffer():
         return mean_returns, std_returns, new_desired_horizon
     
     def __getitem__(self, idx):
-        return self.get_episodes(self.batch_size)
+        return self.sample_batch(self.batch_size)
 
     def __len__(self):
         return self.num_grad_steps
