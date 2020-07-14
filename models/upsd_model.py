@@ -4,6 +4,8 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.distributions import Categorical
+import numpy as np 
 
 class UpsdModel(nn.Module):
     """ Using Fig.1 from Reward Conditioned Policies 
@@ -68,7 +70,7 @@ class UpsdBehavior(nn.Module):
                  state_size, 
                  desires_size,
                  action_size, 
-                 hidden_size, 
+                 hidden_size, # not currently being used!!!
                  desire_scalings = [1, 1],
                  device='cpu'):
         super().__init__()
@@ -83,16 +85,13 @@ class UpsdBehavior(nn.Module):
         
         self.output_fc = nn.Sequential(nn.Linear(64, 128), 
                                        nn.ReLU(), 
-    #                                  nn.Dropout(0.2),
+                                       #nn.Dropout(0.2),
                                        nn.Linear(128, 128), 
                                        nn.ReLU(), 
-    #                                  nn.Dropout(0.2),
+                                       #nn.Dropout(0.2),
                                        nn.Linear(128, 128), 
                                        nn.ReLU(), 
-                                       nn.Linear(128, action_size))
-        
-        self.to(device)
-        
+                                       nn.Linear(128, action_size))   
     
     def forward(self, state, command):
         '''Forward pass

@@ -1,7 +1,6 @@
 # pylint: disable=no-member
 """ 
-Joint training of the VAE and RNN (forward model) using 
-CEM based probabilistic Planner. 
+Training of the UpsideDown RL model.
 """
 import argparse
 from functools import partial
@@ -59,7 +58,7 @@ def main(args):
     SEQ_LEN = 1 # number of sequences in a row used during training
     # needs one more than this for the forward predictions. 
     BATCH_SIZE = batch_size_to_seq_len_multiple//SEQ_LEN
-    epochs = 700
+    epochs = 1500
     random_action_epochs = 1
     evaluate_every = 10
 
@@ -92,11 +91,6 @@ def main(args):
         train_buffer = ReplayBuffer(max_buffer_size, args.seed)
         test_buffer = ReplayBuffer(batch_size_to_seq_len_multiple*10, args.seed)
 
-    # Planner and Forward Model Parameters!
-    planner_n_particles = 700
-    cem_iters = 7
-    decoder_reward_condition = False
-    decoder_make_sigmas = False
     antithetic = True 
 
     # for plotting example horizons. Useful with VAE:
@@ -110,7 +104,10 @@ def main(args):
     free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']]).to(device)
 
     # Init save filenames 
-    game_dir = join(args.logdir, args.gamename, 'seed_'+str(args.seed)+'_gradsteps_'+str(args.num_grad_steps))
+    base_game_dir = join(args.logdir, args.gamename)
+    if not exists(base_game_dir):
+        mkdir(base_game_dir)
+    game_dir = join(base_game_dir, 'seed_'+str(args.seed)+'_gradsteps_'+str(args.num_grad_steps))
     filenames_dict = { 'model_'+bc:join(game_dir, 'model_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
     # make directories if they dont exist
     samples_dir = join(game_dir, 'samples')
@@ -120,17 +117,6 @@ def main(args):
     logger_filename = join(game_dir, 'logger.txt')
 
     # init models
-    '''model = RSSModel(
-        env_params['ACTION_SIZE'],
-        env_params['LATENT_RECURRENT_SIZE'],
-        env_params['LATENT_SIZE'],
-        env_params['EMBEDDING_SIZE'],
-        env_params['NODE_SIZE'],
-        env_params['use_vae'],
-        decoder_reward_condition,
-        decoder_make_sigmas,
-        device=device,
-    )'''
     if Levine_Implementation:
         model = UpsdModel(env_params['STORED_STATE_SIZE'], 
             env_params['desires_size'], 
@@ -336,10 +322,9 @@ def main(args):
     ################## Main Training Loop ############################
 
     # all of these are static across epochs. 
-    worker_package = [ args.gamename, decoder_reward_condition,
+    worker_package = [ args.gamename,
                 game_dir, training_rollouts_per_worker,
-                planner_n_particles, 
-                cem_iters, discount_factor,
+                discount_factor,
                 compute_feef, antithetic ]
 
     cum_iters_generated = 0
@@ -356,18 +341,18 @@ def main(args):
             # dont use multiprocessing. 
         if e<random_action_epochs:
 
-            agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
+            agent = Agent(args.gamename, game_dir, 
                 take_rand_actions=True,
-                planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
+                discount_factor=discount_factor)
 
         else: 
-            agent = Agent(args.gamename, game_dir, decoder_reward_condition, 
+            agent = Agent(args.gamename, game_dir, 
                 model = model, 
                 Levine_Implementation= Levine_Implementation,
                 desired_reward_stats = reward_from_epoch_stats, 
                 desired_horizon = desired_horizon,
                 desired_reward_dist_beta=desired_reward_dist_beta,
-                planner_n_particles=planner_n_particles, cem_iters=cem_iters, discount_factor=discount_factor)
+                discount_factor=discount_factor)
         
         seed = np.random.randint(0, 1e9, 1)[0]
         
@@ -375,9 +360,13 @@ def main(args):
                                 compute_feef=compute_feef,
                                 num_episodes=training_rollouts_per_worker)
         #SEQ_LEN, BATCH_SIZE = set_seq_and_batch_vals([output], batch_size_to_seq_len_multiple,dim=2)
-        train_data = combine_single_worker(output[2][:-1], SEQ_LEN )
-        test_data = {k:[v]for k, v in output[2][-1].items()}
-        reward_losses, feef_losses = output[0], output[3]
+        if Levine_Implementation: 
+            train_data = combine_single_worker(output[2][:-1], SEQ_LEN )
+            test_data = {k:[v]for k, v in output[2][-1].items()}
+        else: 
+            train_data =output[2][:-1]
+            test_data = [output[2][-1]]
+        reward_losses, termination_times, feef_losses = output[0], output[1], output[3]
 
         '''else: 
             print('need to give the agents the current reward that is desired. ')
@@ -402,14 +391,14 @@ def main(args):
             train_buffer.add_rollouts(train_data)
             test_buffer.add_rollouts(test_data)
         else: 
-            for r in range(len(train_data['terminal'])):
-                train_buffer.add_sample(  train_data['obs'][r], train_data['act'][r], 
-                    train_data['rew'][r], len(train_data['terminal'][r]) )
-                iters_generated+= len(train_data['terminal'][r])
+            for r in range(len(train_data)):
+                train_buffer.add_sample(  train_data[r]['obs'], train_data[r]['act'], 
+                    train_data[r]['rew'], termination_times[r] )
+                iters_generated+= termination_times[r]
 
-            for r in range(len(test_data['terminal'])):
-                test_buffer.add_sample(  test_data['obs'][r], test_data['act'][r], 
-                    test_data['rew'][r], len(test_data['terminal'][r]) )
+            for r in range(len(test_data)):
+                test_buffer.add_sample(  test_data[r]['obs'], test_data[r]['act'], 
+                    test_data[r]['rew'], len(test_data[r]['terminal']) )
         cum_iters_generated+= iters_generated
         #for it in range(iters_through_buffer_each_epoch):
         #train_loader = DataLoader(train_dataset,

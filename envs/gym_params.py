@@ -57,9 +57,10 @@ def get_env_params(gamename):
             'action_noise' :0.3
         }
 
-    elif gamename == "lunarlander":
+    elif gamename == "lunarlander" or gamename == "lunarlander-sparse":
         env_params = {
             'env_name': 'LunarLander-v2',
+            'sparse':False,
             'continuous_actions':False,
             'desired_reward':200,
             'desired_horizon': 30,
@@ -89,6 +90,8 @@ def get_env_params(gamename):
             'reward_prior_sigma':0.2,
             'action_noise' : 1.0#0.05 # lower the value the more uniform it is
         }
+        if gamename == "lunarlander-sparse":
+            env_params['sparse'] = True
 
     elif gamename == "cartpole":
         env_params = {

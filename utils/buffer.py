@@ -50,7 +50,7 @@ class ReplayBuffer():
             # samples one thing from each episode?????? this is weird. 
             T = episode['length']
             t1 = np.random.randint(0, T)
-            t2 = np.random.randint(t1+1, T+1)
+            t2 = np.random.randint(t1+1, T+1) #T-1
             dr = sum(episode['rewards'][t1:t2])
             dh = t2 - t1
             

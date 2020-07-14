@@ -47,7 +47,7 @@ def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 class Agent:
-    def __init__(self, gamename, logdir, decoder_reward_condition,
+    def __init__(self, gamename, logdir,
         model = None, 
         desire_scalings=None, 
         take_rand_actions = False,
@@ -55,9 +55,6 @@ class Agent:
         Levine_Implementation = False, 
         desired_reward_dist_beta = 1.0,
         desired_horizon = 250, 
-        use_planner=False,
-        planner_n_particles=100,
-        cem_iters=10, 
         discount_factor=1.0, model_version = 'checkpoint',
         return_plan_images=False):
         """ Build vae, forward model, and environment. """
@@ -66,7 +63,6 @@ class Agent:
         self.env_params = get_env_params(gamename)
         self.action_noise = self.env_params['action_noise']
         self.take_rand_actions = take_rand_actions
-        self.use_planner = use_planner
         self.discount_factor = discount_factor
         self.Levine_Implementation = Levine_Implementation
 
@@ -83,6 +79,7 @@ class Agent:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.time_limit = self.env_params['time_limit']
+        self.num_action_repeats = self.env_params['num_action_repeats']
 
         # transform used on environment generated observations. 
         self.transform = transforms.Compose([
@@ -94,12 +91,6 @@ class Agent:
         # Loading world model and vae
         # NOTE: the checkpoint, ie most up to date model. Is being loaded in. 
         
-        self.num_action_repeats = self.env_params['num_action_repeats']
-        
-        self.give_raw_pixels = self.env_params['give_raw_pixels']
-
-        self.make_env()
-
         if model:
             self.model = model 
             self.model.eval()
@@ -115,17 +106,7 @@ class Agent:
                 self.env_params['desires_size'], 
                 self.env_params['ACTION_SIZE'], 
                 self.env_params['NODE_SIZE'], desire_scalings=desire_scalings)
-            '''self.model = RSSModel(
-            self.env_params['ACTION_SIZE'],
-            self.env_params['LATENT_RECURRENT_SIZE'],
-            self.env_params['LATENT_SIZE'],
-            self.env_params['EMBEDDING_SIZE'],
-            self.env_params['NODE_SIZE'],
-            self.env_params['use_vae'],
-            decoder_reward_condition,
-            False, #decoder make sigmas
-            device=self.device,
-            )'''
+            
             load_file = join(logdir, 'model_'+model_version+'.tar')
             assert exists(load_file), "Could not find file: " + load_file + " to load in!"
             state = torch.load(load_file, map_location={'cuda:0': str(self.device)})
@@ -136,39 +117,9 @@ class Agent:
             self.model.load_state_dict(state['state_dict'])
             self.model.eval()
 
-        elif use_planner:
-
-            # the real horizon 
-            self.horizon = self.env_params['actual_horizon']
-            self.planner_n_particles = planner_n_particles
-            self.cem_iters = cem_iters 
-            self.discount_factor = discount_factor
-            self.k_top = int(planner_n_particles*0.10)
-
-            self.planner = Planner(
-                self.model,
-                self.env_params['ACTION_SIZE'],
-                (self.env.action_space.low, self.env.action_space.high),
-                self.env_params['init_cem_params'],
-                plan_horizon=self.horizon,
-                optim_iters=self.cem_iters,
-                num_particles=self.planner_n_particles,
-                k_top=self.k_top,
-                discount_factor=discount_factor,
-                return_plan_images = return_plan_images
-            )
-
         # can be set to true inside Simulate. 
         self.return_events = False
 
-        self.env.close()
-
-        # TODO: make an RSSM ensemble. 
-        '''self.mdrnn_ensemble = [self.model]
-        self.ensemble_size = len(self.mdrnn_ensemble)
-        assert self.planner_n_particles  % self.ensemble_size==0, "Need planner n particles and ensemble size to be perfectly divisible!"
-        self.ensemble_batchsize = self.planner_n_particles//self.ensemble_size '''
-        
     def make_env(self, seed=None, render_mode=False, full_episode=False):
         """ Called every time a new rollout occurs. Creates a new environment and 
         sets a new random seed for it."""
@@ -213,9 +164,11 @@ class Agent:
         """
 
         obs = self.env.reset()
+        if self.env_params['give_raw_pixels']:
+            obs = self.env.render(mode='rgb_array')
+            #self.env.viewer.window.dispatch_events()
 
         # sample a desired reward
-
         if not self.take_rand_actions:
             if self.Levine_Implementation:
                 curr_desired_reward = self.desired_reward_dist.sample(1)
@@ -224,13 +177,11 @@ class Agent:
                 curr_desired_reward = torch.Tensor([min(curr_desired_reward, self.env_params['max_reward']  )])
                 curr_desired_horizon = torch.Tensor([self.desired_horizon])
 
-        if self.give_raw_pixels:
-            obs = self.env.render(mode='rgb_array')
-            #self.env.viewer.window.dispatch_events()
-        if not self.take_rand_actions and self.use_planner:
-            hidden, state, action = self.model.init_hidden_state_action(1)
+        # useful if use an LSTM. 
+        #hidden, state, action = self.model.init_hidden_state_action(1)
 
-        sim_rewards_queue = []
+        if self.gamename == 'carracing':
+            sim_rewards_queue = []
         cumulative = 0
         time = 0
         hit_done = False 
@@ -239,14 +190,17 @@ class Agent:
             rollout_dict = {k:[] for k in ['obs', 'obs2', 'rew', 'act', 'terminal']}
         
         while not hit_done:
-            #print('iteration of the rollout', time)
 
             # NOTE: maybe make this unique to carracing here? 
             if self.obs_trim is not None:
                 # trims the control panel at the base for the carracing environment. 
                 obs = obs[self.obs_trim[0]:self.obs_trim[1], 
-                            self.obs_trim[2]:self.obs_trim[3], 
-                            :]
+                            self.obs_trim[2]:self.obs_trim[3], :]
+
+            if render: 
+                if display_monitor:
+                    display_monitor.set_data(obs)
+                self.env.render()
 
             if self.env_params['use_vae']:
                 obs = self.transform(obs).unsqueeze(0).to(self.device)
@@ -255,26 +209,26 @@ class Agent:
 
             if self.take_rand_actions:
                 action = self.env.action_space.sample()
-        
-            # use upside down model: 
-            desires = torch.cat([curr_desired_reward.unsqueeze(1), torch.Tensor([time]).unsqueeze(1)], dim=1)
-            action = self.model(obs, desires )
-            # need to constrain the action! 
-            if self.env_params['continuous_actions']:
-                action = self._add_action_noise(action, self.action_noise)
-                action = self.constrain_actions(action)
-                action = action[0].cpu().numpy()
             else: 
-                #sample action
-                # to do add temperature noise. 
-                #print('action is:', action)
-                #if self.Levine_Implementation:
-                if greedy: 
-                    action = torch.argmax(action).squeeze().cpu().numpy()
+                # use upside down model: 
+                desires = torch.cat([curr_desired_reward.unsqueeze(1), torch.Tensor([time]).unsqueeze(1)], dim=1)
+                action = self.model(obs, desires )
+                # need to constrain the action! 
+                if self.env_params['continuous_actions']:
+                    action = self._add_action_noise(action, self.action_noise)
+                    action = self.constrain_actions(action)
+                    action = action[0].cpu().numpy()
                 else: 
-                    action = torch.softmax(action*self.action_noise, dim=1)
-                    action = Categorical(probs=action).sample([1])
-                    action = action.squeeze().cpu().numpy()
+                    #sample action
+                    # to do add temperature noise. 
+                    #print('action is:', action)
+                    #if self.Levine_Implementation:
+                    if greedy: 
+                        action = torch.argmax(action).squeeze().cpu().numpy()
+                    else: 
+                        action = torch.softmax(action*self.action_noise, dim=1)
+                        action = Categorical(probs=action).sample([1])
+                        action = action.squeeze().cpu().numpy()
             
             # using action repeats
             action_rep_rewards = 0
@@ -287,13 +241,13 @@ class Agent:
             # reward is all of the rewards collected during the action repeats. 
             reward = action_rep_rewards
 
-            if self.give_raw_pixels:
+            if self.env_params['give_raw_pixels']:
                 next_obs = self.env.render(mode='rgb_array')
                 #self.env.viewer.window.dispatch_events()
 
             # has gone over and still not crashed: 
             if not hit_done and time>=self.time_limit:
-                reward = self.env_params(['over_max_time_limit'])
+                reward = self.env_params['over_max_time_limit']
                 hit_done = True
 
             if self.env_params['sparse']:
@@ -345,12 +299,8 @@ class Agent:
                         var = self.transform(var).numpy()
                     rollout_dict[key].append(var)
 
+            # This is crucial. 
             obs = next_obs
-
-            if render: 
-                if display_monitor:
-                    display_monitor.set_data(obs)
-                self.env.render()
 
         #print('time at end of rollout!!!', time)
         #print('done with this simulation')
@@ -364,7 +314,7 @@ class Agent:
             # repeat the cum reward up to length times. 
             rollout_dict['terminal_rew'] = np.repeat(cumulative, time)
             rollout_dict['time'] = np.arange(time, 0, -1)
-            print('lenghts of things being added:', len(rollout_dict['terminal_rew']), len(rollout_dict['time']), len(rollout_dict['rew']) )
+            #print('lenghts of things being added:', time, len(rollout_dict['terminal_rew']), len(rollout_dict['time']), len(rollout_dict['rew']) )
             return cumulative, time, rollout_dict # passed back to simulate. 
         else: 
             return cumulative, time # ending time and cum reward
