@@ -28,11 +28,11 @@ class LightningTemplate(pl.LightningModule):
             self.model = UpsdModel(self.config['STORED_STATE_SIZE'], 
             self.config['desires_size'], 
             self.config['ACTION_SIZE'], 
-            self.config['NODE_SIZE'], desire_scalings=config['desire_scalings'])
+            self.config['NODE_SIZE'], desire_scalings=(config['reward_scale'],config['horizon_scale']))
         else: 
             self.model = UpsdBehavior( self.config['STORED_STATE_SIZE'], 
                 self.config['ACTION_SIZE'], 
-                self.config['NODE_SIZE'], config['desire_scalings'] )
+                self.config['NODE_SIZE'], (config['reward_scale'],config['horizon_scale']) )
 
         # start filling up the buffer.
         output = self.collect_rollouts() 

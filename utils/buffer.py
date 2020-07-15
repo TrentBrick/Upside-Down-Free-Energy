@@ -90,7 +90,7 @@ class ReplayBuffer():
         #The exploratory desired horizon dh0 is set to the mean of the lengths of the selected episodes
         #print([len(i["states"]) for i in top_X])
         #print([i["length"] for i in top_X])
-        new_desired_horizon = np.mean([len(i["states"]) for i in top_X])
+        new_desired_horizon = round(np.mean([i["length"] for i in top_X]))
         # save all top_X cumulative returns in a list 
         returns = [i["summed_rewards"] for i in top_X]
         # from these returns calc the mean and std

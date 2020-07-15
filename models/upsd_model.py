@@ -31,24 +31,15 @@ class UpsdBehavior(nn.Module):
         self.command_fc = nn.Sequential(nn.Linear(2, hidden_sizes[0]), 
                                         nn.Sigmoid())
 
-        self.output_fc = []
+        layers = nn.ModuleList()
         hidden_sizes.append(action_size)
         output_activation= nn.Identity
-        activation = nn.ReLU()
+        activation = nn.ReLU
         for j in range(len(hidden_sizes)-1):
-            act = activation if j < len(sizes)-2 else output_activation
-            layers += [nn.Linear(sizes[j], sizes[j+1]), act()]
-        self.output_fc = nn.Sequential(*self.output_fc)
-        
-        '''self.output_fc = nn.Sequential(nn.Linear(hidden_size, hidden_size), 
-                                       nn.ReLU(), 
-                                       #nn.Dropout(0.2),
-                                       nn.Linear(hidden_size, hidden_size), 
-                                       nn.ReLU(), 
-                                       #nn.Dropout(0.2),
-                                       nn.Linear(hidden_size, hidden_size), 
-                                       nn.ReLU(), 
-                                       nn.Linear(hidden_size, action_size))   '''
+            act = activation if j < len(hidden_sizes)-2 else output_activation
+            layers.append(nn.Linear(hidden_sizes[j], hidden_sizes[j+1]) )
+            layers.append(act())
+        self.output_fc = nn.Sequential(*layers)
     
     def forward(self, state, command):
         '''Forward pass

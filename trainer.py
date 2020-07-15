@@ -38,8 +38,8 @@ class TuneReportCallback(Callback):
     def on_epoch_end(self, trainer, pl_module):
         tune.report(
             loss=trainer.callback_metrics["train_loss"],
-            mean_reward=pl_module.mean_reward_rollouts
-            mean_reward_20_epochs = mean_reward_over_20_epochs[-20:]/20,
+            mean_reward=pl_module.mean_reward_rollouts,
+            mean_reward_20_epochs = sum(pl_module.mean_reward_over_20_epochs[-20:])/20,
             epoch=trainer.current_epoch)
 
 def main(args):
@@ -59,13 +59,12 @@ def main(args):
     # Constants
     epochs = 300
     training_rollouts_total = 20
-    training_rollouts_per_worker = tune.choice( [10, 20, 30, 40]) #training_rollouts_total//args.num_workers
+    #training_rollouts_total//args.num_workers
     constants = dict(
         random_action_epochs = 1,
         evaluate_every = 10,
         training_rollouts_total = training_rollouts_total,
-        training_rollouts_per_worker = training_rollouts_per_worker,
-        num_new_rollouts = args.num_workers*training_rollouts_per_worker,
+        training_rollouts_per_worker = tune.choice( [10, 20, 30, 40]),
         antithetic = False,
     )
     if Levine_Implementation:
@@ -86,11 +85,11 @@ def main(args):
         
     else: 
         config= dict(
-        lr= tune.loguniform(-4, -2),
+        lr= tune.choice(np.logspace(-4, -2, num = 101)),
         batch_size = tune.choice([512, 768, 1024, 1536, 2048]),
         max_buffer_size = tune.choice([300, 400, 500, 600, 700]),
-        horizon_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]) #(0.02, 0.01), # reward then horizon
-        reward_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03])
+        horizon_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
+        reward_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
         discount_factor = 1.0,
         last_few = tune.choice([25, 75]),
         Levine_Implementation=Levine_Implementation,
@@ -102,10 +101,8 @@ def main(args):
     config.update(constants) 
     config.update(env_params)
     config.update(vars(args))
-    config['desire_scalings'] = (config['reward_scale'],config['horizon_scale'])
-    config['sparse'] = True #tune.choice([True, False])
     config['NODE_SIZE'] = tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
-        [64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128])
+        [64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
 
     use_tune = True  
 
@@ -191,10 +188,10 @@ def main(args):
         reduction_factor=4)
 
     reporter = CLIReporter(
-        metric_columns=["loss", "mean_reward", "epoch"],
+        metric_columns=["loss", "mean_reward_20_epochs", "epoch"],
         )
 
-    num_samples = 500
+    num_samples = 256
     if use_tune:
         tune.run(
             run_lightning,
