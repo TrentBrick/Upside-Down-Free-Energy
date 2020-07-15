@@ -57,15 +57,18 @@ def main(args):
     env_params = get_env_params(args.gamename)
 
     # Constants
-    epochs = 300
+    epochs = 400
     training_rollouts_total = 20
     #training_rollouts_total//args.num_workers
     constants = dict(
         random_action_epochs = 1,
-        evaluate_every = 10,
+        eval_every = 10,
+        eval_episodes=10,
         training_rollouts_total = training_rollouts_total,
-        training_rollouts_per_worker = tune.choice( [10, 20, 30, 40]),
+        training_rollouts_per_worker = 20, #tune.choice( [10, 20, 30, 40]),
+        num_rand_action_rollouts = 10,
         antithetic = False,
+        Levine_Implementation=Levine_Implementation
     )
     if Levine_Implementation:
         config= dict(
@@ -76,7 +79,6 @@ def main(args):
             desired_reward_dist_beta = 1000,
             weight_loss = True,
             desire_scalings =None, 
-            Levine_Implementation=Levine_Implementation,
             num_grad_steps = 1000
         )
         train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'])
@@ -85,26 +87,25 @@ def main(args):
         
     else: 
         config= dict(
-        lr= tune.choice(np.logspace(-4, -2, num = 101)),
-        batch_size = tune.choice([512, 768, 1024, 1536, 2048]),
-        max_buffer_size = tune.choice([300, 400, 500, 600, 700]),
-        horizon_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
-        reward_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
+        lr= 0.0003, #tune.choice(np.logspace(-4, -2, num = 101)),
+        batch_size = 768, #tune.choice([512, 768, 1024, 1536, 2048]),
+        max_buffer_size = 500, #tune.choice([300, 400, 500, 600, 700]),
+        horizon_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
+        reward_scale = 0.02, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
         discount_factor = 1.0,
-        last_few = tune.choice([25, 75]),
-        Levine_Implementation=Levine_Implementation,
+        last_few = 75, #tune.choice([25, 75]),
         desired_reward_dist_beta=1,
-        num_grad_steps = tune.choice([100, 150, 200, 250, 300])
+        num_grad_steps = 100,#tune.choice([100, 150, 200, 250, 300])
         )
         # TODO: do I need to provide seeds to the buffer like this? 
         
     config.update(constants) 
     config.update(env_params)
     config.update(vars(args))
-    config['NODE_SIZE'] = tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
-        [64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
+    config['NODE_SIZE'] = [64,128,128,128] #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
+        #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
 
-    use_tune = True  
+    use_tune = False   
 
     # for plotting example horizons. Useful with VAE:
     '''if env_params['use_vae']:
@@ -138,6 +139,7 @@ def main(args):
     if use_tune:
         logger=False 
         every_checkpoint_callback = False 
+        callback_list = [TuneReportCallback()]
     else: 
         logger = TensorBoardLogger(game_dir, "logger")
         # have the checkpoint overwrite itself. 
@@ -149,6 +151,7 @@ def main(args):
             mode='min',
             prefix=''
         )
+        callback_list = []
     '''best_checkpoint_callback = ModelCheckpoint(
         filepath=filenames_dict['best'],
         save_top_k=1,
@@ -174,7 +177,7 @@ def main(args):
             default_root_dir=game_dir, max_epochs=epochs, profiler=False,
             checkpoint_callback = every_checkpoint_callback,
             log_save_interval=1,
-            callbacks=[TuneReportCallback()], 
+            callbacks=callback_list, 
             progress_bar_refresh_rate=0
         )
         trainer.fit(model)

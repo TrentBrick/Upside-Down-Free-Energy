@@ -52,9 +52,9 @@ class Agent:
         desire_scalings=None, 
         take_rand_actions = False,
         desired_reward_stats=(1,1),
+        desired_horizon = 250,
         Levine_Implementation = False, 
         desired_reward_dist_beta = 1.0,
-        desired_horizon = 250, 
         discount_factor=1.0, model_version = 'checkpoint',
         return_plan_images=False):
         """ Build vae, forward model, and environment. """
@@ -70,7 +70,6 @@ class Agent:
             print('the desired stats are:', desired_reward_stats)
             self.desired_reward_dist = WeightedNormal(desired_reward_stats[0], 
                 desired_reward_stats[1], beta=desired_reward_dist_beta)
-
         else:
             self.desired_rew_mu, self.desired_rew_std, self.desired_horizon = desired_reward_stats[0], desired_reward_stats[1], desired_horizon
             
@@ -160,7 +159,7 @@ class Agent:
             sim_rewards_queue = []
         cumulative = 0
         time = 0
-        hit_done = False 
+        hit_done = False
 
         if self.return_events:
             rollout_dict = {k:[] for k in ['obs', 'obs2', 'rew', 'act', 'terminal']}
@@ -187,24 +186,24 @@ class Agent:
                 action = self.env.action_space.sample()
             else: 
                 # use upside down model: 
-                desires = torch.cat([curr_desired_reward.unsqueeze(1), torch.Tensor([time]).unsqueeze(1)], dim=1)
+                desires = torch.cat([curr_desired_reward.unsqueeze(1), curr_desired_horizon.unsqueeze(1)], dim=1)
                 action = self.model(obs, desires )
                 # need to constrain the action! 
                 if self.env_params['continuous_actions']:
                     action = self._add_action_noise(action, self.action_noise)
                     action = self.constrain_actions(action)
-                    action = action[0].cpu().numpy()
+                    action = action[0].detach()
                 else: 
                     #sample action
                     # to do add temperature noise. 
                     #print('action is:', action)
                     #if self.Levine_Implementation:
                     if greedy: 
-                        action = torch.argmax(action).squeeze().cpu().numpy()
+                        action = torch.argmax(action).squeeze().detach()
                     else: 
                         action = torch.softmax(action*self.action_noise, dim=1)
                         action = Categorical(probs=action).sample([1])
-                        action = action.squeeze().cpu().numpy()
+                        action = action.squeeze().detach()
             
             # using action repeats
             action_rep_rewards = 0
@@ -264,9 +263,9 @@ class Agent:
                 for key, var in zip(['obs', 'obs2', 'rew', 'act', 'terminal'], 
                                         [obs, next_obs, reward, action, hit_done ]):
                     if key=='obs':
-                        var = var.squeeze().cpu().numpy()
+                        var = var.squeeze().detach()
                     elif key=='obs2' and self.env_params['use_vae']:
-                        var = self.transform(var).numpy()
+                        var = self.transform(var).detach()
                     rollout_dict[key].append(var)
 
             # This is crucial. 

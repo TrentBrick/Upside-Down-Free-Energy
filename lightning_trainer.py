@@ -35,7 +35,7 @@ class LightningTemplate(pl.LightningModule):
                 self.config['NODE_SIZE'], (config['reward_scale'],config['horizon_scale']) )
 
         # start filling up the buffer.
-        output = self.collect_rollouts() 
+        output = self.collect_rollouts(num_episodes=self.config['num_rand_action_rollouts']) 
         self.add_rollouts_to_buffer(output)
 
     def forward(self,state, command):
@@ -45,7 +45,8 @@ class LightningTemplate(pl.LightningModule):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config['lr'])
         return optimizer 
 
-    def collect_rollouts(self):
+    def collect_rollouts(self, greedy=False, 
+            num_episodes=self.config['training_rollouts_per_worker']):
         if self.current_epoch<self.config['random_action_epochs']:
             agent = Agent(self.config['gamename'], self.game_dir, 
                 take_rand_actions=True,
@@ -54,15 +55,16 @@ class LightningTemplate(pl.LightningModule):
             agent = Agent(self.config['gamename'], self.game_dir, 
                 model = self.model, 
                 Levine_Implementation= self.Levine_Implementation,
-                desired_reward_stats = self.reward_from_epoch_stats, 
+                desired_reward_stats = self.desired_reward_stats, 
                 desired_horizon = self.desired_horizon,
                 desired_reward_dist_beta=self.config['desired_reward_dist_beta'],
                 discount_factor=self.config['discount_factor'])
         
         seed = np.random.randint(0, 1e9, 1)[0]
         output = agent.simulate(seed, return_events=True,
-                                compute_feef=True ,
-                                num_episodes=self.config['training_rollouts_per_worker'])
+                                compute_feef=True,
+                                num_episodes=num_episodes,
+                                greedy=greedy)
 
         return output
 
@@ -95,37 +97,45 @@ class LightningTemplate(pl.LightningModule):
 
         if self.Levine_Implementation:
             self.desired_horizon = 99999 
-            self.reward_from_epoch_stats = (np.mean(reward_losses), np.std(reward_losses))
+            self.desired_reward_stats = (np.mean(reward_losses), np.std(reward_losses))
         else: 
             last_few_mean_returns, last_few_std_returns, self.desired_horizon  = self.train_buffer.get_desires(last_few=self.config['last_few'])
-            self.reward_from_epoch_stats = (last_few_mean_returns, last_few_std_returns)
+            self.desired_reward_stats = (last_few_mean_returns, last_few_std_returns)
 
         self.mean_reward_rollouts = np.mean(reward_losses)
         self.mean_reward_over_20_epochs.append( self.mean_reward_rollouts)
 
         if self.logger:
-            self.logger.experiment.add_scalars('rollout_results', {"mean_reward":np.mean(reward_losses), "std_reward":np.std(reward_losses),
+            self.logger.experiment.add_scalar("mean_reward", np.mean(reward_losses), self.global_step)
+            self.logger.experiment.add_scalars('rollout_stats', {"std_reward":np.std(reward_losses),
                 "max_reward":np.max(reward_losses), "min_reward":np.min(reward_losses)}, self.global_step)
             self.logger.experiment.add_scalars('desires', {
-                "desired_reward":self.reward_from_epoch_stats[0],
-                "desired_horizon":self.desired_horizon}, self.global_step)
+                "reward":self.desired_reward_stats[0],
+                "horizon":self.desired_horizon}, self.global_step)
             self.logger.experiment.add_scalar("steps", self.cum_iters_generated, self.global_step)
 
-    def on_epoch_start(self):
+    def on_epoch_end(self):
+        # create new rollouts using stochastic actions. 
         output = self.collect_rollouts()
         # process the data/add to the buffer.
         self.add_rollouts_to_buffer(output)
+
+        # evaluate the agents
+        if self.current_epoch % self.config['eval_every']==0:
+            output = self.collect_rollouts(greedy=True, num_episodes=self.config['eval_episodes'])
+            reward_losses = output[0]
+            self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
 
     def training_step(self, batch, batch_idx):
         # run training on this data
         if self.Levine_Implementation: 
             obs, obs2, act, rew, terminal, terminal_rew, time = batch['obs'].squeeze(0), batch['obs2'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['terminal'].squeeze(0), batch['terminal_rew'].squeeze(0), batch['time'].squeeze(0)
         else: 
-            obs, act, rew, time = batch['obs'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['time'].squeeze(0)
+            obs, act, rew, horizon = batch['obs'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['horizon'].squeeze(0)
             # this is actually delta time. 
         
         if not self.Levine_Implementation: 
-            desires = torch.cat([rew.unsqueeze(1), time.unsqueeze(1)], dim=1)
+            desires = torch.cat([rew.unsqueeze(1), horizon.unsqueeze(1)], dim=1)
         pred_action = self.model.forward(obs, desires)
         if not self.config['continuous_actions']:
             #pred_action = torch.sigmoid(pred_action)

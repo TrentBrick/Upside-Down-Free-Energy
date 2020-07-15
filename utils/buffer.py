@@ -72,7 +72,7 @@ class ReplayBuffer():
         batch_horizons = torch.FloatTensor(batch_horizons)
         batch_actions = torch.LongTensor(batch_actions)
 
-        return dict(obs=batch_states, rew=batch_rewards, time=batch_horizons, act=batch_actions)
+        return dict(obs=batch_states, rew=batch_rewards, horizon=batch_horizons, act=batch_actions)
 
     def get_nbest(self, n):
         self.sort()
