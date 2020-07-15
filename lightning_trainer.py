@@ -13,27 +13,25 @@ from utils import save_checkpoint, generate_model_samples, \
 
 class LightningTemplate(pl.LightningModule):
 
-    def __init__(self, game_dir, args, config, env_params, train_buffer, test_buffer):
+    def __init__(self, game_dir, config, train_buffer, test_buffer):
         super().__init__()
 
         self.game_dir = game_dir
-        self.args = args 
         self.Levine_Implementation = config['Levine_Implementation']
         self.config = config
-        self.env_params = env_params
         self.train_buffer = train_buffer
         self.test_buffer = test_buffer
         self.cum_iters_generated = 0
 
         if self.Levine_Implementation:
-            self.model = UpsdModel(env_params['STORED_STATE_SIZE'], 
-            env_params['desires_size'], 
-            env_params['ACTION_SIZE'], 
-            env_params['NODE_SIZE'], desire_scalings=config['desire_scalings'])
+            self.model = UpsdModel(self.config['STORED_STATE_SIZE'], 
+            self.config['desires_size'], 
+            self.config['ACTION_SIZE'], 
+            self.config['NODE_SIZE'], desire_scalings=config['desire_scalings'])
         else: 
-            self.model = UpsdBehavior( env_params['STORED_STATE_SIZE'], 
-                env_params['ACTION_SIZE'], 
-                env_params['NODE_SIZE'], config['desire_scalings'] )
+            self.model = UpsdBehavior( self.config['STORED_STATE_SIZE'], 
+                self.config['ACTION_SIZE'], 
+                self.config['NODE_SIZE'], config['desire_scalings'] )
 
         # start filling up the buffer.
         output = self.collect_rollouts() 
@@ -48,11 +46,11 @@ class LightningTemplate(pl.LightningModule):
 
     def collect_rollouts(self):
         if self.current_epoch<self.config['random_action_epochs']:
-            agent = Agent(self.args.gamename, self.game_dir, 
+            agent = Agent(self.config['gamename'], self.game_dir, 
                 take_rand_actions=True,
                 discount_factor=self.config['discount_factor'])
         else: 
-            agent = Agent(self.args.gamename, self.game_dir, 
+            agent = Agent(self.config['gamename'], self.game_dir, 
                 model = self.model, 
                 Levine_Implementation= self.Levine_Implementation,
                 desired_reward_stats = self.reward_from_epoch_stats, 
@@ -101,6 +99,7 @@ class LightningTemplate(pl.LightningModule):
             last_few_mean_returns, last_few_std_returns, self.desired_horizon  = self.train_buffer.get_desires(last_few=self.config['last_few'])
             self.reward_from_epoch_stats = (last_few_mean_returns, last_few_std_returns)
 
+        self.mean_reward_rollouts = np.mean(reward_losses)
         if self.logger:
             self.logger.experiment.add_scalars('rollout_results', {"mean_reward":np.mean(reward_losses), "std_reward":np.std(reward_losses),
                 "max_reward":np.max(reward_losses), "min_reward":np.min(reward_losses)}, self.global_step)
@@ -125,7 +124,7 @@ class LightningTemplate(pl.LightningModule):
         if not self.Levine_Implementation: 
             desires = torch.cat([rew.unsqueeze(1), time.unsqueeze(1)], dim=1)
         pred_action = self.model.forward(obs, desires)
-        if not self.env_params['continuous_actions']:
+        if not self.config['continuous_actions']:
             #pred_action = torch.sigmoid(pred_action)
             act = act.squeeze().long()
         pred_loss = self._pred_loss(pred_action, act)
@@ -140,7 +139,7 @@ class LightningTemplate(pl.LightningModule):
         return {'loss':pred_loss, 'log':logs}
 
     def _pred_loss(self, pred_action, real_action):
-        if self.env_params['continuous_actions']:
+        if self.config['continuous_actions']:
             # add a sigmoid activation layer.: 
             return F.mse_loss(pred_action, real_action ,reduction='none').sum(dim=1)
         else: 
@@ -176,7 +175,7 @@ class LightningTemplate(pl.LightningModule):
 
     if make_vae_samples:
             generate_model_samples( model, for_upsd_sampling, 
-                            samples_dir, SEQ_LEN, env_params['IMAGE_RESIZE_DIM'],
+                            samples_dir, SEQ_LEN, self.config['IMAGE_RESIZE_DIM'],
                             example_length,
                             memory_adapt_period, e, device, 
                             make_vae_samples=make_vae_samples,

@@ -27,8 +27,19 @@ from utils import set_seq_and_batch_vals
 # TODO: test if this seed everything actually works! 
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
+#from pytorch_lightning.utilities.cloud_io import load as pl_load
+from ray import tune
+from ray.tune import CLIReporter
+from ray.tune.schedulers import ASHAScheduler, PopulationBasedTraining
 
+class TuneReportCallback(Callback):
+    def on_epoch_end(self, trainer, pl_module):
+        tune.report(
+            loss=trainer.callback_metrics["train_loss"],
+            mean_reward=pl_module.mean_reward_rollouts,
+            epoch=trainer.current_epoch)
 
 def main(args):
 
@@ -50,7 +61,7 @@ def main(args):
     env_params = get_env_params(args.gamename)
 
     # Constants
-    epochs = 1500
+    epochs = 500
     training_rollouts_total = 20
     training_rollouts_per_worker = training_rollouts_total//args.num_workers
     constants = dict(
@@ -70,7 +81,8 @@ def main(args):
             desired_reward_dist_beta = 1000,
             weight_loss = True,
             desire_scalings =None, 
-            Levine_Implementation=Levine_Implementation
+            Levine_Implementation=Levine_Implementation,
+            num_grad_steps = 1000
         )
         train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'])
         test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
@@ -78,19 +90,25 @@ def main(args):
         
     else: 
         config= dict(
-        lr=0.0003,
-        batch_size = 768,
-        max_buffer_size = 500,
+        lr= tune.choice([0.0003, 0.01, 0.001]),
+        batch_size = tune.choice([768, 4096]),
+        max_buffer_size = tune.choice([100, 500]),
         desire_scalings = (0.02, 0.01), # reward then horizon
         discount_factor = 1.0,
-        last_few = 75,
+        last_few = tune.choice([25, 75]),
         Levine_Implementation=Levine_Implementation,
-        desired_reward_dist_beta=1
+        desired_reward_dist_beta=1,
+        num_grad_steps = tune.choice([10, 100, 200])
         )
         # TODO: do I need to provide seeds to the buffer like this? 
-        train_buffer = ReplayBuffer(config['max_buffer_size'], args.seed, config['batch_size'], args.num_grad_steps)
-        test_buffer = ReplayBuffer(config['batch_size']*10, args.seed, config['batch_size'], 5)
+        
     config.update(constants) 
+    config.update(env_params)
+    config.update(vars(args))
+
+    config['sparse'] = tune.choice([True, False])
+    config['NODE_SIZE'] = tune.choice([32, 128, 256])
+
     # for plotting example horizons. Useful with VAE:
     '''if env_params['use_vae']:
         make_vae_samples = True 
@@ -106,26 +124,21 @@ def main(args):
     base_game_dir = join(args.logdir, args.gamename)
     if not exists(base_game_dir):
         mkdir(base_game_dir)
-    game_dir = join(base_game_dir, 'seed_'+str(args.seed)+'_gradsteps_'+str(args.num_grad_steps))
+    game_dir = join(base_game_dir, 'seed_'+str(args.seed))
     filenames_dict = { bc:join(game_dir, 'model_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
-    # make directories if they dont exist
-    samples_dir = join(game_dir, 'samples')
-    for dirr in [game_dir, samples_dir]:
+    for dirr in [game_dir]:
         if not exists(dirr):
             mkdir(dirr)
 
     # Load in the Model, Loggers, etc:
     seed_everything(args.seed)
 
-    model = LightningTemplate(game_dir, args, config, env_params, train_buffer, test_buffer)
-
-    if not args.no_reload:
-        # load in: 
-        model = LightningTemplate.load_from_checkpoint(filenames_dict['best'])
-
     # Logging and Checkpointing:
+    # have logger and versions work with the seed. 
+    logger = TensorBoardLogger(game_dir, "logger")
+    # have the checkpoint overwrite itself. 
     every_checkpoint_callback = ModelCheckpoint(
-        filepath=filenames_dict['checkpoint'],
+        filepath=game_dir,
         save_top_k=1,
         verbose=False ,
         monitor='train_loss',
@@ -141,16 +154,48 @@ def main(args):
         prefix=''
     )'''
 
-    logger = TensorBoardLogger(game_dir, "logger")
+    def run_lightning(config):
 
-    trainer = Trainer(deterministic=True, logger=logger,
-         default_root_dir=game_dir, max_epochs=epochs, profiler=False,
-         checkpoint_callback = every_checkpoint_callback,
-         log_save_interval=1,
-         #callbacks=[ ,]
-    )
+        if not Levine_Implementation:
+            train_buffer = ReplayBuffer(config['max_buffer_size'], args.seed, config['batch_size'], config['num_grad_steps'])
+            test_buffer = ReplayBuffer(config['batch_size']*10, args.seed, config['batch_size'], 5)
 
-    trainer.fit(model)
+        model = LightningTemplate(game_dir, config, train_buffer, test_buffer)
+
+        if not args.no_reload:
+            # load in: 
+            model = LightningTemplate.load_from_checkpoint(filenames_dict['best'])
+
+        trainer = Trainer(deterministic=True, logger=logger,
+            default_root_dir=game_dir, max_epochs=epochs, profiler=False,
+            checkpoint_callback = every_checkpoint_callback,
+            log_save_interval=1,
+            callbacks=[TuneReportCallback()], 
+            progress_bar_refresh_rate=0
+        )
+        trainer.fit(model)
+
+    scheduler = ASHAScheduler(
+        time_attr='epoch',
+        metric="mean_reward",
+        mode="max",
+        max_t=epochs,
+        grace_period=10,
+        reduction_factor=3)
+
+    reporter = CLIReporter(
+        metric_columns=["loss", "mean_reward", "epoch"],
+        )
+
+    num_samples = 10
+    tune.run(
+        run_lightning,
+        resources_per_trial={"cpu": 1},
+        config=config,
+        num_samples=num_samples,
+        scheduler=scheduler,
+        progress_reporter=reporter,
+        verbose=1)
         
 if __name__ =='__main__':
     parser = argparse.ArgumentParser("Training Script")
@@ -171,7 +216,5 @@ if __name__ =='__main__':
                         "specified.")
     parser.add_argument('--seed', type=int, default=27,
                         help="Starter seed for reproducible results")
-    parser.add_argument('--num_grad_steps', type=int, default=100,
-                        help="Grad steps per data collection")
     args = parser.parse_args()
     main(args)

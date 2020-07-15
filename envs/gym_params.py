@@ -63,22 +63,13 @@ def get_env_params(gamename):
             'sparse':False,
             'continuous_actions':False,
             'desired_reward':200,
-            'desired_horizon': 30,
             'num_action_repeats': 1,
             'time_limit':300, # max time limit for the rollouts generated
             'over_max_time_limit':-50,
-            'NUM_IMG_CHANNELS': 3,
             'ACTION_SIZE': 4, # number possible actions
             'STORED_ACTION_SIZE': 1,
             'STORED_STATE_SIZE': 8,
-            'init_cem_params': ( torch.Tensor([0.]), 
-                        torch.Tensor([2.]) ),
-            'LATENT_SIZE': 3, 
-            'LATENT_RECURRENT_SIZE': 256,
-            'EMBEDDING_SIZE': 3,
             'NODE_SIZE': 32,
-            'IMAGE_RESIZE_DIM': 64,
-            'IMAGE_DEFAULT_SIZE': 96,
             'desires_size' : 2, # just reward for now. 
             'max_reward':250,
             # top, bottom, left, right
@@ -86,8 +77,6 @@ def get_env_params(gamename):
             'trim_shape': None,
             'give_raw_pixels':False,
             'use_vae':False, 
-            'reward_prior_mu': 0.0, 
-            'reward_prior_sigma':0.2,
             'action_noise' : 1.0#0.05 # lower the value the more uniform it is
         }
         if gamename == "lunarlander-sparse":
@@ -110,6 +99,5 @@ def get_env_params(gamename):
     else: 
         raise ValueError("Don't know what this gamename (environment) is!")
 
-    env_params['actual_horizon'] = env_params['desired_horizon']//env_params['num_action_repeats']
 
     return env_params
