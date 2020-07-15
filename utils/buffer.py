@@ -51,9 +51,11 @@ class ReplayBuffer():
         for episode in episodes:
             # this is from a named tuple. 
             # samples one thing from each episode?????? this is weird. 
-            T = episode['length']
-            t1 = np.random.randint(0, T)
-            t2 = np.random.randint(t1+1, T+1) #T-1
+            T = episode['length'] # one over what it needs to be for [s:e] indexing in sum.
+            t1 = np.random.randint(0, T-1) # -1 so cant sample last time index
+            # for sparse and everything really?
+            t2 = T
+            #t2 = np.random.randint(t1+1, T+1)
             dr = sum(episode['rewards'][t1:t2])
             dh = t2 - t1
             

@@ -38,7 +38,8 @@ class TuneReportCallback(Callback):
     def on_epoch_end(self, trainer, pl_module):
         tune.report(
             loss=trainer.callback_metrics["train_loss"],
-            mean_reward=pl_module.mean_reward_rollouts,
+            mean_reward=pl_module.mean_reward_rollouts
+            mean_reward_20_epochs = mean_reward_over_20_epochs[-20:]/20,
             epoch=trainer.current_epoch)
 
 def main(args):
@@ -52,18 +53,13 @@ def main(args):
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
 
-    # used for saving which models are the best based upon their train performance. 
-    model_cur_best=None
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    compute_feef = True # NOTE: currently not actually computing it inside of agent.py simulate!!!!
-
     # get environment parameters: 
     env_params = get_env_params(args.gamename)
 
     # Constants
-    epochs = 500
+    epochs = 300
     training_rollouts_total = 20
-    training_rollouts_per_worker = training_rollouts_total//args.num_workers
+    training_rollouts_per_worker = tune.choice( [10, 20, 30, 40]) #training_rollouts_total//args.num_workers
     constants = dict(
         random_action_epochs = 1,
         evaluate_every = 10,
@@ -90,24 +86,28 @@ def main(args):
         
     else: 
         config= dict(
-        lr= tune.choice([0.0003, 0.01, 0.001]),
-        batch_size = tune.choice([768, 4096]),
-        max_buffer_size = tune.choice([100, 500]),
-        desire_scalings = (0.02, 0.01), # reward then horizon
+        lr= tune.loguniform(-4, -2),
+        batch_size = tune.choice([512, 768, 1024, 1536, 2048]),
+        max_buffer_size = tune.choice([300, 400, 500, 600, 700]),
+        horizon_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]) #(0.02, 0.01), # reward then horizon
+        reward_scale = tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03])
         discount_factor = 1.0,
         last_few = tune.choice([25, 75]),
         Levine_Implementation=Levine_Implementation,
         desired_reward_dist_beta=1,
-        num_grad_steps = tune.choice([10, 100, 200])
+        num_grad_steps = tune.choice([100, 150, 200, 250, 300])
         )
         # TODO: do I need to provide seeds to the buffer like this? 
         
     config.update(constants) 
     config.update(env_params)
     config.update(vars(args))
+    config['desire_scalings'] = (config['reward_scale'],config['horizon_scale'])
+    config['sparse'] = True #tune.choice([True, False])
+    config['NODE_SIZE'] = tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
+        [64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128])
 
-    config['sparse'] = tune.choice([True, False])
-    config['NODE_SIZE'] = tune.choice([32, 128, 256])
+    use_tune = True  
 
     # for plotting example horizons. Useful with VAE:
     '''if env_params['use_vae']:
@@ -119,32 +119,39 @@ def main(args):
         kl_tolerance=0.5
         free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']], device=device )
     '''
-
-    # Init save filenames 
-    base_game_dir = join(args.logdir, args.gamename)
-    if not exists(base_game_dir):
-        mkdir(base_game_dir)
-    game_dir = join(base_game_dir, 'seed_'+str(args.seed))
-    filenames_dict = { bc:join(game_dir, 'model_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
-    for dirr in [game_dir]:
-        if not exists(dirr):
-            mkdir(dirr)
+    if use_tune:
+        game_dir = ''
+        run_name = str(np.random.randint(0,1000,1)[0])
+    else: 
+        # Init save filenames 
+        base_game_dir = join(args.logdir, args.gamename)
+        if not exists(base_game_dir):
+            mkdir(base_game_dir)
+        game_dir = join(base_game_dir, 'seed_'+str(args.seed))
+        filenames_dict = { bc:join(game_dir, 'model_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
+        for dirr in [game_dir]:
+            if not exists(dirr):
+                mkdir(dirr)
 
     # Load in the Model, Loggers, etc:
     seed_everything(args.seed)
 
     # Logging and Checkpointing:
     # have logger and versions work with the seed. 
-    logger = TensorBoardLogger(game_dir, "logger")
-    # have the checkpoint overwrite itself. 
-    every_checkpoint_callback = ModelCheckpoint(
-        filepath=game_dir,
-        save_top_k=1,
-        verbose=False ,
-        monitor='train_loss',
-        mode='min',
-        prefix=''
-    )
+    if use_tune:
+        logger=False 
+        every_checkpoint_callback = False 
+    else: 
+        logger = TensorBoardLogger(game_dir, "logger")
+        # have the checkpoint overwrite itself. 
+        every_checkpoint_callback = ModelCheckpoint(
+            filepath=game_dir,
+            save_top_k=1,
+            verbose=False ,
+            monitor='train_loss',
+            mode='min',
+            prefix=''
+        )
     '''best_checkpoint_callback = ModelCheckpoint(
         filepath=filenames_dict['best'],
         save_top_k=1,
@@ -177,25 +184,31 @@ def main(args):
 
     scheduler = ASHAScheduler(
         time_attr='epoch',
-        metric="mean_reward",
+        metric="mean_reward_20_epochs",
         mode="max",
         max_t=epochs,
-        grace_period=10,
-        reduction_factor=3)
+        grace_period=25,
+        reduction_factor=4)
 
     reporter = CLIReporter(
         metric_columns=["loss", "mean_reward", "epoch"],
         )
 
-    num_samples = 10
-    tune.run(
-        run_lightning,
-        resources_per_trial={"cpu": 1},
-        config=config,
-        num_samples=num_samples,
-        scheduler=scheduler,
-        progress_reporter=reporter,
-        verbose=1)
+    num_samples = 500
+    if use_tune:
+        tune.run(
+            run_lightning,
+            name=run_name,
+            resources_per_trial={"cpu": 1},
+            config=config,
+            num_samples=num_samples,
+            scheduler=scheduler,
+            progress_reporter=reporter,
+            verbose=1,
+            fail_fast=True )
+
+    else: 
+        run_lightning(config)
         
 if __name__ =='__main__':
     parser = argparse.ArgumentParser("Training Script")

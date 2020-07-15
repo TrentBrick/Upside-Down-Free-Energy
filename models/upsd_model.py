@@ -19,19 +19,28 @@ class UpsdBehavior(nn.Module):
         desire_scalings (List of float)
     '''
     
-    def __init__(self, state_size, action_size, hidden_size,
+    def __init__(self, state_size, action_size, hidden_sizes,
             desire_scalings):
         super().__init__()
         
         self.desire_scalings = torch.FloatTensor(desire_scalings)
         
-        self.state_fc = nn.Sequential(nn.Linear(state_size, hidden_size), 
+        self.state_fc = nn.Sequential(nn.Linear(state_size, hidden_sizes[0]), 
                                       nn.Tanh())
         
-        self.command_fc = nn.Sequential(nn.Linear(2, hidden_size), 
+        self.command_fc = nn.Sequential(nn.Linear(2, hidden_sizes[0]), 
                                         nn.Sigmoid())
+
+        self.output_fc = []
+        hidden_sizes.append(action_size)
+        output_activation= nn.Identity
+        activation = nn.ReLU()
+        for j in range(len(hidden_sizes)-1):
+            act = activation if j < len(sizes)-2 else output_activation
+            layers += [nn.Linear(sizes[j], sizes[j+1]), act()]
+        self.output_fc = nn.Sequential(*self.output_fc)
         
-        self.output_fc = nn.Sequential(nn.Linear(hidden_size, hidden_size), 
+        '''self.output_fc = nn.Sequential(nn.Linear(hidden_size, hidden_size), 
                                        nn.ReLU(), 
                                        #nn.Dropout(0.2),
                                        nn.Linear(hidden_size, hidden_size), 
@@ -39,7 +48,7 @@ class UpsdBehavior(nn.Module):
                                        #nn.Dropout(0.2),
                                        nn.Linear(hidden_size, hidden_size), 
                                        nn.ReLU(), 
-                                       nn.Linear(hidden_size, action_size))   
+                                       nn.Linear(hidden_size, action_size))   '''
     
     def forward(self, state, command):
         '''Forward pass

@@ -22,6 +22,7 @@ class LightningTemplate(pl.LightningModule):
         self.train_buffer = train_buffer
         self.test_buffer = test_buffer
         self.cum_iters_generated = 0
+        self.mean_reward_over_20_epochs = []
 
         if self.Levine_Implementation:
             self.model = UpsdModel(self.config['STORED_STATE_SIZE'], 
@@ -100,6 +101,8 @@ class LightningTemplate(pl.LightningModule):
             self.reward_from_epoch_stats = (last_few_mean_returns, last_few_std_returns)
 
         self.mean_reward_rollouts = np.mean(reward_losses)
+        self.mean_reward_over_20_epochs.append( self.mean_reward_rollouts)
+
         if self.logger:
             self.logger.experiment.add_scalars('rollout_results', {"mean_reward":np.mean(reward_losses), "std_reward":np.std(reward_losses),
                 "max_reward":np.max(reward_losses), "min_reward":np.min(reward_losses)}, self.global_step)

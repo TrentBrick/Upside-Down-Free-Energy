@@ -82,11 +82,12 @@ class Agent:
         self.num_action_repeats = self.env_params['num_action_repeats']
 
         # transform used on environment generated observations. 
-        self.transform = transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((self.env_params['IMAGE_RESIZE_DIM'], self.env_params['IMAGE_RESIZE_DIM'])),
-                transforms.ToTensor()
-            ])
+        if self.env_params['use_vae']:
+            self.transform = transforms.Compose([
+                    transforms.ToPILImage(),
+                    transforms.Resize((self.env_params['IMAGE_RESIZE_DIM'], self.env_params['IMAGE_RESIZE_DIM'])),
+                    transforms.ToTensor()
+                ])
 
         if model: 
             self.model = model 
@@ -178,9 +179,9 @@ class Agent:
                 self.env.render()
 
             if self.env_params['use_vae']:
-                obs = self.transform(obs).unsqueeze(0).to(self.device)
+                obs = self.transform(obs).unsqueeze(0)#.to(self.device)
             else: 
-                obs = torch.Tensor(obs).unsqueeze(0).to(self.device)
+                obs = torch.Tensor(obs).unsqueeze(0)#.to(self.device)
 
             if self.take_rand_actions:
                 action = self.env.action_space.sample()
@@ -223,23 +224,11 @@ class Agent:
             # has gone over and still not crashed: 
             if not hit_done and time>=self.time_limit:
                 reward = self.env_params['over_max_time_limit']
-                hit_done = True
 
-            if self.env_params['sparse']:
-                # store in cumulative first. Dont need to worry about
-                # storing in cumulative later as reward set to 0!
-                cumulative += reward
-                reward = 0.0
-
-            # update reward desires! 
-            if not self.take_rand_actions:
-                if self.Levine_Implementation:
-                    #curr_desired_reward -= reward
-                    pass
-                else: 
-                    curr_desired_reward -= reward
-                    curr_desired_reward = torch.Tensor( [min(curr_desired_reward, self.env_params['max_reward'])])
-                    curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
+            if time >= self.time_limit:
+                hit_done=True
+            else:
+                time += 1
                 
             # if the last n steps (real steps independent of action repeats)
             # have all given -0.1 reward then cut the rollout early. 
@@ -252,19 +241,25 @@ class Agent:
                     #print('lenght of sim rewards',  len(sim_rewards_queue),round(sum(sim_rewards_queue),3))
                     if round(sum(sim_rewards_queue), 3) == -5.0:
                         hit_done=True
-
-            if time >= self.time_limit:
-                hit_done=True 
-            else:
-                time += 1
             # done checking for hit_done. 
 
-            # placed here intentionally because of the sparse rewards. 
             cumulative += reward
-            if self.env_params['sparse'] and hit_done:
-                reward = cumulative
+            if self.env_params['sparse']:
+                # store in cumulative first. Dont need to worry about
+                # storing in cumulative later as reward set to 0!
+                reward = cumulative if hit_done else 0.0
+
+            # update reward desires! 
+            if not self.take_rand_actions:
+                if self.Levine_Implementation:
+                    #curr_desired_reward -= reward
+                    pass
+                else: 
+                    curr_desired_reward = torch.Tensor( [min(curr_desired_reward-reward, self.env_params['max_reward'])])
+                    curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
 
             # save out things.
+            # doesnt save out the time so dont need to worry about it here. 
             if self.return_events:
                 for key, var in zip(['obs', 'obs2', 'rew', 'act', 'terminal'], 
                                         [obs, next_obs, reward, action, hit_done ]):
