@@ -192,18 +192,18 @@ class Agent:
                 if self.env_params['continuous_actions']:
                     action = self._add_action_noise(action, self.action_noise)
                     action = self.constrain_actions(action)
-                    action = action[0].detach()
+                    action = action[0].detach().numpy()
                 else: 
                     #sample action
                     # to do add temperature noise. 
                     #print('action is:', action)
                     #if self.Levine_Implementation:
                     if greedy: 
-                        action = torch.argmax(action).squeeze().detach()
+                        action = torch.argmax(action).squeeze().detach().numpy()
                     else: 
-                        action = torch.softmax(action*self.action_noise, dim=1)
+                        action = torch.softmax(action*self.action_noise, dim=-1)
                         action = Categorical(probs=action).sample([1])
-                        action = action.squeeze().detach()
+                        action = action.squeeze().detach().numpy()
             
             # using action repeats
             action_rep_rewards = 0
@@ -263,9 +263,9 @@ class Agent:
                 for key, var in zip(['obs', 'obs2', 'rew', 'act', 'terminal'], 
                                         [obs, next_obs, reward, action, hit_done ]):
                     if key=='obs':
-                        var = var.squeeze().detach()
+                        var = var.squeeze().detach().numpy()
                     elif key=='obs2' and self.env_params['use_vae']:
-                        var = self.transform(var).detach()
+                        var = self.transform(var).detach().numpy()
                     rollout_dict[key].append(var)
 
             # This is crucial. 
@@ -281,9 +281,9 @@ class Agent:
                 else: 
                     rollout_dict[k] = np.asarray(v)
             # repeat the cum reward up to length times. 
-            rollout_dict['terminal_rew'] = np.repeat(cumulative, time)
-            rollout_dict['time'] = np.arange(time, 0, -1)
-            #print('lenghts of things being added:', time, len(rollout_dict['terminal_rew']), len(rollout_dict['time']), len(rollout_dict['rew']) )
+            rollout_dict['cum_rew'] = np.repeat(cumulative, time)
+            rollout_dict['horizon'] = time - np.arange(0, time+1) +1 # so that the horizon is always 1 away
+            print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['rew']) )
             return cumulative, time, rollout_dict # passed back to simulate. 
         else: 
             return cumulative, time # ending time and cum reward

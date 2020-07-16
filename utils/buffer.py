@@ -9,7 +9,83 @@ def combined_shape(length, shape=None):
         return (length,)
     return (length, shape) if np.isscalar(shape) else (length, *shape)
 
-class ReplayBuffer():
+
+class SortedBuffer:
+    """
+    Buffer that very efficiently remains sorted.  
+    """
+
+    def __init__(self, obs_dim, act_dim, size ):
+        self.obs_buf = None
+        self.obs2_buf= None
+        self.act_buf= None
+        self.rew_buf= None
+        self.terminal_buf= None 
+        self.cum_rew= None
+        self.horizon= None
+        self.buffer_dict = dict(obs=self.obs_buf, obs2=self.obs2_buf, 
+                                act=self.act_buf, 
+                                rew=self.rew_buf, terminal=self.terminal_buf, 
+                                cum_rew=self.cum_rew, horizon=self.horizon)
+        self.num_steps, self.max_num_steps = 0, size
+
+    def add_rollouts(self, list_of_rollout_dicts):
+        # sorted in ascending order. largest values at the back. 
+        for rollout in list_of_rollout_dicts:
+            self.num_steps = min(self.num_steps+len(rollout['terminal']), self.max_num_steps)
+            if self.buffer_dict['terminal'] is not None:
+                # find where everything from this rollout should be inserted into 
+                # each of the numpy buffers. Uses the cumulative/terminal rewards
+                sort_ind = np.searchsorted(self.buffer_dict['cum_rew'], rollout['cum_rew'][0]  )
+            for key in self.buffer_dict.keys(): 
+                # NOTE: assumes that buffer and rollout use the same keys!
+                # needed at init!
+                if self.buffer_dict[key] is None:
+                    self.buffer_dict[key] = rollout[key]
+                else: 
+                    self.buffer_dict[key] = np.insert(self.buffer_dict[key], sort_ind, rollout[key], axis=0)
+
+                if self.num_steps >= self.max_num_steps:
+                    # buffer is full. Need to trim!
+                    # this will have a bias in that it will favour 
+                    # the longer horizons at the end of the training data
+                    # but it shouldnt make a major diff. 
+                    self.buffer_dict[key] = self.buffer_dict[key][:self.max_num_steps]
+
+            print('terminal rewards', self.buffer_dict['cum_rew'])
+
+    def get_desires(self, last_few = 75):
+        """
+        This function calculates the new desired reward and new desired horizon based on the replay buffer.
+        New desired horizon is calculted by the mean length of the best last X episodes. 
+        New desired reward is sampled from a uniform distribution given the mean and the std calculated from the last best X performances.
+        where X is the hyperparameter last_few.
+        """
+        print(self.buffer_dict['horizon'], self.buffer_dict['cum_rew'])
+        #The exploratory desired horizon dh0 is set to the mean of the lengths of the selected episodes
+        new_desired_horizon = round(  np.unique(self.buffer_dict['horizon'])[-last_few:].mean()  )
+
+        returns = np.unique(self.buffer_dict['cum_rew'])[-last_few:]
+        # from these returns calc the mean and std
+        mean_returns = np.mean(returns)
+        std_returns = np.std(returns)
+        return mean_returns, std_returns, new_desired_horizon
+
+    def __getitem__(self, idx):
+        # turn this into a random value!
+        #rand_ind = np.random.randint(0,self.num_steps) # up to current max size. 
+        return self.sample_batch(idx)
+
+    def __len__(self):
+        return self.num_steps #self.num_batches_per_epoch
+
+    def sample_batch(self, idxs=None, batch_size=256):
+        if idxs is None:
+            idxs = np.random.randint(0, self.num_steps, size=batch_size)
+        batch = {key:torch.as_tensor(arr[idxs],dtype=torch.float32) for key, arr in self.buffer_dict.items()}
+        return batch 
+
+class ReplayBuffer:
     def __init__(self, max_size, seed, batch_size, num_grad_steps):
         self.max_size = max_size
         self.buffer = []
@@ -33,7 +109,6 @@ class ReplayBuffer():
         self.buffer = self.buffer[:self.max_size]
     
     def get_episodes(self, batch_size):
-        self.sort()
         idxs = np.random.randint(0, len(self.buffer), batch_size)
         batch = [self.buffer[idx] for idx in idxs]
         # returns a list of dictionaries that contain full rollouts.  
@@ -75,7 +150,6 @@ class ReplayBuffer():
         return dict(obs=batch_states, rew=batch_rewards, horizon=batch_horizons, act=batch_actions)
 
     def get_nbest(self, n):
-        self.sort()
         return self.buffer[:n]
 
     def get_desires(self, last_few = 75):

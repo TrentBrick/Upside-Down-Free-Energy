@@ -46,7 +46,7 @@ class LightningTemplate(pl.LightningModule):
         return optimizer 
 
     def collect_rollouts(self, greedy=False, 
-            num_episodes=self.config['training_rollouts_per_worker']):
+            num_episodes=None):
         if self.current_epoch<self.config['random_action_epochs']:
             agent = Agent(self.config['gamename'], self.game_dir, 
                 take_rand_actions=True,
@@ -89,10 +89,11 @@ class LightningTemplate(pl.LightningModule):
                 self.train_buffer.add_sample(  train_data[r]['obs'], train_data[r]['act'], 
                     train_data[r]['rew'], termination_times[r] )
                 iters_generated+= termination_times[r]
-
+            self.train_buffer.sort()
             for r in range(len(test_data)):
                 self.test_buffer.add_sample(  test_data[r]['obs'], test_data[r]['act'], 
                     test_data[r]['rew'], len(test_data[r]['terminal']) )
+            self.test_buffer.sort()
         self.cum_iters_generated+= iters_generated
 
         if self.Levine_Implementation:
@@ -116,7 +117,7 @@ class LightningTemplate(pl.LightningModule):
 
     def on_epoch_end(self):
         # create new rollouts using stochastic actions. 
-        output = self.collect_rollouts()
+        output = self.collect_rollouts(num_episodes=self.config['training_rollouts_per_worker'])
         # process the data/add to the buffer.
         self.add_rollouts_to_buffer(output)
 
@@ -160,7 +161,7 @@ class LightningTemplate(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         train_dict = self.training_step(batch, batch_idx)
-        # rename 
+        # rename
         train_dict['log']['val_loss'] = train_dict['log'].pop('train_loss')
         return train_dict['log'] 
 
