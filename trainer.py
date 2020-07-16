@@ -20,7 +20,7 @@ from lightning_trainer import LightningTemplate
 from multiprocessing import cpu_count
 from collections import OrderedDict
 from utils import ReplayBuffer, \
-    RingBuffer
+    RingBuffer, SortedBuffer
 import time 
 import random 
 from utils import set_seq_and_batch_vals
@@ -68,7 +68,8 @@ def main(args):
         training_rollouts_per_worker = 20, #tune.choice( [10, 20, 30, 40]),
         num_rand_action_rollouts = 10,
         antithetic = False,
-        Levine_Implementation=Levine_Implementation
+        Levine_Implementation=Levine_Implementation,
+        num_val_batches = 5
     )
     if Levine_Implementation:
         config= dict(
@@ -85,6 +86,7 @@ def main(args):
         test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
             act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
         
+        # want to store 500 episodes
     else: 
         config= dict(
         lr= 0.0003, #tune.choice(np.logspace(-4, -2, num = 101)),
@@ -164,8 +166,9 @@ def main(args):
     def run_lightning(config):
 
         if not Levine_Implementation:
-            train_buffer = ReplayBuffer(config['max_buffer_size'], args.seed, config['batch_size'], config['num_grad_steps'])
-            test_buffer = ReplayBuffer(config['batch_size']*10, args.seed, config['batch_size'], 5)
+            config['max_buffer_size'] *= env_params['avg_episode_length']
+            train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'] )
+            test_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
 
         model = LightningTemplate(game_dir, config, train_buffer, test_buffer)
 

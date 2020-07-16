@@ -12,10 +12,11 @@ for e in range(30):
     rew = np.random.random((amount_of_training_data))
     terminal = np.random.random((amount_of_training_data))
     terminal_rew = np.repeat(np.random.randint(0,200), amount_of_training_data)
+    rollout_length = np.repeat(np.random.randint(0,200), amount_of_training_data)
     horizon = np.repeat(np.random.randint(0,200), amount_of_training_data)
     train_data = [dict(terminal=terminal, rew=rew, 
         obs=obs, obs2=obs2, act=act, horizon=horizon, 
-        cum_rew=terminal_rew )]
+        cum_rew=terminal_rew, rollout_length=rollout_length )]
     train_buffer.add_rollouts(train_data)
     
     print('epoch', e, 'size of buffer', train_buffer.num_steps )

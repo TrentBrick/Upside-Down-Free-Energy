@@ -6,7 +6,7 @@ from torch.distributions import Normal, Categorical
 import pytorch_lightning as pl 
 from control import Agent 
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler, BatchSampler
 from utils import save_checkpoint, generate_model_samples, \
     generate_rollouts, write_logger, ReplayBuffer, \
     RingBuffer, combine_single_worker
@@ -21,7 +21,6 @@ class LightningTemplate(pl.LightningModule):
         self.config = config
         self.train_buffer = train_buffer
         self.test_buffer = test_buffer
-        self.cum_iters_generated = 0
         self.mean_reward_over_20_epochs = []
 
         if self.Levine_Implementation:
@@ -80,24 +79,11 @@ class LightningTemplate(pl.LightningModule):
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
         # add data to the buffer. 
-        iters_generated = 0
-        if self.Levine_Implementation: 
-            self.train_buffer.add_rollouts(train_data)
-            self.test_buffer.add_rollouts(test_data)
-        else: 
-            for r in range(len(train_data)):
-                self.train_buffer.add_sample(  train_data[r]['obs'], train_data[r]['act'], 
-                    train_data[r]['rew'], termination_times[r] )
-                iters_generated+= termination_times[r]
-            self.train_buffer.sort()
-            for r in range(len(test_data)):
-                self.test_buffer.add_sample(  test_data[r]['obs'], test_data[r]['act'], 
-                    test_data[r]['rew'], len(test_data[r]['terminal']) )
-            self.test_buffer.sort()
-        self.cum_iters_generated+= iters_generated
+        self.train_buffer.add_rollouts(train_data)
+        self.test_buffer.add_rollouts(test_data)
 
         if self.Levine_Implementation:
-            self.desired_horizon = 99999 
+            self.desired_horizon = 99999
             self.desired_reward_stats = (np.mean(reward_losses), np.std(reward_losses))
         else: 
             last_few_mean_returns, last_few_std_returns, self.desired_horizon  = self.train_buffer.get_desires(last_few=self.config['last_few'])
@@ -113,7 +99,7 @@ class LightningTemplate(pl.LightningModule):
             self.logger.experiment.add_scalars('desires', {
                 "reward":self.desired_reward_stats[0],
                 "horizon":self.desired_horizon}, self.global_step)
-            self.logger.experiment.add_scalar("steps", self.cum_iters_generated, self.global_step)
+            self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
     def on_epoch_end(self):
         # create new rollouts using stochastic actions. 
@@ -132,7 +118,7 @@ class LightningTemplate(pl.LightningModule):
         if self.Levine_Implementation: 
             obs, obs2, act, rew, terminal, terminal_rew, time = batch['obs'].squeeze(0), batch['obs2'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['terminal'].squeeze(0), batch['terminal_rew'].squeeze(0), batch['time'].squeeze(0)
         else: 
-            obs, act, rew, horizon = batch['obs'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['horizon'].squeeze(0)
+            obs, act, rew, horizon = batch['obs'], batch['act'], batch['cum_rew'], batch['horizon']
             # this is actually delta time. 
         
         if not self.Levine_Implementation: 
@@ -174,10 +160,16 @@ class LightningTemplate(pl.LightningModule):
                 }
 
     def train_dataloader(self):
-        return DataLoader(self.train_buffer, batch_size=1)
+        bs = BatchSampler( RandomSampler(self.train_buffer, replacement=True, 
+                    num_samples= self.config['num_grad_steps']*self.config['batch_size']  ), 
+                    batch_size=self.config['batch_size'], drop_last=False )
+        return DataLoader(self.train_buffer, batch_sampler=bs)
     
     def val_dataloader(self):
-        return DataLoader(self.test_buffer, batch_size=1)
+        bs = BatchSampler( RandomSampler(self.test_buffer, replacement=True, 
+                    num_samples= self.config['num_val_batches']*self.config['batch_size']  ), 
+                    batch_size=self.config['batch_size'], drop_last=False )
+        return DataLoader(self.test_buffer, batch_sampler=bs)
 
     '''# evaluate every .... 
     if e%evaluate_every==0:

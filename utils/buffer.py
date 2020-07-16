@@ -14,7 +14,6 @@ class SortedBuffer:
     """
     Buffer that very efficiently remains sorted.  
     """
-
     def __init__(self, obs_dim, act_dim, size ):
         self.obs_buf = None
         self.obs2_buf= None
@@ -23,20 +22,26 @@ class SortedBuffer:
         self.terminal_buf= None 
         self.cum_rew= None
         self.horizon= None
+        self.rollout_length = None
         self.buffer_dict = dict(obs=self.obs_buf, obs2=self.obs2_buf, 
                                 act=self.act_buf, 
                                 rew=self.rew_buf, terminal=self.terminal_buf, 
-                                cum_rew=self.cum_rew, horizon=self.horizon)
+                                cum_rew=self.cum_rew, horizon=self.horizon, 
+                                rollout_length=self.rollout_length)
         self.num_steps, self.max_num_steps = 0, size
+        self.total_num_steps_added = 0
 
     def add_rollouts(self, list_of_rollout_dicts):
         # sorted in ascending order. largest values at the back. 
         for rollout in list_of_rollout_dicts:
-            self.num_steps = min(self.num_steps+len(rollout['terminal']), self.max_num_steps)
+            len_rollout = len(rollout['terminal'])
+            self.num_steps = min(self.num_steps+len_rollout, self.max_num_steps)
+            self.total_num_steps_added += len_rollout
             if self.buffer_dict['terminal'] is not None:
                 # find where everything from this rollout should be inserted into 
                 # each of the numpy buffers. Uses the cumulative/terminal rewards
-                sort_ind = np.searchsorted(self.buffer_dict['cum_rew'], rollout['cum_rew'][0]  )
+                # minus so that highest values are at the front. 
+                sort_ind = np.searchsorted(-self.buffer_dict['cum_rew'], -rollout['cum_rew'][0]  )
             for key in self.buffer_dict.keys(): 
                 # NOTE: assumes that buffer and rollout use the same keys!
                 # needed at init!
@@ -52,8 +57,6 @@ class SortedBuffer:
                     # but it shouldnt make a major diff. 
                     self.buffer_dict[key] = self.buffer_dict[key][:self.max_num_steps]
 
-            print('terminal rewards', self.buffer_dict['cum_rew'])
-
     def get_desires(self, last_few = 75):
         """
         This function calculates the new desired reward and new desired horizon based on the replay buffer.
@@ -61,14 +64,16 @@ class SortedBuffer:
         New desired reward is sampled from a uniform distribution given the mean and the std calculated from the last best X performances.
         where X is the hyperparameter last_few.
         """
-        print(self.buffer_dict['horizon'], self.buffer_dict['cum_rew'])
+        # it is the first occurence of each cumulative ind. 
+        unique_cum_rews, unique_cum_inds = np.unique(-self.buffer_dict['cum_rew'], return_index=True)
+        #unique returns a sorted dictionary need to reverse it. 
+        unique_cum_rews, unique_cum_inds = -unique_cum_rews[:last_few], unique_cum_inds[:last_few]
         #The exploratory desired horizon dh0 is set to the mean of the lengths of the selected episodes
-        new_desired_horizon = round(  np.unique(self.buffer_dict['horizon'])[-last_few:].mean()  )
+        new_desired_horizon = round( self.buffer_dict['rollout_length'][unique_cum_inds].mean()  )
 
-        returns = np.unique(self.buffer_dict['cum_rew'])[-last_few:]
         # from these returns calc the mean and std
-        mean_returns = np.mean(returns)
-        std_returns = np.std(returns)
+        mean_returns = np.mean(unique_cum_rews)
+        std_returns = np.std(unique_cum_rews)
         return mean_returns, std_returns, new_desired_horizon
 
     def __getitem__(self, idx):
