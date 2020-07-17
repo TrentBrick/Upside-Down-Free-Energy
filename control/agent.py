@@ -47,7 +47,7 @@ def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 class Agent:
-    def __init__(self, gamename, logdir,
+    def __init__(self, gamename,
         model = None, 
         desire_scalings=None, 
         take_rand_actions = False,
@@ -88,7 +88,7 @@ class Agent:
                     transforms.ToTensor()
                 ])
 
-        if model: 
+        if model:
             self.model = model 
             self.model.eval()
 
@@ -346,7 +346,8 @@ class Agent:
                 else: 
                     rew, time = self.rollout(render=render_mode, greedy=greedy)
                 if render_mode: 
-                    print('Cumulative Reward is:', rew, 'Horizon is:', time)
+                    print('Cumulative Reward is:', rew, 'Termination time is:', time)
+                    #print('Last Desired reward is:',curr_des "Last Desired Horizon is:", )
                 cum_reward_list.append(rew)
                 t_list.append(time)
 

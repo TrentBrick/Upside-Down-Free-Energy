@@ -82,7 +82,7 @@ class SortedBuffer:
         return self.sample_batch(idx)
 
     def __len__(self):
-        return self.num_steps #self.num_batches_per_epoch
+        return self.num_steps-1 #self.num_batches_per_epoch
 
     def sample_batch(self, idxs=None, batch_size=256):
         if idxs is None:

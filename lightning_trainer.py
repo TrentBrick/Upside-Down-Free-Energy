@@ -32,10 +32,17 @@ class LightningTemplate(pl.LightningModule):
             self.model = UpsdBehavior( self.config['STORED_STATE_SIZE'], 
                 self.config['ACTION_SIZE'], 
                 self.config['NODE_SIZE'], (config['reward_scale'],config['horizon_scale']) )
-
+ 
         # start filling up the buffer.
         output = self.collect_rollouts(num_episodes=self.config['num_rand_action_rollouts']) 
         self.add_rollouts_to_buffer(output)
+    
+    def eval_agent(self):
+        self.desired_horizon = 250
+        self.desired_reward_stats = (200, 1)
+        print('Desired Reward and Horizon are:', self.desired_horizon, self.desired_reward_stats)
+        self.current_epoch = self.config['random_action_epochs']+1
+        output = self.collect_rollouts(num_episodes=100, greedy=True, render=True  ) 
 
     def forward(self,state, command):
         return self.model(state, command)
@@ -45,13 +52,13 @@ class LightningTemplate(pl.LightningModule):
         return optimizer 
 
     def collect_rollouts(self, greedy=False, 
-            num_episodes=None):
+            num_episodes=None, render=False):
         if self.current_epoch<self.config['random_action_epochs']:
-            agent = Agent(self.config['gamename'], self.game_dir, 
+            agent = Agent(self.config['gamename'], 
                 take_rand_actions=True,
                 discount_factor=self.config['discount_factor'])
         else: 
-            agent = Agent(self.config['gamename'], self.game_dir, 
+            agent = Agent(self.config['gamename'], 
                 model = self.model, 
                 Levine_Implementation= self.Levine_Implementation,
                 desired_reward_stats = self.desired_reward_stats, 
@@ -63,7 +70,7 @@ class LightningTemplate(pl.LightningModule):
         output = agent.simulate(seed, return_events=True,
                                 compute_feef=True,
                                 num_episodes=num_episodes,
-                                greedy=greedy)
+                                greedy=greedy, render_mode=render)
 
         return output
 

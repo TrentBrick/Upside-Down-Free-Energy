@@ -5,13 +5,18 @@ import numpy as np
 from envs import get_env_params
 from control import Agent 
 
-gamename = 'lunarlander'
+gamename = 'lunarlander-sparse'
+env_params = get_env_params(gamename)
 game_dir = 'exp_dir/'+gamename #+'/model_checkpoint.tar'
 desire_scalings = (0.02, 0.01)
 
 desired_horizon = 230
 reward_from_epoch_stats = (250, 10)
 Levine_Implementation = False 
+
+
+model = LightningTemplate(game_dir, config, train_buffer, test_buffer)
+model = LightningTemplate.load_from_checkpoint(filenames_dict['best'])
 
 agent = Agent(gamename, game_dir, False,  
                 Levine_Implementation= Levine_Implementation,

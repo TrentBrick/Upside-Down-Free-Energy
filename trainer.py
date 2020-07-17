@@ -57,7 +57,7 @@ def main(args):
     env_params = get_env_params(args.gamename)
 
     # Constants
-    epochs = 400
+    epochs = 2000
     training_rollouts_total = 20
     #training_rollouts_total//args.num_workers
     constants = dict(
@@ -174,16 +174,25 @@ def main(args):
 
         if not args.no_reload:
             # load in: 
-            model = LightningTemplate.load_from_checkpoint(filenames_dict['best'])
+            print('loading in from:', game_dir)
+            load_name = join(game_dir, 'epoch=1723.ckpt')
+            state_dict = torch.load(load_name)['state_dict']
+            state_dict = {k[6:]:v for k, v in state_dict.items()}
+            model.model.load_state_dict(state_dict)
+            print("Loaded in Model state!")
 
-        trainer = Trainer(deterministic=True, logger=logger,
-            default_root_dir=game_dir, max_epochs=epochs, profiler=False,
-            checkpoint_callback = every_checkpoint_callback,
-            log_save_interval=1,
-            callbacks=callback_list, 
-            progress_bar_refresh_rate=0
-        )
-        trainer.fit(model)
+        if args.eval_agent:
+            model.eval_agent()
+
+        else: 
+            trainer = Trainer(deterministic=True, logger=logger,
+                default_root_dir=game_dir, max_epochs=epochs, profiler=False,
+                checkpoint_callback = every_checkpoint_callback,
+                log_save_interval=1,
+                callbacks=callback_list, 
+                progress_bar_refresh_rate=0
+            )
+            trainer.fit(model)
 
     scheduler = ASHAScheduler(
         time_attr='epoch',
@@ -232,5 +241,7 @@ if __name__ =='__main__':
                         "specified.")
     parser.add_argument('--seed', type=int, default=27,
                         help="Starter seed for reproducible results")
+    parser.add_argument('--eval_agent', type=bool, default=False,
+                        help="Able to eval the agent!")
     args = parser.parse_args()
     main(args)
