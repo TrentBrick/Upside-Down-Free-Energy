@@ -23,15 +23,15 @@ class LightningTemplate(pl.LightningModule):
         self.test_buffer = test_buffer
         self.mean_reward_over_20_epochs = []
 
-        if self.Levine_Implementation:
+        if self.config['use_Levine_model']:
             self.model = UpsdModel(self.config['STORED_STATE_SIZE'], 
             self.config['desires_size'], 
             self.config['ACTION_SIZE'], 
-            self.config['NODE_SIZE'], desire_scalings=(config['reward_scale'],config['horizon_scale']))
+            self.config['hidden_sizes'], desires_scalings=None)
         else: 
             self.model = UpsdBehavior( self.config['STORED_STATE_SIZE'], 
                 self.config['ACTION_SIZE'], 
-                self.config['NODE_SIZE'], (config['reward_scale'],config['horizon_scale']) )
+                self.config['hidden_sizes'], (config['reward_scale'],config['horizon_scale']) )
  
         # start filling up the buffer.
         output = self.collect_rollouts(num_episodes=self.config['num_rand_action_rollouts']) 
@@ -124,9 +124,10 @@ class LightningTemplate(pl.LightningModule):
         # run training on this data
         if self.Levine_Implementation: 
             obs, obs2, act, rew, terminal, terminal_rew, time = batch['obs'].squeeze(0), batch['obs2'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['terminal'].squeeze(0), batch['terminal_rew'].squeeze(0), batch['time'].squeeze(0)
-        else: 
+        else:
             obs, act, rew, horizon = batch['obs'], batch['act'], batch['cum_rew'], batch['horizon']
-            # this is actually delta time. 
+            if not self.config['sparse']: 
+                rew = batch['rew']
         
         if not self.Levine_Implementation: 
             desires = torch.cat([rew.unsqueeze(1), horizon.unsqueeze(1)], dim=1)

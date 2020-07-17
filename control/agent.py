@@ -273,10 +273,14 @@ class Agent:
 
         #print('time at end of rollout!!!', time)
         #print('done with this simulation')
+        if render: 
+            print('the last state for agent is:', rollout_dict['obs'][-1].round(3)  )
+
         if self.return_events:
             for k,v in rollout_dict.items(): # list of tensors arrays.
                 # rewards to go here for levine
-                if self.Levine_Implementation and k =='rew':
+                if k =='rew':
+                    # rewards to go. 
                     rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
                 else: 
                     rollout_dict[k] = np.asarray(v)
@@ -347,6 +351,7 @@ class Agent:
                     rew, time = self.rollout(render=render_mode, greedy=greedy)
                 if render_mode: 
                     print('Cumulative Reward is:', rew, 'Termination time is:', time)
+                    
                     #print('Last Desired reward is:',curr_des "Last Desired Horizon is:", )
                 cum_reward_list.append(rew)
                 t_list.append(time)

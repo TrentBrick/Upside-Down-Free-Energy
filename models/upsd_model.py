@@ -16,14 +16,14 @@ class UpsdBehavior(nn.Module):
         state_size (int)
         action_size (int)
         hidden_size (int) -- NOTE: not used at the moment
-        desire_scalings (List of float)
+        desires_scalings (List of float)
     '''
     
     def __init__(self, state_size, action_size, hidden_sizes,
-            desire_scalings):
+            desires_scalings):
         super().__init__()
         
-        self.desire_scalings = torch.FloatTensor(desire_scalings)
+        self.desires_scalings = torch.FloatTensor(desires_scalings)
         
         self.state_fc = nn.Sequential(nn.Linear(state_size, hidden_sizes[0]), 
                                       nn.Tanh())
@@ -53,7 +53,7 @@ class UpsdBehavior(nn.Module):
         '''
         #print('entering the model', state.shape, command.shape)
         state_output = self.state_fc(state)
-        command_output = self.command_fc(command * self.desire_scalings)
+        command_output = self.command_fc(command * self.desires_scalings)
         embedding = torch.mul(state_output, command_output)
         return self.output_fc(embedding)
 
@@ -61,44 +61,34 @@ class UpsdModel(nn.Module):
     """ Using Fig.1 from Reward Conditioned Policies 
         https://arxiv.org/pdf/1912.13465.pdf """
     def __init__(self, state_size, desires_size, 
-        action_size, node_size, desire_scalings = None, act_fn="relu"):
+        action_size, hidden_sizes, desires_scalings = None, 
+        state_act_fn="tanh", desires_act_fn="sigmoid"):
         super().__init__()
-        self.act_fn = getattr(torch, act_fn)
-        if desire_scalings is not None: 
-            self.desire_scalings = torch.FloatTensor(desire_scalings)
+        self.state_act_fn = getattr(torch, state_act_fn)
+        self.desires_act_fn = getattr(torch, desires_act_fn)
+        if desires_scalings is not None: 
+            self.desires_scalings = torch.FloatTensor(desires_scalings)
         else: 
-            self.desire_scalings = desire_scalings
+            self.desires_scalings = desires_scalings
 
-        # states
-        self.state_fc_1 = nn.Linear(state_size, node_size)
-        self.state_fc_2 = nn.Linear(node_size, node_size)
-        self.state_fc_3 = nn.Linear(node_size, node_size)
-        self.state_fc_4 = nn.Linear(node_size, action_size)
+        self.state_layers = nn.ModuleList()
+        self.desires_layers = nn.ModuleList()
+        hidden_sizes.insert(0, state_size)
+        for j in range(len(hidden_sizes)-1):
+            self.state_layers.append( nn.Linear(hidden_sizes[j], hidden_sizes[j+1]) )
+            self.desires_layers.append( nn.Linear(desires_size, hidden_sizes[j+1]) )
 
-        # desires
-        self.desire_fc_1 = nn.Linear(desires_size, node_size)
-        self.desire_fc_2 = nn.Linear(desires_size, node_size)
-        self.desire_fc_3 = nn.Linear(desires_size, node_size)
+        self.output_fc = nn.Linear(hidden_sizes[-1], action_size )
 
     def forward(self, state, desires):
         # returns an action
+        if self.desires_scalings:
+            desires *= self.desires_scalings
 
-        #print("inputs for forward", state.shape, desires.shape)
+        for state_layer, desires_layer in zip(self.state_layers, self.desires_layers):
+            state = torch.mul( self.state_act_fn(state_layer(state)), 
+                    self.desires_act_fn(desires_layer(desires))   )
 
-        if self.desire_scalings:
-            desires *= self.desire_scalings
+        state = self.output_fc(state)
 
-        state = self.act_fn(self.state_fc_1(state))
-        d_mod = self.act_fn(self.desire_fc_1(desires))
-        state = torch.mul(state, d_mod)
-
-        state = self.act_fn(self.state_fc_2(state))
-        d_mod = self.act_fn(self.desire_fc_2(desires))
-        state = torch.mul(state, d_mod)
-
-        state = self.act_fn(self.state_fc_3(state))
-        d_mod = self.act_fn(self.desire_fc_3(desires))
-        state = torch.mul(state, d_mod)
-
-        state = self.state_fc_4(state)
         return state

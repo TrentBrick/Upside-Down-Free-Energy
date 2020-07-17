@@ -70,7 +70,6 @@ def get_env_params(gamename):
             'ACTION_SIZE': 4, # number possible actions
             'STORED_ACTION_SIZE': 1,
             'STORED_STATE_SIZE': 8,
-            'NODE_SIZE': 32,
             'desires_size' : 2, # just reward for now. 
             'max_reward':250,
             # top, bottom, left, right

@@ -69,7 +69,9 @@ def main(args):
         num_rand_action_rollouts = 10,
         antithetic = False,
         Levine_Implementation=Levine_Implementation,
-        num_val_batches = 5
+        num_val_batches = 5,
+        ############ this here is important! 
+        use_Levine_model = False, 
     )
     if Levine_Implementation:
         config= dict(
@@ -80,7 +82,8 @@ def main(args):
             desired_reward_dist_beta = 1000,
             weight_loss = True,
             desire_scalings =None, 
-            num_grad_steps = 1000
+            num_grad_steps = 1000,
+            hidden_sizes = [128,128,128]
         )
         train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'])
         test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
@@ -98,14 +101,14 @@ def main(args):
         last_few = 75, #tune.choice([25, 75]),
         desired_reward_dist_beta=1,
         num_grad_steps = 100,#tune.choice([100, 150, 200, 250, 300])
+        hidden_sizes = [64,128,128,128] #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
+        #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
         )
         # TODO: do I need to provide seeds to the buffer like this? 
         
     config.update(constants) 
     config.update(env_params)
     config.update(vars(args))
-    config['NODE_SIZE'] = [64,128,128,128] #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
-        #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
 
     use_tune = False   
 
