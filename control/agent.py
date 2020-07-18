@@ -226,8 +226,8 @@ class Agent:
 
             if time >= self.time_limit:
                 hit_done=True
-            else:
-                time += 1
+            
+            time += 1
                 
             # if the last n steps (real steps independent of action repeats)
             # have all given -0.1 reward then cut the rollout early. 
@@ -288,7 +288,7 @@ class Agent:
             rollout_dict['cum_rew'] = np.repeat(cumulative, time)
             rollout_dict['rollout_length'] = np.repeat(time, time)
             rollout_dict['horizon'] = time - np.arange(0, time) # so that the horizon is always 1 away
-            #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['rew']) )
+            #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['rew']), len(rollout_dict['terminal']) )
             return cumulative, time, rollout_dict # passed back to simulate. 
         else: 
             return cumulative, time # ending time and cum reward
