@@ -23,17 +23,23 @@ class SortedBuffer:
         self.cum_rew= None
         self.horizon= None
         self.rollout_length = None
+        self.final_obs = None
         self.buffer_dict = dict(obs=self.obs_buf, obs2=self.obs2_buf, 
                                 act=self.act_buf, 
                                 rew=self.rew_buf, terminal=self.terminal_buf, 
                                 cum_rew=self.cum_rew, horizon=self.horizon, 
-                                rollout_length=self.rollout_length)
+                                rollout_length=self.rollout_length, 
+                                final_obs=self.final_obs)
         self.num_steps, self.max_num_steps = 0, size
         self.total_num_steps_added = 0
 
     def add_rollouts(self, list_of_rollout_dicts):
         # sorted in ascending order. largest values at the back. 
         for rollout in list_of_rollout_dicts:
+            # dont bother adding rollouts that are worse than the worst in the buffer. 
+            if self.num_steps == self.max_num_steps and rollout['cum_rew'][0] <= self.buffer_dict['cum_rew'][-1]:
+                continue 
+
             len_rollout = len(rollout['terminal'])
             self.num_steps = min(self.num_steps+len_rollout, self.max_num_steps)
             self.total_num_steps_added += len_rollout
@@ -74,7 +80,10 @@ class SortedBuffer:
         # from these returns calc the mean and std
         mean_returns = np.mean(unique_cum_rews)
         std_returns = np.std(unique_cum_rews)
-        return mean_returns, std_returns, new_desired_horizon
+
+        new_desired_state = self.buffer_dict['final_obs'][unique_cum_inds].mean(axis=0) 
+
+        return mean_returns, std_returns, new_desired_horizon, new_desired_state
 
     def __getitem__(self, idx):
         # turn this into a random value!

@@ -44,6 +44,8 @@ class TuneReportCallback(Callback):
 
 def main(args):
 
+    dir_rand_seed = np.random.randint(0,1000)
+
     assert args.num_workers <= cpu_count(), "Providing too many workers!" 
 
     Levine_Implementation = False 
@@ -72,7 +74,15 @@ def main(args):
         num_val_batches = 5,
         ############ this here is important! 
         use_Levine_model = False, 
+        desire_states = False 
     )
+    additional_desires = 1 if Levine_Implementation else 2
+    if constants['desire_states']:
+        # for reward and time.
+        constants['desires_size'] = env_params['STORED_STATE_SIZE']+additional_desires
+    else: 
+        # TODO: account for time not just in Levine implementation. 
+        constants['desires_size'] = additional_desires
     if Levine_Implementation:
         config= dict(
             lr=0.01,
@@ -88,13 +98,13 @@ def main(args):
         train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'])
         test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
             act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
-        
         # want to store 500 episodes
     else: 
         config= dict(
         lr= 0.0003, #tune.choice(np.logspace(-4, -2, num = 101)),
         batch_size = 768, #tune.choice([512, 768, 1024, 1536, 2048]),
         max_buffer_size = 500, #tune.choice([300, 400, 500, 600, 700]),
+        state_scale = 1.0,
         horizon_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
         reward_scale = 0.02, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
         discount_factor = 1.0,
@@ -106,6 +116,9 @@ def main(args):
         )
         # TODO: do I need to provide seeds to the buffer like this? 
         
+    # TODO: do I need to scale different parts of this differently? 
+    config['state_scale'] = np.repeat(config['state_scale'], env_params['STORED_STATE_SIZE']).tolist()
+
     config.update(constants) 
     config.update(env_params)
     config.update(vars(args))
@@ -128,11 +141,10 @@ def main(args):
     else: 
         # Init save filenames 
         base_game_dir = join(args.logdir, args.gamename)
-        if not exists(base_game_dir):
-            mkdir(base_game_dir)
+        #exp_dir = join(base_game_dir, 'exp_'+args.exp_name)
         game_dir = join(base_game_dir, 'seed_'+str(args.seed))
         filenames_dict = { bc:join(game_dir, 'model_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
-        for dirr in [game_dir]:
+        for dirr in [base_game_dir, game_dir]: #exp_dir
             if not exists(dirr):
                 mkdir(dirr)
 
@@ -177,8 +189,8 @@ def main(args):
 
         if not args.no_reload:
             # load in: 
-            print('loading in from:', game_dir)
-            load_name = join(game_dir, 'epoch=1723.ckpt')
+            load_name = join(game_dir, 'epoch=1940_v0.ckpt')
+            print('loading in from:', load_name)
             state_dict = torch.load(load_name)['state_dict']
             state_dict = {k[6:]:v for k, v in state_dict.items()}
             model.model.load_state_dict(state_dict)
@@ -229,6 +241,8 @@ if __name__ =='__main__':
     parser = argparse.ArgumentParser("Training Script")
     parser.add_argument('--gamename', type=str,
                         help="What Gym environment to train in.")
+    parser.add_argument('--exp_name', type=str,
+                        help="Name of the experiment.")                
     parser.add_argument('--logdir', type=str, default='exp_dir',
                         help="Where things are logged and models are loaded from.")
     parser.add_argument('--no_reload', action='store_true',

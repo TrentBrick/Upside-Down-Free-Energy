@@ -19,16 +19,18 @@ class UpsdBehavior(nn.Module):
         desires_scalings (List of float)
     '''
     
-    def __init__(self, state_size, action_size, hidden_sizes,
-            desires_scalings):
+    def __init__(self, state_size, desires_size,
+            action_size, hidden_sizes,
+            desires_scalings, desire_states=False ):
         super().__init__()
+        self.desire_states = desire_states
         
-        self.desires_scalings = torch.FloatTensor(desires_scalings)
+        self.desires_scalings = torch.FloatTensor(desires_scalings[:desires_size])
         
         self.state_fc = nn.Sequential(nn.Linear(state_size, hidden_sizes[0]), 
                                       nn.Tanh())
         
-        self.command_fc = nn.Sequential(nn.Linear(2, hidden_sizes[0]), 
+        self.command_fc = nn.Sequential(nn.Linear(desires_size, hidden_sizes[0]), 
                                         nn.Sigmoid())
 
         layers = nn.ModuleList()
@@ -51,6 +53,10 @@ class UpsdBehavior(nn.Module):
         Returns:
             FloatTensor -- action logits
         '''
+        if self.desire_states:
+            command = torch.cat(command, dim=1)
+        else:
+            command = torch.cat(command[:-1], dim=1)
         #print('entering the model', state.shape, command.shape)
         state_output = self.state_fc(state)
         command_output = self.command_fc(command * self.desires_scalings)
@@ -58,11 +64,13 @@ class UpsdBehavior(nn.Module):
         return self.output_fc(embedding)
 
 class UpsdModel(nn.Module):
+    #TODO: get the desire state for this working. 
     """ Using Fig.1 from Reward Conditioned Policies 
         https://arxiv.org/pdf/1912.13465.pdf """
     def __init__(self, state_size, desires_size, 
         action_size, hidden_sizes, desires_scalings = None, 
-        state_act_fn="tanh", desires_act_fn="sigmoid"):
+        state_act_fn="tanh", desires_act_fn="sigmoid", 
+        desire_statess = False):
         super().__init__()
         self.state_act_fn = getattr(torch, state_act_fn)
         self.desires_act_fn = getattr(torch, desires_act_fn)

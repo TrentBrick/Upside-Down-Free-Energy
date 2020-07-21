@@ -29,18 +29,24 @@ class LightningTemplate(pl.LightningModule):
             self.config['ACTION_SIZE'], 
             self.config['hidden_sizes'], desires_scalings=None)
         else: 
+            desires_scalings = [config['reward_scale']]+[config['horizon_scale']]+ config['state_scale']
             self.model = UpsdBehavior( self.config['STORED_STATE_SIZE'], 
+                self.config['desires_size'],
                 self.config['ACTION_SIZE'], 
-                self.config['hidden_sizes'], (config['reward_scale'],config['horizon_scale']) )
+                self.config['hidden_sizes'], 
+                desires_scalings,
+                desire_states=self.config['desire_states'] )
  
         # start filling up the buffer.
         output = self.collect_rollouts(num_episodes=self.config['num_rand_action_rollouts']) 
         self.add_rollouts_to_buffer(output)
     
     def eval_agent(self):
-        self.desired_horizon = 250
-        self.desired_reward_stats = (200, 1)
-        print('Desired Reward and Horizon are:', self.desired_horizon, self.desired_reward_stats)
+        self.desired_horizon = 285
+        self.desired_reward_stats = (319, 1)
+        self.desired_state = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1., 1.]
+        print('Desired Reward and Horizon are:', self.desired_horizon, self.desired_reward_stats, 
+        self.desired_state)
         self.current_epoch = self.config['random_action_epochs']+1
         output = self.collect_rollouts(num_episodes=100, greedy=True, render=True  ) 
 
@@ -63,10 +69,12 @@ class LightningTemplate(pl.LightningModule):
                 Levine_Implementation= self.Levine_Implementation,
                 desired_reward_stats = self.desired_reward_stats, 
                 desired_horizon = self.desired_horizon,
+                desired_state = self.desired_state,
                 desired_reward_dist_beta=self.config['desired_reward_dist_beta'],
                 discount_factor=self.config['discount_factor'])
         
         seed = np.random.randint(0, 1e9, 1)[0]
+        print('seed used for agent simulate:', seed )
         output = agent.simulate(seed, return_events=True,
                                 compute_feef=True,
                                 num_episodes=num_episodes,
@@ -93,7 +101,8 @@ class LightningTemplate(pl.LightningModule):
             self.desired_horizon = 99999
             self.desired_reward_stats = (np.mean(reward_losses), np.std(reward_losses))
         else: 
-            last_few_mean_returns, last_few_std_returns, self.desired_horizon  = self.train_buffer.get_desires(last_few=self.config['last_few'])
+            # TODO: return mean and std to sample from the desired states. 
+            last_few_mean_returns, last_few_std_returns, self.desired_horizon, self.desired_state = self.train_buffer.get_desires(last_few=self.config['last_few'])
             self.desired_reward_stats = (last_few_mean_returns, last_few_std_returns)
 
         self.mean_reward_rollouts = np.mean(reward_losses)
@@ -125,12 +134,12 @@ class LightningTemplate(pl.LightningModule):
         if self.Levine_Implementation: 
             obs, obs2, act, rew, terminal, terminal_rew, time = batch['obs'].squeeze(0), batch['obs2'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['terminal'].squeeze(0), batch['terminal_rew'].squeeze(0), batch['time'].squeeze(0)
         else:
-            obs, act, rew, horizon = batch['obs'], batch['act'], batch['cum_rew'], batch['horizon']
+            obs, final_obs, act, rew, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['cum_rew'], batch['horizon']
             if not self.config['sparse']: 
                 rew = batch['rew']
-        
-        if not self.Levine_Implementation: 
-            desires = torch.cat([rew.unsqueeze(1), horizon.unsqueeze(1)], dim=1)
+
+        desires = [rew.unsqueeze(1), horizon.unsqueeze(1), final_obs]
+        #print(desires[0].shape, desires[1].shape, desires[2].shape, desires[2] )
         pred_action = self.model.forward(obs, desires)
         if not self.config['continuous_actions']:
             #pred_action = torch.sigmoid(pred_action)

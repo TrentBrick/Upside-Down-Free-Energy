@@ -53,6 +53,8 @@ class Agent:
         take_rand_actions = False,
         desired_reward_stats=(1,1),
         desired_horizon = 250,
+        desired_state = None, 
+        delta_state = False, 
         Levine_Implementation = False, 
         desired_reward_dist_beta = 1.0,
         discount_factor=1.0, model_version = 'checkpoint',
@@ -72,7 +74,8 @@ class Agent:
                 desired_reward_stats[1], beta=desired_reward_dist_beta)
         else:
             self.desired_rew_mu, self.desired_rew_std, self.desired_horizon = desired_reward_stats[0], desired_reward_stats[1], desired_horizon
-            
+            self.desired_state = desired_state
+            self.delta_state = delta_state
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
 
@@ -95,14 +98,14 @@ class Agent:
         # can be set to true inside Simulate. 
         self.return_events = False
 
-    def make_env(self, seed=None, render_mode=False, full_episode=False):
+    def make_env(self, seed, render_mode=False, full_episode=False):
         """ Called every time a new rollout occurs. Creates a new environment and 
         sets a new random seed for it."""
         self.render_mode = render_mode
         self.env = gym.make(self.env_params['env_name'])
         self.env.reset()
-        if not seed: 
-            seed = np.random.randint(0,1e9,1)[0]
+        #if not seed: 
+        #seed = np.random.randint(0,1e9,1)[0]
 
         self.env.seed(int(seed))
         self.env.action_space.np_random.seed(int(seed))
@@ -151,6 +154,7 @@ class Agent:
                 curr_desired_reward = np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)
                 curr_desired_reward = torch.Tensor([min(curr_desired_reward, self.env_params['max_reward']  )])
                 curr_desired_horizon = torch.Tensor([self.desired_horizon])
+                curr_desired_state = torch.Tensor([self.desired_state])
 
         # useful if use an LSTM. 
         #hidden, state, action = self.model.init_hidden_state_action(1)
@@ -186,11 +190,13 @@ class Agent:
                 action = self.env.action_space.sample()
             else: 
                 # use upside down model: 
-                desires = torch.cat([curr_desired_reward.unsqueeze(1), curr_desired_horizon.unsqueeze(1)], dim=1)
+                #print("desired state is:", curr_desired_state.shape )
+                desires = [curr_desired_reward.unsqueeze(1), curr_desired_horizon.unsqueeze(1), curr_desired_state]
                 action = self.model(obs, desires )
                 # need to constrain the action! 
                 if self.env_params['continuous_actions']:
-                    action = self._add_action_noise(action, self.action_noise)
+                    if not greedy: 
+                        action = self._add_action_noise(action, self.action_noise)
                     action = self.constrain_actions(action)
                     action = action[0].detach().numpy()
                 else: 
@@ -256,7 +262,13 @@ class Agent:
                 else: 
                     curr_desired_reward = torch.Tensor( [min(curr_desired_reward-reward, self.env_params['max_reward'])])
                     curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
-
+                    # TODO: implement delta states here. in the buffer. and in the
+                    # training loop. 
+                    if self.delta_state:
+                        curr_desired_state = torch.Tensor(obs-[curr_desired_state])
+                    else: 
+                        pass
+           
             # save out things.
             # doesnt save out the time so dont need to worry about it here. 
             if self.return_events:
@@ -287,7 +299,11 @@ class Agent:
             # repeat the cum reward up to length times. 
             rollout_dict['cum_rew'] = np.repeat(cumulative, time)
             rollout_dict['rollout_length'] = np.repeat(time, time)
-            rollout_dict['horizon'] = time - np.arange(0, time) # so that the horizon is always 1 away
+            rollout_dict['horizon'] = time - np.arange(0, time) 
+            rollout_dict['final_obs'] = np.repeat(np.expand_dims(rollout_dict['obs'][-1],0), time, axis=0)
+            #print('rollout final obs is:', rollout_dict['final_obs'].shape )
+            # so that the horizon is always 1 away
+            #print(rollout_dict['final_obs'], rollout_dict['horizon'], rollout_dict['cum_rew'])
             #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['rew']), len(rollout_dict['terminal']) )
             return cumulative, time, rollout_dict # passed back to simulate. 
         else: 
