@@ -70,8 +70,10 @@ class UpsdModel(nn.Module):
     def __init__(self, state_size, desires_size, 
         action_size, hidden_sizes, desires_scalings = None, 
         state_act_fn="tanh", desires_act_fn="sigmoid", 
-        desire_statess = False):
+        desire_states = False):
         super().__init__()
+        self.desires_size = desires_size
+        self.desire_states = desire_states
         self.state_act_fn = getattr(torch, state_act_fn)
         self.desires_act_fn = getattr(torch, desires_act_fn)
         if desires_scalings is not None: 
@@ -89,7 +91,13 @@ class UpsdModel(nn.Module):
         self.output_fc = nn.Linear(hidden_sizes[-1], action_size )
 
     def forward(self, state, desires):
-        # returns an action
+        ''' Returns an action '''
+        if self.desire_states:
+            # no horizon should be an input!!!! 
+            desires = torch.cat(desires, dim=1)
+        else:
+            desires = desires[0]
+
         if self.desires_scalings:
             desires *= self.desires_scalings
 

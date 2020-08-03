@@ -68,14 +68,15 @@ class Agent:
         self.discount_factor = discount_factor
         self.Levine_Implementation = Levine_Implementation
 
+        self.desired_state = desired_state
+        self.delta_state = delta_state
         if self.Levine_Implementation:
             print('the desired stats are:', desired_reward_stats)
             self.desired_reward_dist = WeightedNormal(desired_reward_stats[0], 
                 desired_reward_stats[1], beta=desired_reward_dist_beta)
+            
         else:
             self.desired_rew_mu, self.desired_rew_std, self.desired_horizon = desired_reward_stats[0], desired_reward_stats[1], desired_horizon
-            self.desired_state = desired_state
-            self.delta_state = delta_state
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
 
@@ -150,6 +151,7 @@ class Agent:
         if not self.take_rand_actions:
             if self.Levine_Implementation:
                 curr_desired_reward = self.desired_reward_dist.sample(1)
+                curr_desired_state = torch.Tensor([self.desired_state])
             else: 
                 curr_desired_reward = np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)
                 curr_desired_reward = torch.Tensor([min(curr_desired_reward, self.env_params['max_reward']  )])
@@ -191,7 +193,10 @@ class Agent:
             else: 
                 # use upside down model: 
                 #print("desired state is:", curr_desired_state.shape )
-                desires = [curr_desired_reward.unsqueeze(1), curr_desired_horizon.unsqueeze(1), curr_desired_state]
+                if self.Levine_Implementation:
+                    desires = [curr_desired_reward.unsqueeze(1), curr_desired_state]
+                else: 
+                    desires = [curr_desired_reward.unsqueeze(1), curr_desired_horizon.unsqueeze(1), curr_desired_state]
                 action = self.model(obs, desires )
                 # need to constrain the action! 
                 if self.env_params['continuous_actions']:
@@ -226,9 +231,9 @@ class Agent:
                 next_obs = self.env.render(mode='rgb_array')
                 #self.env.viewer.window.dispatch_events()
 
-            # has gone over and still not crashed: 
             if not hit_done and time>=self.time_limit:
-                reward = self.env_params['over_max_time_limit']
+                # add in any penalty for hitting the time limit and still not being done. 
+                reward += self.env_params['over_max_time_limit_penalty']
 
             if time >= self.time_limit:
                 hit_done=True
@@ -260,8 +265,13 @@ class Agent:
                     #curr_desired_reward -= reward
                     pass
                 else: 
-                    curr_desired_reward = torch.Tensor( [min(curr_desired_reward-reward, self.env_params['max_reward'])])
-                    curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
+                    if self.Levine_Implementation: 
+                        pass 
+                        # dont touch curr_desired reward. 
+                        # or state or horizon. 
+                    else: 
+                        curr_desired_reward = torch.Tensor( [min(curr_desired_reward-reward, self.env_params['max_reward'])])
+                        curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
                     # TODO: implement delta states here. in the buffer. and in the
                     # training loop. 
                     if self.delta_state:
@@ -310,16 +320,15 @@ class Agent:
             return cumulative, time # ending time and cum reward
                 
     def simulate(self, seed, return_events=False, num_episodes=16, 
-        compute_feef=False,
         render_mode=False, antithetic=False, greedy=False):
         """ Runs lots of rollouts with different random seeds. Optionally,
         can keep track of all outputs from the environment in each rollout 
         (adding each to a list which contains dictionaries for the rollout). 
         And it can compute the FEEF at the end of each rollout. 
         
-        :returns: (cum_reward_list, t_list, [data_dict_list], [feef_losses_list])
+        :returns: (cum_reward_list, terminal_time_list, [data_dict_list], [feef_losses_list])
             - cum_reward_list: list. cumulative rewards of each rollout. 
-            - t_list: list. timestep the rollout ended at. 
+            - terminal_time_list: list. timestep the rollout ended at. 
             - data_dict_list: list. OPTIONAL. Dictionaries from each rollout.
                 Has keys: 'obs', 'rewards',
                 'actions', 'terminal'. Each is a PyTorch Tensor with the first
@@ -340,11 +349,9 @@ class Agent:
         self.make_env(seed=seed)
 
         cum_reward_list = []
-        t_list = []
+        terminal_time_list = []
         if self.return_events:
             data_dict_list = []
-            if compute_feef:
-                feef_losses_list = []
 
         with torch.no_grad():
             for i in range(num_episodes):
@@ -361,16 +368,13 @@ class Agent:
                     rew, time, data_dict = self.rollout(render=render_mode, greedy=greedy)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                     data_dict_list.append(data_dict)
-                    if compute_feef: 
-                        feef_losses_list.append(  0.0 )#self.feef_loss(data_dict)  )
                 else: 
                     rew, time = self.rollout(render=render_mode, greedy=greedy)
                 if render_mode: 
                     print('Cumulative Reward is:', rew, 'Termination time is:', time)
-                    
                     #print('Last Desired reward is:',curr_des "Last Desired Horizon is:", )
                 cum_reward_list.append(rew)
-                t_list.append(time)
+                terminal_time_list.append(time)
 
         self.env.close()
 
@@ -378,9 +382,6 @@ class Agent:
             print('Mean reward over', num_episodes, 'episodes is:', np.mean(cum_reward_list))
 
         if self.return_events: 
-            if compute_feef:
-                return cum_reward_list, t_list, data_dict_list, feef_losses_list
-            else: 
-                return cum_reward_list, t_list, data_dict_list 
+            return cum_reward_list, terminal_time_list, data_dict_list 
         else: 
-            return cum_reward_list, t_list
+            return cum_reward_list, terminal_time_list

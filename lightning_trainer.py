@@ -27,8 +27,10 @@ class LightningTemplate(pl.LightningModule):
             self.model = UpsdModel(self.config['STORED_STATE_SIZE'], 
             self.config['desires_size'], 
             self.config['ACTION_SIZE'], 
-            self.config['hidden_sizes'], desires_scalings=None)
+            self.config['hidden_sizes'], desires_scalings=None, 
+            desire_states=self.config['desire_states'])
         else: 
+            # concatenate all of these lists together. 
             desires_scalings = [config['reward_scale']]+[config['horizon_scale']]+ config['state_scale']
             self.model = UpsdBehavior( self.config['STORED_STATE_SIZE'], 
                 self.config['desires_size'],
@@ -37,6 +39,10 @@ class LightningTemplate(pl.LightningModule):
                 desires_scalings,
                 desire_states=self.config['desire_states'] )
  
+        # log the hparams. 
+        if self.logger:
+            self.logger.experiment.add_hparams(config)
+
         # start filling up the buffer.
         output = self.collect_rollouts(num_episodes=self.config['num_rand_action_rollouts']) 
         self.add_rollouts_to_buffer(output)
@@ -76,20 +82,16 @@ class LightningTemplate(pl.LightningModule):
         seed = np.random.randint(0, 1e9, 1)[0]
         print('seed used for agent simulate:', seed )
         output = agent.simulate(seed, return_events=True,
-                                compute_feef=True,
                                 num_episodes=num_episodes,
                                 greedy=greedy, render_mode=render)
 
         return output
 
     def add_rollouts_to_buffer(self, output):
-        if self.Levine_Implementation: 
-            train_data = combine_single_worker(output[2][:-1], 1 )
-            test_data = {k:[v]for k, v in output[2][-1].items()}
-        else: 
-            train_data =output[2][:-1]
-            test_data = [output[2][-1]]
-        reward_losses, termination_times, feef_losses = output[0], output[1], output[3]
+        
+        train_data =output[2][:-1]
+        test_data = [output[2][-1]]
+        reward_losses, termination_times = output[0], output[1]
 
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
@@ -98,8 +100,9 @@ class LightningTemplate(pl.LightningModule):
         self.test_buffer.add_rollouts(test_data)
 
         if self.Levine_Implementation:
-            self.desired_horizon = 99999
+            self.desired_horizon = None
             self.desired_reward_stats = (np.mean(reward_losses), np.std(reward_losses))
+            self.desired_state = np.unique(self.train_buffer.final_obs).mean(axis=0) # take the mean or sample from everything. 
         else: 
             # TODO: return mean and std to sample from the desired states. 
             last_few_mean_returns, last_few_std_returns, self.desired_horizon, self.desired_state = self.train_buffer.get_desires(last_few=self.config['last_few'])
@@ -112,9 +115,13 @@ class LightningTemplate(pl.LightningModule):
             self.logger.experiment.add_scalar("mean_reward", np.mean(reward_losses), self.global_step)
             self.logger.experiment.add_scalars('rollout_stats', {"std_reward":np.std(reward_losses),
                 "max_reward":np.max(reward_losses), "min_reward":np.min(reward_losses)}, self.global_step)
-            self.logger.experiment.add_scalars('desires', {
-                "reward":self.desired_reward_stats[0],
-                "horizon":self.desired_horizon}, self.global_step)
+            
+            to_write = {
+                "reward":self.desired_reward_stats[0]
+                    }
+            if self.desired_horizon: 
+                to_write["horizon"]=self.desired_horizon
+            self.logger.experiment.add_scalars('desires', to_write, self.global_step)
             self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
     def on_epoch_end(self):
@@ -132,13 +139,15 @@ class LightningTemplate(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # run training on this data
         if self.Levine_Implementation: 
-            obs, obs2, act, rew, terminal, terminal_rew, time = batch['obs'].squeeze(0), batch['obs2'].squeeze(0), batch['act'].squeeze(0), batch['rew'].squeeze(0), batch['terminal'].squeeze(0), batch['terminal_rew'].squeeze(0), batch['time'].squeeze(0)
+            # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
+            obs, act, rew = batch['obs'], batch['act'], batch['cum_rew']
+            desires = [rew.unsqueeze(1), None]
         else:
             obs, final_obs, act, rew, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['cum_rew'], batch['horizon']
             if not self.config['sparse']: 
                 rew = batch['rew']
-
-        desires = [rew.unsqueeze(1), horizon.unsqueeze(1), final_obs]
+                # need to uncomment form the Sorted Buffer if want back. 
+            desires = [rew.unsqueeze(1), horizon.unsqueeze(1), final_obs]
         #print(desires[0].shape, desires[1].shape, desires[2].shape, desires[2] )
         pred_action = self.model.forward(obs, desires)
         if not self.config['continuous_actions']:
@@ -147,7 +156,7 @@ class LightningTemplate(pl.LightningModule):
         pred_loss = self._pred_loss(pred_action, act)
         if self.config['Levine_Implementation'] and self.config['weight_loss']:
             #print('weights used ', torch.exp(rew/desired_reward_dist_beta))
-            pred_loss = pred_loss*torch.exp(terminal_rew/self.config.desired_reward_dist_beta)
+            pred_loss = pred_loss*torch.exp(rew/self.config['desired_reward_dist_beta'])
         pred_loss = pred_loss.mean(dim=0)
         #if return_for_model_sampling: 
         #    return pred_loss, (rew[0:5], pred_action[0:5], pred_action[0:5].argmax(-1), act[0:5])
@@ -188,14 +197,7 @@ class LightningTemplate(pl.LightningModule):
                     batch_size=self.config['batch_size'], drop_last=False )
         return DataLoader(self.test_buffer, batch_sampler=bs)
 
-    '''# evaluate every .... 
-    if e%evaluate_every==0:
-            print('======= Evaluating the agent')
-            seed = np.random.randint(0, 1e9, 1)[0]
-            cum_rewards, finish_times = agent.simulate(seed, num_episodes=5, greedy=True)
-            print('Evaluation, mean reward:', np.mean(cum_rewards), 'mean horizon length:', np.mean(finish_times))
-            print('===========================')
-
+    '''
     if make_vae_samples:
             generate_model_samples( model, for_upsd_sampling, 
                             samples_dir, SEQ_LEN, self.config['IMAGE_RESIZE_DIM'],

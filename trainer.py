@@ -48,7 +48,7 @@ def main(args):
 
     assert args.num_workers <= cpu_count(), "Providing too many workers!" 
 
-    Levine_Implementation = False 
+    Levine_Implementation = True 
     if args.seed:
         print('Setting the random seed!!!')
         random.seed(args.seed)
@@ -60,64 +60,62 @@ def main(args):
 
     # Constants
     epochs = 2000
-    training_rollouts_total = 20
+    #training_rollouts_total = 20
     #training_rollouts_total//args.num_workers
     constants = dict(
         random_action_epochs = 1,
+        grad_clip_val = 100, 
         eval_every = 10,
         eval_episodes=10,
-        training_rollouts_total = training_rollouts_total,
         training_rollouts_per_worker = 20, #tune.choice( [10, 20, 30, 40]),
         num_rand_action_rollouts = 10,
+        # TODO: actually implement this!
         antithetic = False,
         Levine_Implementation=Levine_Implementation,
         num_val_batches = 5,
         ############ this here is important! 
-        use_Levine_model = False, 
+        use_Levine_model = True, 
         desire_states = False 
     )
+    # rewards and or time. 
     additional_desires = 1 if Levine_Implementation else 2
     if constants['desire_states']:
-        # for reward and time.
         constants['desires_size'] = env_params['STORED_STATE_SIZE']+additional_desires
     else: 
         # TODO: account for time not just in Levine implementation. 
         constants['desires_size'] = additional_desires
     if Levine_Implementation:
         config= dict(
-            lr=0.01,
+            lr=0.001,
             batch_size = 256,
             max_buffer_size = 100000,
             discount_factor = 0.99,
-            desired_reward_dist_beta = 1000,
+            desired_reward_dist_beta = 25,
             weight_loss = True,
-            desire_scalings =None, 
-            num_grad_steps = 1000,
-            hidden_sizes = [128,128,128]
+            desire_scalings =None,
+            num_grad_steps = 100,
+            hidden_sizes = [128,128,64]
         )
-        train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'])
-        test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
-            act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
-        # want to store 500 episodes
     else: 
         config= dict(
-        lr= 0.0003, #tune.choice(np.logspace(-4, -2, num = 101)),
+        lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
         batch_size = 768, #tune.choice([512, 768, 1024, 1536, 2048]),
         max_buffer_size = 500, #tune.choice([300, 400, 500, 600, 700]),
         state_scale = 1.0,
         horizon_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
-        reward_scale = 0.02, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
+        reward_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
         discount_factor = 1.0,
-        last_few = 75, #tune.choice([25, 75]),
+        last_few = 25, #tune.choice([25, 75]),
         desired_reward_dist_beta=1,
         num_grad_steps = 100,#tune.choice([100, 150, 200, 250, 300])
-        hidden_sizes = [64,128,128,128] #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
+        hidden_sizes = [32, 64,64,64] #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
         #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
         )
         # TODO: do I need to provide seeds to the buffer like this? 
         
     # TODO: do I need to scale different parts of this differently? 
-    config['state_scale'] = np.repeat(config['state_scale'], env_params['STORED_STATE_SIZE']).tolist()
+    if config['desire_scalings']:
+        config['state_scale'] = np.repeat(config['state_scale'], env_params['STORED_STATE_SIZE']).tolist()
 
     config.update(constants) 
     config.update(env_params)
@@ -141,10 +139,10 @@ def main(args):
     else: 
         # Init save filenames 
         base_game_dir = join(args.logdir, args.gamename)
-        #exp_dir = join(base_game_dir, 'exp_'+args.exp_name)
-        game_dir = join(base_game_dir, 'seed_'+str(args.seed))
+        exp_dir = join(base_game_dir, args.exp_name)
+        game_dir = join(exp_dir, 'seed_'+str(args.seed))
         filenames_dict = { bc:join(game_dir, 'model_'+bc+'.tar') for bc in ['best', 'checkpoint'] }
-        for dirr in [base_game_dir, game_dir]: #exp_dir
+        for dirr in [base_game_dir, exp_dir, game_dir]:
             if not exists(dirr):
                 mkdir(dirr)
 
@@ -180,7 +178,11 @@ def main(args):
 
     def run_lightning(config):
 
-        if not Levine_Implementation:
+        if Levine_Implementation:
+            train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'])
+            test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
+                act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
+        else:
             config['max_buffer_size'] *= env_params['avg_episode_length']
             train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'] )
             test_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
@@ -205,6 +207,7 @@ def main(args):
                 checkpoint_callback = every_checkpoint_callback,
                 log_save_interval=1,
                 callbacks=callback_list, 
+                gradient_clip_val=config['grad_clip_val'], 
                 progress_bar_refresh_rate=0
             )
             trainer.fit(model)

@@ -66,11 +66,11 @@ def get_env_params(gamename):
             'num_action_repeats': 1,
             'avg_episode_length':70,
             'time_limit':300, # max time limit for the rollouts generated
-            'over_max_time_limit':-50,
+            'over_max_time_limit_penalty':-50,
             'ACTION_SIZE': 4, # number possible actions
             'STORED_ACTION_SIZE': 1,
             'STORED_STATE_SIZE': 8,
-            'max_reward':250,
+            'max_reward':320,
             # top, bottom, left, right
             # can set to equal None if dont want any trimming. 
             'trim_shape': None,

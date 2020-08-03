@@ -16,17 +16,16 @@ class SortedBuffer:
     """
     def __init__(self, obs_dim, act_dim, size ):
         self.obs_buf = None
-        self.obs2_buf= None
+        #self.obs2_buf= None
         self.act_buf= None
-        self.rew_buf= None
-        self.terminal_buf= None 
+        #self.rew_buf= None
         self.cum_rew= None
         self.horizon= None
         self.rollout_length = None
         self.final_obs = None
-        self.buffer_dict = dict(obs=self.obs_buf, obs2=self.obs2_buf, 
+        self.buffer_dict = dict(obs=self.obs_buf, #obs2=self.obs2_buf, 
                                 act=self.act_buf, 
-                                rew=self.rew_buf, terminal=self.terminal_buf, 
+                                #rew=self.rew_buf,
                                 cum_rew=self.cum_rew, horizon=self.horizon, 
                                 rollout_length=self.rollout_length, 
                                 final_obs=self.final_obs)
@@ -37,12 +36,14 @@ class SortedBuffer:
         # sorted in ascending order. largest values at the back. 
         for rollout in list_of_rollout_dicts:
             # dont bother adding rollouts that are worse than the worst in the buffer. 
+            # but still count them to the overall number of rollouts seen. 
+            len_rollout = len(rollout['terminal'])
+            self.total_num_steps_added += len_rollout
             if self.num_steps == self.max_num_steps and rollout['cum_rew'][0] <= self.buffer_dict['cum_rew'][-1]:
                 continue 
-
-            len_rollout = len(rollout['terminal'])
+            
             self.num_steps = min(self.num_steps+len_rollout, self.max_num_steps)
-            self.total_num_steps_added += len_rollout
+            
             if self.buffer_dict['terminal'] is not None:
                 # find where everything from this rollout should be inserted into 
                 # each of the numpy buffers. Uses the cumulative/terminal rewards
@@ -91,13 +92,76 @@ class SortedBuffer:
         return self.sample_batch(idx)
 
     def __len__(self):
-        return self.num_steps-1 #self.num_batches_per_epoch
+        return self.num_steps #self.num_batches_per_epoch
 
     def sample_batch(self, idxs=None, batch_size=256):
         if idxs is None:
             idxs = np.random.randint(0, self.num_steps, size=batch_size)
         batch = {key:torch.as_tensor(arr[idxs],dtype=torch.float32) for key, arr in self.buffer_dict.items()}
         return batch 
+
+
+class RingBuffer:
+    """
+    A simple FIFO experience replay buffer for DDPG agents.
+    # Taken from OpenAI spinning up. 
+    """
+
+    def __init__(self, obs_dim, act_dim, size):
+        self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
+        #self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
+        if act_dim==1:
+            self.act_buf = np.zeros(size, dtype=np.float32)
+        else: 
+            self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
+        #self.rew_buf = np.zeros(size, dtype=np.float32)
+        self.cum_rew = np.zeros(size, dtype=np.float32)
+        self.final_obs = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
+        #self.terminal_buf = np.zeros(size, dtype=np.float32)
+        self.ptr, self.size, self.max_size = 0, 0, size
+        self.total_num_steps_added = 0
+
+    def add_rollouts(self, list_of_rollout_dicts):
+        for rollout in list_of_rollout_dicts:
+            iters_adding = len(rollout['terminal'])
+            self.total_num_steps_added += iters_adding
+
+            for np_buf, key in zip([self.obs_buf, #self.obs2_buf, 
+                                self.act_buf, 
+                                self.cum_rew, self.final_obs],
+                                # 'obs2'
+                                ['obs', 'act', 'cum_rew', 'final_obs'] ):
+                
+                if (self.ptr+iters_adding)>self.max_size:
+                    amount_pre_loop = self.max_size-self.ptr
+                    amount_post_loop = iters_adding-amount_pre_loop
+                    np_buf[self.ptr:] = rollout[key][:amount_pre_loop]
+                    np_buf[:amount_post_loop] = rollout[key][amount_pre_loop:]
+                else: 
+                    np_buf[self.ptr:self.ptr+iters_adding] = rollout[key]
+
+            self.ptr = (self.ptr+iters_adding) % self.max_size
+            self.size = min(self.size+iters_adding, self.max_size)
+
+    def __getitem__(self, idx):
+        # turn this into a random value!
+        #rand_ind = np.random.randint(0,self.num_steps) # up to current max size. 
+        return self.sample_batch(idxs=idx)
+
+    def __len__(self):
+        return self.size #self.num_batches_per_epoch
+
+    def sample_batch(self, idxs=None, batch_size=32):
+        if idxs is None:
+            idxs = np.random.randint(0, self.size, size=batch_size)
+        batch = dict(obs=self.obs_buf[idxs],
+                     #obs2=self.obs2_buf[idxs],
+                     act=self.act_buf[idxs],
+                     #rew=self.rew_buf[idxs],
+                     #terminal=self.terminal_buf[idxs],
+                     cum_rew=self.cum_rew[idxs],
+                     final_obs=self.final_obs[idxs])
+        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 class ReplayBuffer:
     def __init__(self, max_size, seed, batch_size, num_grad_steps):
@@ -195,73 +259,6 @@ class ReplayBuffer:
     def __len__(self):
         return self.num_grad_steps
 
-class RingBuffer:
-    """
-    A simple FIFO experience replay buffer for DDPG agents.
-    # Taken from OpenAI spinning up. 
-    """
-
-    def __init__(self, obs_dim, act_dim, size):
-        self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
-        self.rew_buf = np.zeros(size, dtype=np.float32)
-        self.terminal_rew = np.zeros(size, dtype=np.float32)
-        self.time = np.zeros(size, dtype=np.float32)
-        self.done_buf = np.zeros(size, dtype=np.float32)
-        self.ptr, self.size, self.max_size = 0, 0, size
-
-    def store(self, obs, act, rew, next_obs, done):
-        self.obs_buf[self.ptr] = obs
-        self.obs2_buf[self.ptr] = next_obs
-        self.act_buf[self.ptr] = act
-        self.rew_buf[self.ptr] = rew
-        self.done_buf[self.ptr] = done
-        self.ptr = (self.ptr+1) % self.max_size
-        self.size = min(self.size+1, self.max_size)
-
-    def add_rollouts(self, rollouts_dict):
-        for np_buf, key in zip([self.obs_buf, self.obs2_buf, 
-                            self.act_buf, 
-                            self.rew_buf, self.done_buf, 
-                            self.terminal_rew, self.time],
-                            ['obs', 'obs2','act', 'rew', 'terminal', 'terminal_rew', 'time'] ):
-            # TODO: combine these from the rollouts much earlier on. 
-            temp_flat = None
-            for rollout in rollouts_dict[key]:
-                if temp_flat is None: 
-                    temp_flat=rollout
-                else: 
-                    temp_flat = np.concatenate([temp_flat, rollout], axis=0)
-            temp_flat = np.asarray(temp_flat)
-            if key =='rew':
-                print('number of iters being added', key, temp_flat.shape)
-            #print('shape of cum rewards overall', len(cum_rewards_per_rollout))
-            temp_flat = temp_flat.reshape(combined_shape(-1, np_buf.shape[1:]))
-            iters_adding = len(temp_flat)
-           
-            if (self.ptr+iters_adding)>self.max_size:
-                amount_pre_loop = self.max_size-self.ptr
-                amount_post_loop = iters_adding-amount_pre_loop
-                np_buf[self.ptr:] = temp_flat[:amount_pre_loop]
-                np_buf[:amount_post_loop] = temp_flat[amount_pre_loop:]
-            else: 
-                np_buf[self.ptr:self.ptr+iters_adding] = temp_flat
-
-        self.ptr = (self.ptr+iters_adding) % self.max_size
-        self.size = min(self.size+iters_adding, self.max_size)
-
-    def sample_batch(self, batch_size=32):
-        idxs = np.random.randint(0, self.size, size=batch_size)
-        batch = dict(obs=self.obs_buf[idxs],
-                     obs2=self.obs2_buf[idxs],
-                     act=self.act_buf[idxs],
-                     rew=self.rew_buf[idxs],
-                     terminal=self.done_buf[idxs],
-                     terminal_rew=self.terminal_rew[idxs],
-                     time=self.time[idxs])
-        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
-
 class TrainBufferDataset:
     def __init__(self, init_train_data, max_buffer_size, 
         key_to_check_lengths='terminal'):
@@ -323,7 +320,7 @@ class ForwardPlanner_GeneratedDataset(torch.utils.data.Dataset):
         and sent back to avoid performing redundant transforms.
         - data: a dictionary containing a list of Pytorch Tensors. 
                 Each element of the list corresponds to a separate full rollout.
-                Each full rollout has its first dimension corresponding to time. 
+                Each full rollout has its first dimension corresponding to final_obs. 
         - seq_len: desired length of rollout sequences. Anything shorter must have 
         already been dropped. (currently done in 'combine_worker_rollouts()')
 
