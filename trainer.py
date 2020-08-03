@@ -64,6 +64,7 @@ def main(args):
     #training_rollouts_total//args.num_workers
     constants = dict(
         random_action_epochs = 1,
+        td_lambda = 0.95,
         grad_clip_val = 100, 
         eval_every = 10,
         eval_episodes=10,
@@ -75,8 +76,11 @@ def main(args):
         num_val_batches = 5,
         ############ this here is important! 
         use_Levine_model = True, 
+        use_advantage = False, 
         desire_states = False 
     )
+    if not constants['use_Levine_model']:
+        assert constants['use_advantage'] is False, "Use advantage must be turned off for now. "
     # rewards and or time. 
     additional_desires = 1 if Levine_Implementation else 2
     if constants['desire_states']:
@@ -90,12 +94,16 @@ def main(args):
             batch_size = 256,
             max_buffer_size = 100000,
             discount_factor = 0.99,
-            desired_reward_dist_beta = 25,
+            beta_reward_weighting = 25, 
+            max_loss_weighting = 100000000, 
             weight_loss = True,
             desire_scalings =None,
-            num_grad_steps = 100,
+            num_grad_steps = 1000,
             hidden_sizes = [128,128,64]
         )
+        if constants['use_advantage']:
+            config['beta_reward_weighting'] = 0.05
+            config['max_loss_weighting'] = 20
     else: 
         config= dict(
         lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
@@ -106,7 +114,7 @@ def main(args):
         reward_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
         discount_factor = 1.0,
         last_few = 25, #tune.choice([25, 75]),
-        desired_reward_dist_beta=1,
+        beta_reward_weighting=1,
         num_grad_steps = 100,#tune.choice([100, 150, 200, 250, 300])
         hidden_sizes = [32, 64,64,64] #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
         #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
@@ -162,7 +170,7 @@ def main(args):
             filepath=game_dir,
             save_top_k=1,
             verbose=False ,
-            monitor='train_loss',
+            monitor='policy_loss',
             mode='min',
             prefix=''
         )

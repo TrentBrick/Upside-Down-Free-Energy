@@ -1,5 +1,5 @@
 # pylint: disable=no-member
-from models import UpsdModel, UpsdBehavior
+from models import UpsdModel, UpsdBehavior, AdvantageModel
 import torch
 import torch.nn.functional as F 
 from torch.distributions import Normal, Categorical
@@ -13,71 +13,102 @@ from utils import save_checkpoint, generate_model_samples, \
 
 class LightningTemplate(pl.LightningModule):
 
-    def __init__(self, game_dir, config, train_buffer, test_buffer):
+    def __init__(self, game_dir, hparams, train_buffer, test_buffer):
         super().__init__()
 
         self.game_dir = game_dir
-        self.Levine_Implementation = config['Levine_Implementation']
-        self.config = config
+        self.Levine_Implementation = hparams['Levine_Implementation']
+        self.hparams = hparams
         self.train_buffer = train_buffer
         self.test_buffer = test_buffer
         self.mean_reward_over_20_epochs = []
 
-        if self.config['use_Levine_model']:
-            self.model = UpsdModel(self.config['STORED_STATE_SIZE'], 
-            self.config['desires_size'], 
-            self.config['ACTION_SIZE'], 
-            self.config['hidden_sizes'], desires_scalings=None, 
-            desire_states=self.config['desire_states'])
+        if self.hparams['use_Levine_model']:
+            self.model = UpsdModel(self.hparams['STORED_STATE_SIZE'], 
+            self.hparams['desires_size'], 
+            self.hparams['ACTION_SIZE'], 
+            self.hparams['hidden_sizes'], desires_scalings=None, 
+            desire_states=self.hparams['desire_states'])
         else: 
             # concatenate all of these lists together. 
-            desires_scalings = [config['reward_scale']]+[config['horizon_scale']]+ config['state_scale']
-            self.model = UpsdBehavior( self.config['STORED_STATE_SIZE'], 
-                self.config['desires_size'],
-                self.config['ACTION_SIZE'], 
-                self.config['hidden_sizes'], 
+            desires_scalings = [hparams['reward_scale']]+[hparams['horizon_scale']]+ hparams['state_scale']
+            self.model = UpsdBehavior( self.hparams['STORED_STATE_SIZE'], 
+                self.hparams['desires_size'],
+                self.hparams['ACTION_SIZE'], 
+                self.hparams['hidden_sizes'], 
                 desires_scalings,
-                desire_states=self.config['desire_states'] )
- 
+                desire_states=self.hparams['desire_states'] )
+
+        if self.hparams['use_advantage']:
+            self.advantage_model = AdvantageModel(self.hparams['STORED_STATE_SIZE'] )
+        else: 
+            self.advantage_model = None 
         # log the hparams. 
         if self.logger:
-            self.logger.experiment.add_hparams(config)
+            print("Adding the hparams to the logger!!!")
+            self.logger.experiment.add_hparams(hparams)
 
         # start filling up the buffer.
-        output = self.collect_rollouts(num_episodes=self.config['num_rand_action_rollouts']) 
+        output = self.collect_rollouts(num_episodes=self.hparams['num_rand_action_rollouts']) 
         self.add_rollouts_to_buffer(output)
     
     def eval_agent(self):
         self.desired_horizon = 285
         self.desired_reward_stats = (319, 1)
         self.desired_state = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1., 1.]
-        print('Desired Reward and Horizon are:', self.desired_horizon, self.desired_reward_stats, 
+        print('Desired Horizon and Rewards are:', self.desired_horizon, self.desired_reward_stats, 
         self.desired_state)
-        self.current_epoch = self.config['random_action_epochs']+1
+        self.current_epoch = self.hparams['random_action_epochs']+1
         output = self.collect_rollouts(num_episodes=100, greedy=True, render=True  ) 
 
     def forward(self,state, command):
         return self.model(state, command)
 
+    '''def optimizer_step(self, current_epoch, batch_nb, optimizer, 
+        optimizer_i, second_order_closure, on_tpu, 
+        using_native_amp, using_lbfgs):
+
+        if self.hparams['use_advantage']:
+            if optimizer_i == 1: # for the 2nd optimizer which is the 
+                # advantage function, only update it every 
+                # 5th step, ie 200 grad updates each round. 
+                if batch_nb % 5 == 0:
+                    optimizer.step()
+                    optimizer.zero_grad()
+            else: 
+                optimizer.step()
+                optimizer.zero_grad()
+
+        else: 
+            optimizer.step()
+            optimizer.zero_grad()'''
+
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config['lr'])
-        return optimizer 
+        opt_upsd = torch.optim.Adam(self.model.parameters(), lr=self.hparams['lr'])
+        if self.hparams['use_advantage']:
+            opt_vf = torch.optim.Adam(self.value_function.parameters(), lr=self.hparams['lr'])
+            return opt_upsd, opt_vf
+        else:
+            return opt_upsd
+
 
     def collect_rollouts(self, greedy=False, 
             num_episodes=None, render=False):
-        if self.current_epoch<self.config['random_action_epochs']:
-            agent = Agent(self.config['gamename'], 
+        if self.current_epoch<self.hparams['random_action_epochs']:
+            agent = Agent(self.hparams['gamename'], 
                 take_rand_actions=True,
-                discount_factor=self.config['discount_factor'])
+                discount_factor=self.hparams['discount_factor'])
         else: 
-            agent = Agent(self.config['gamename'], 
+            agent = Agent(self.hparams['gamename'], 
                 model = self.model, 
                 Levine_Implementation= self.Levine_Implementation,
                 desired_reward_stats = self.desired_reward_stats, 
                 desired_horizon = self.desired_horizon,
                 desired_state = self.desired_state,
-                desired_reward_dist_beta=self.config['desired_reward_dist_beta'],
-                discount_factor=self.config['discount_factor'])
+                #beta_reward_weighting=self.hparams['beta_reward_weighting'],
+                discount_factor=self.hparams['discount_factor'], 
+                advantage_model=self.advantage_model,
+                td_lambda=self.hparams['td_lambda'])
         
         seed = np.random.randint(0, 1e9, 1)[0]
         print('seed used for agent simulate:', seed )
@@ -89,9 +120,9 @@ class LightningTemplate(pl.LightningModule):
 
     def add_rollouts_to_buffer(self, output):
         
-        train_data =output[2][:-1]
-        test_data = [output[2][-1]]
-        reward_losses, termination_times = output[0], output[1]
+        train_data =output[3][:-1]
+        test_data = [output[3][-1]]
+        reward_losses, discounted_rewards, termination_times = output[0], output[1], output[2]
 
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
@@ -101,11 +132,12 @@ class LightningTemplate(pl.LightningModule):
 
         if self.Levine_Implementation:
             self.desired_horizon = None
-            self.desired_reward_stats = (np.mean(reward_losses), np.std(reward_losses))
+            # Beta is 1. Otherwise would appear in the log sum exp here. 
+            self.desired_reward_stats = (np.log(np.sum(np.exp(discounted_rewards))), np.std(discounted_rewards))
             self.desired_state = np.unique(self.train_buffer.final_obs).mean(axis=0) # take the mean or sample from everything. 
         else: 
             # TODO: return mean and std to sample from the desired states. 
-            last_few_mean_returns, last_few_std_returns, self.desired_horizon, self.desired_state = self.train_buffer.get_desires(last_few=self.config['last_few'])
+            last_few_mean_returns, last_few_std_returns, self.desired_horizon, self.desired_state = self.train_buffer.get_desires(last_few=self.hparams['last_few'])
             self.desired_reward_stats = (last_few_mean_returns, last_few_std_returns)
 
         self.mean_reward_rollouts = np.mean(reward_losses)
@@ -126,13 +158,13 @@ class LightningTemplate(pl.LightningModule):
 
     def on_epoch_end(self):
         # create new rollouts using stochastic actions. 
-        output = self.collect_rollouts(num_episodes=self.config['training_rollouts_per_worker'])
+        output = self.collect_rollouts(num_episodes=self.hparams['training_rollouts_per_worker'])
         # process the data/add to the buffer.
         self.add_rollouts_to_buffer(output)
 
         # evaluate the agents
-        if self.current_epoch % self.config['eval_every']==0:
-            output = self.collect_rollouts(greedy=True, num_episodes=self.config['eval_episodes'])
+        if self.current_epoch % self.hparams['eval_every']==0:
+            output = self.collect_rollouts(greedy=True, num_episodes=self.hparams['eval_episodes'])
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
 
@@ -140,32 +172,53 @@ class LightningTemplate(pl.LightningModule):
         # run training on this data
         if self.Levine_Implementation: 
             # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
-            obs, act, rew = batch['obs'], batch['act'], batch['cum_rew']
-            desires = [rew.unsqueeze(1), None]
+            obs, obs2, act, rew = batch['obs'], batch['obs2'], batch['act'], batch['rew']
+            if self.hparams['desire_states']:
+                raise Exception("Still need to implement this. ")
+            else: 
+                desires = [rew.unsqueeze(1), None]
         else:
-            obs, final_obs, act, rew, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['cum_rew'], batch['horizon']
-            if not self.config['sparse']: 
-                rew = batch['rew']
-                # need to uncomment form the Sorted Buffer if want back. 
+            obs, final_obs, act, rew, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['rew'], batch['horizon']
             desires = [rew.unsqueeze(1), horizon.unsqueeze(1), final_obs]
         #print(desires[0].shape, desires[1].shape, desires[2].shape, desires[2] )
+        
+        if self.hparams['use_advantage']:
+            # TD-lambda is the reward value. 
+            pred_vals = self.advantage_model.forward(obs2)
+
+            # normalize the rew here for the advantage model loss.  
+            rew_norm = (rew - rew.mean()) / rew.std()
+            # compute loss for advantage model.
+            adv_loss = F.mse_loss(pred_vals, rew_norm ,reduction='none').mean(dim=0)
+
+            # detach for use in the desires
+            adv = rew - pred_vals.detach()
+            # normalize it
+            adv_norm = (adv - adv.mean()) / adv.std()
+            # set it as a desire. 
+            desires[0] = adv_norm.unsqueeze(1)
+        
         pred_action = self.model.forward(obs, desires)
-        if not self.config['continuous_actions']:
+        if not self.hparams['continuous_actions']:
             #pred_action = torch.sigmoid(pred_action)
             act = act.squeeze().long()
         pred_loss = self._pred_loss(pred_action, act)
-        if self.config['Levine_Implementation'] and self.config['weight_loss']:
-            #print('weights used ', torch.exp(rew/desired_reward_dist_beta))
-            pred_loss = pred_loss*torch.exp(rew/self.config['desired_reward_dist_beta'])
+        if self.hparams['Levine_Implementation'] and self.hparams['weight_loss']:
+            #print('weights used ', torch.exp(rew/beta_reward_weighting))
+            loss_weighting = torch.clamp( torch.exp(rew/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
+            #print('loss weights post clamp and their rewards', loss_weighting[-1], rew[-1])
+            pred_loss = pred_loss*loss_weighting
         pred_loss = pred_loss.mean(dim=0)
         #if return_for_model_sampling: 
         #    return pred_loss, (rew[0:5], pred_action[0:5], pred_action[0:5].argmax(-1), act[0:5])
         
-        logs = {"train_loss": pred_loss}
+        logs = {"policy_loss": pred_loss}
+        if self.hparams['use_advantage']:
+            logs['advantage_loss'] = adv_loss
         return {'loss':pred_loss, 'log':logs}
 
     def _pred_loss(self, pred_action, real_action):
-        if self.config['continuous_actions']:
+        if self.hparams['continuous_actions']:
             # add a sigmoid activation layer.: 
             return F.mse_loss(pred_action, real_action ,reduction='none').sum(dim=1)
         else: 
@@ -174,11 +227,13 @@ class LightningTemplate(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         train_dict = self.training_step(batch, batch_idx)
         # rename
-        train_dict['log']['val_loss'] = train_dict['log'].pop('train_loss')
+        train_dict['log']['policy_val_loss'] = train_dict['log'].pop('policy_loss')
+        if self.hparams['use_advantage']:
+            train_dict['log']['advantage_val_loss'] = train_dict['log'].pop('advantage_loss')
         return train_dict['log'] 
 
     def validation_epoch_end(self, outputs):
-        avg_loss = torch.stack([x["val_loss"] for x in outputs]).mean()
+        avg_loss = torch.stack([x["policy_val_loss"] for x in outputs]).mean()
         tensorboard_logs = {"val_loss": avg_loss}
         return {
                 "avg_val_loss": avg_loss,
@@ -187,20 +242,20 @@ class LightningTemplate(pl.LightningModule):
 
     def train_dataloader(self):
         bs = BatchSampler( RandomSampler(self.train_buffer, replacement=True, 
-                    num_samples= self.config['num_grad_steps']*self.config['batch_size']  ), 
-                    batch_size=self.config['batch_size'], drop_last=False )
+                    num_samples= self.hparams['num_grad_steps']*self.hparams['batch_size']  ), 
+                    batch_size=self.hparams['batch_size'], drop_last=False )
         return DataLoader(self.train_buffer, batch_sampler=bs)
     
     def val_dataloader(self):
         bs = BatchSampler( RandomSampler(self.test_buffer, replacement=True, 
-                    num_samples= self.config['num_val_batches']*self.config['batch_size']  ), 
-                    batch_size=self.config['batch_size'], drop_last=False )
+                    num_samples= self.hparams['num_val_batches']*self.hparams['batch_size']  ), 
+                    batch_size=self.hparams['batch_size'], drop_last=False )
         return DataLoader(self.test_buffer, batch_sampler=bs)
 
     '''
     if make_vae_samples:
             generate_model_samples( model, for_upsd_sampling, 
-                            samples_dir, SEQ_LEN, self.config['IMAGE_RESIZE_DIM'],
+                            samples_dir, SEQ_LEN, self.hparams['IMAGE_RESIZE_DIM'],
                             example_length,
                             memory_adapt_period, e, device, 
                             make_vae_samples=make_vae_samples,

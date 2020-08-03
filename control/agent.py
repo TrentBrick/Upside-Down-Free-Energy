@@ -56,9 +56,11 @@ class Agent:
         desired_state = None, 
         delta_state = False, 
         Levine_Implementation = False, 
-        desired_reward_dist_beta = 1.0,
+        #desired_reward_dist_beta = 1.0,
         discount_factor=1.0, model_version = 'checkpoint',
-        return_plan_images=False):
+        return_plan_images=False,
+        advantage_model=None, 
+        td_lambda=1.0):
         """ Build vae, forward model, and environment. """
 
         self.gamename = gamename
@@ -67,16 +69,20 @@ class Agent:
         self.take_rand_actions = take_rand_actions
         self.discount_factor = discount_factor
         self.Levine_Implementation = Levine_Implementation
+        self.advantage_model = advantage_model
 
         self.desired_state = desired_state
         self.delta_state = delta_state
-        if self.Levine_Implementation:
-            print('the desired stats are:', desired_reward_stats)
-            self.desired_reward_dist = WeightedNormal(desired_reward_stats[0], 
-                desired_reward_stats[1], beta=desired_reward_dist_beta)
+        self.td_lambda = td_lambda
             
-        else:
-            self.desired_rew_mu, self.desired_rew_std, self.desired_horizon = desired_reward_stats[0], desired_reward_stats[1], desired_horizon
+        self.desired_rew_mu, self.desired_rew_std, self.desired_horizon = desired_reward_stats[0], desired_reward_stats[1], desired_horizon
+        if self.Levine_Implementation:
+            print('the desired stats for mu and std are:', desired_reward_stats)
+            self.desired_reward_dist = Normal(self.desired_rew_mu, 
+                self.desired_rew_std)
+            #WeightedNormal(desired_reward_stats[0], 
+            #    desired_reward_stats[1], beta=desired_reward_dist_beta)
+
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
 
@@ -150,7 +156,8 @@ class Agent:
         # sample a desired reward
         if not self.take_rand_actions:
             if self.Levine_Implementation:
-                curr_desired_reward = self.desired_reward_dist.sample(1)
+                curr_desired_reward = torch.Tensor([np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)])
+                #curr_desired_reward = self.desired_reward_dist.sample([1])
                 curr_desired_state = torch.Tensor([self.desired_state])
             else: 
                 curr_desired_reward = np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)
@@ -266,7 +273,11 @@ class Agent:
                     pass
                 else: 
                     if self.Levine_Implementation: 
-                        pass 
+                        if self.advantage_model:
+                            # sample a new desired reward
+                            curr_desired_reward = self.desired_reward_dist.sample([1])
+                        else:
+                            pass 
                         # dont touch curr_desired reward. 
                         # or state or horizon. 
                     else: 
@@ -302,12 +313,18 @@ class Agent:
             for k,v in rollout_dict.items(): # list of tensors arrays.
                 # rewards to go here for levine
                 if k =='rew':
-                    # rewards to go. 
-                    rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
+                    if self.advantage_model:
+                        # computing the TD(lambda) advantage values
+                        rollout_dict[k] = self.advantage_model.calculate_advantages(torch.Tensor(rollout_dict['obs2']), torch.Tensor(v), self.discount_factor, self.td_lambda)
+                    else: 
+                        # rewards to go. 
+                        rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
                 else: 
                     rollout_dict[k] = np.asarray(v)
             # repeat the cum reward up to length times. 
-            rollout_dict['cum_rew'] = np.repeat(cumulative, time)
+            # setting cum_rew to be the first reward to go. This is equivalent to the cum reward 
+            # but accounts too for any discounting factor. 
+            rollout_dict['cum_rew'] = np.repeat(rollout_dict['rew'][0], time)
             rollout_dict['rollout_length'] = np.repeat(time, time)
             rollout_dict['horizon'] = time - np.arange(0, time) 
             rollout_dict['final_obs'] = np.repeat(np.expand_dims(rollout_dict['obs'][-1],0), time, axis=0)
@@ -315,7 +332,8 @@ class Agent:
             # so that the horizon is always 1 away
             #print(rollout_dict['final_obs'], rollout_dict['horizon'], rollout_dict['cum_rew'])
             #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['rew']), len(rollout_dict['terminal']) )
-            return cumulative, time, rollout_dict # passed back to simulate. 
+            # discounted cumulative!
+            return cumulative, rollout_dict['rew'][0], time, rollout_dict # passed back to simulate. 
         else: 
             return cumulative, time # ending time and cum reward
                 
@@ -350,6 +368,7 @@ class Agent:
 
         cum_reward_list = []
         terminal_time_list = []
+        discount_reward_list = []
         if self.return_events:
             data_dict_list = []
 
@@ -365,9 +384,10 @@ class Agent:
                     self.env.seed(int(rand_env_seed))
 
                 if self.return_events: 
-                    rew, time, data_dict = self.rollout(render=render_mode, greedy=greedy)
+                    rew, discounted_rew, time, data_dict = self.rollout(render=render_mode, greedy=greedy)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                     data_dict_list.append(data_dict)
+                    discount_reward_list.append(discounted_rew)
                 else: 
                     rew, time = self.rollout(render=render_mode, greedy=greedy)
                 if render_mode: 
@@ -382,6 +402,6 @@ class Agent:
             print('Mean reward over', num_episodes, 'episodes is:', np.mean(cum_reward_list))
 
         if self.return_events: 
-            return cum_reward_list, terminal_time_list, data_dict_list 
+            return cum_reward_list, discount_reward_list, terminal_time_list, data_dict_list 
         else: 
             return cum_reward_list, terminal_time_list

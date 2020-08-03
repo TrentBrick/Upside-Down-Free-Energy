@@ -12,7 +12,7 @@ def combined_shape(length, shape=None):
 
 class SortedBuffer:
     """
-    Buffer that very efficiently remains sorted.  
+    Buffer that efficiently remains sorted.  
     """
     def __init__(self, obs_dim, act_dim, size ):
         self.obs_buf = None
@@ -25,7 +25,7 @@ class SortedBuffer:
         self.final_obs = None
         self.buffer_dict = dict(obs=self.obs_buf, #obs2=self.obs2_buf, 
                                 act=self.act_buf, 
-                                #rew=self.rew_buf,
+                                rew=self.rew_buf,
                                 cum_rew=self.cum_rew, horizon=self.horizon, 
                                 rollout_length=self.rollout_length, 
                                 final_obs=self.final_obs)
@@ -109,12 +109,12 @@ class RingBuffer:
 
     def __init__(self, obs_dim, act_dim, size):
         self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        #self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
+        self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         if act_dim==1:
             self.act_buf = np.zeros(size, dtype=np.float32)
         else: 
             self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
-        #self.rew_buf = np.zeros(size, dtype=np.float32)
+        self.rew_buf = np.zeros(size, dtype=np.float32)
         self.cum_rew = np.zeros(size, dtype=np.float32)
         self.final_obs = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         #self.terminal_buf = np.zeros(size, dtype=np.float32)
@@ -126,11 +126,11 @@ class RingBuffer:
             iters_adding = len(rollout['terminal'])
             self.total_num_steps_added += iters_adding
 
-            for np_buf, key in zip([self.obs_buf, #self.obs2_buf, 
+            for np_buf, key in zip([self.obs_buf, self.obs2_buf, 
+                                self.rew_buf,
                                 self.act_buf, 
                                 self.cum_rew, self.final_obs],
-                                # 'obs2'
-                                ['obs', 'act', 'cum_rew', 'final_obs'] ):
+                                ['obs', 'obs2', 'rew', 'act', 'cum_rew', 'final_obs'] ):
                 
                 if (self.ptr+iters_adding)>self.max_size:
                     amount_pre_loop = self.max_size-self.ptr
@@ -155,9 +155,9 @@ class RingBuffer:
         if idxs is None:
             idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
-                     #obs2=self.obs2_buf[idxs],
+                     obs2=self.obs2_buf[idxs],
                      act=self.act_buf[idxs],
-                     #rew=self.rew_buf[idxs],
+                     rew=self.rew_buf[idxs],
                      #terminal=self.terminal_buf[idxs],
                      cum_rew=self.cum_rew[idxs],
                      final_obs=self.final_obs[idxs])
