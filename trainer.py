@@ -76,7 +76,7 @@ def main(args):
         num_val_batches = 5,
         ############ this here is important! 
         use_Levine_model = True, 
-        use_advantage = False, 
+        use_advantage = True, 
         desire_states = False 
     )
     if not constants['use_Levine_model']:
@@ -102,7 +102,7 @@ def main(args):
             hidden_sizes = [128,128,64]
         )
         if constants['use_advantage']:
-            config['beta_reward_weighting'] = 0.05
+            config['beta_reward_weighting'] = 1.0 # because of advantage norm.
             config['max_loss_weighting'] = 20
     else: 
         config= dict(

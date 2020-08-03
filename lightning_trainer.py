@@ -16,6 +16,12 @@ class LightningTemplate(pl.LightningModule):
     def __init__(self, game_dir, hparams, train_buffer, test_buffer):
         super().__init__()
 
+        if hparams['use_advantage']:
+            self.training_step = self.training_step_multi_model
+            self.optimizer_step = self.optimizer_step_multi
+        else: 
+            self.training_step = self.training_step_single_model
+
         self.game_dir = game_dir
         self.Levine_Implementation = hparams['Levine_Implementation']
         self.hparams = hparams
@@ -64,33 +70,27 @@ class LightningTemplate(pl.LightningModule):
     def forward(self,state, command):
         return self.model(state, command)
 
-    '''def optimizer_step(self, current_epoch, batch_nb, optimizer, 
-        optimizer_i, second_order_closure, on_tpu, 
-        using_native_amp, using_lbfgs):
+    def optimizer_step_multi(self, current_epoch, batch_nb, optimizer, 
+        optimizer_i, second_order_closure=None, on_tpu=False, 
+        using_native_amp=False, using_lbfgs=False):
 
-        if self.hparams['use_advantage']:
-            if optimizer_i == 1: # for the 2nd optimizer which is the 
-                # advantage function, only update it every 
-                # 5th step, ie 200 grad updates each round. 
-                if batch_nb % 5 == 0:
-                    optimizer.step()
-                    optimizer.zero_grad()
-            else: 
+        if optimizer_i == 1: # for the 2nd optimizer which is the 
+            # advantage function, only update it every 
+            # 5th step, ie 200 grad updates each round. 
+            if batch_nb % 5 == 0:
                 optimizer.step()
                 optimizer.zero_grad()
-
         else: 
             optimizer.step()
-            optimizer.zero_grad()'''
+            optimizer.zero_grad()
 
     def configure_optimizers(self):
         opt_upsd = torch.optim.Adam(self.model.parameters(), lr=self.hparams['lr'])
         if self.hparams['use_advantage']:
-            opt_vf = torch.optim.Adam(self.value_function.parameters(), lr=self.hparams['lr'])
+            opt_vf = torch.optim.Adam(self.advantage_model.parameters(), lr=self.hparams['lr'])
             return opt_upsd, opt_vf
         else:
             return opt_upsd
-
 
     def collect_rollouts(self, greedy=False, 
             num_episodes=None, render=False):
@@ -168,7 +168,7 @@ class LightningTemplate(pl.LightningModule):
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
 
-    def training_step(self, batch, batch_idx):
+    def training_step_multi_model(self, batch, batch_idx, optimizer_idx, run_eval=False):
         # run training on this data
         if self.Levine_Implementation: 
             # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
@@ -181,23 +181,53 @@ class LightningTemplate(pl.LightningModule):
             obs, final_obs, act, rew, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['rew'], batch['horizon']
             desires = [rew.unsqueeze(1), horizon.unsqueeze(1), final_obs]
         #print(desires[0].shape, desires[1].shape, desires[2].shape, desires[2] )
-        
-        if self.hparams['use_advantage']:
-            # TD-lambda is the reward value. 
-            pred_vals = self.advantage_model.forward(obs2)
 
-            # normalize the rew here for the advantage model loss.  
-            rew_norm = (rew - rew.mean()) / rew.std()
-            # compute loss for advantage model.
-            adv_loss = F.mse_loss(pred_vals, rew_norm ,reduction='none').mean(dim=0)
-
+        if optimizer_idx==0: 
+            with torch.no_grad():
+                # TD-lambda is the reward value. 
+                pred_vals = self.advantage_model.forward(obs2).squeeze()
             # detach for use in the desires
-            adv = rew - pred_vals.detach()
+            adv = rew - pred_vals
             # normalize it
             adv_norm = (adv - adv.mean()) / adv.std()
             # set it as a desire. 
             desires[0] = adv_norm.unsqueeze(1)
+            pred_action = self.model.forward(obs, desires)
+
+            if not self.hparams['continuous_actions']:
+                #pred_action = torch.sigmoid(pred_action)
+                act = act.squeeze().long()
+            pred_loss = self._pred_loss(pred_action, act)
+            if self.hparams['Levine_Implementation'] and self.hparams['weight_loss']:
+                #print('weights used ', torch.exp(rew/beta_reward_weighting))
+                loss_weighting = torch.clamp( torch.exp(rew/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
+                #print('loss weights post clamp and their rewards', loss_weighting[-1], rew[-1])
+                pred_loss = pred_loss*loss_weighting
+            pred_loss = pred_loss.mean(dim=0)
+            logs = {"policy_loss": pred_loss}
+            return {'loss':pred_loss, 'log':logs}
         
+        elif optimizer_idx==1: 
+            pred_vals = self.advantage_model.forward(obs2).squeeze()
+            # normalize the rew here for the advantage model loss.  
+            rew_norm = (rew - rew.mean()) / rew.std()
+            # compute loss for advantage model.
+            adv_loss = F.mse_loss(pred_vals, rew_norm ,reduction='none').mean(dim=0)
+            logs = {"advantage_loss": adv_loss}
+            return {'loss':adv_loss, 'log':logs}
+        
+    def training_step_single_model(self, batch, batch_idx):
+        # run training on this data
+        if self.Levine_Implementation: 
+            # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
+            obs, obs2, act, rew = batch['obs'], batch['obs2'], batch['act'], batch['rew']
+            if self.hparams['desire_states']:
+                raise Exception("Still need to implement this. ")
+            else: 
+                desires = [rew.unsqueeze(1), None]
+        else:
+            obs, final_obs, act, rew, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['rew'], batch['horizon']
+            desires = [rew.unsqueeze(1), horizon.unsqueeze(1), final_obs]
         pred_action = self.model.forward(obs, desires)
         if not self.hparams['continuous_actions']:
             #pred_action = torch.sigmoid(pred_action)
@@ -211,10 +241,7 @@ class LightningTemplate(pl.LightningModule):
         pred_loss = pred_loss.mean(dim=0)
         #if return_for_model_sampling: 
         #    return pred_loss, (rew[0:5], pred_action[0:5], pred_action[0:5].argmax(-1), act[0:5])
-        
         logs = {"policy_loss": pred_loss}
-        if self.hparams['use_advantage']:
-            logs['advantage_loss'] = adv_loss
         return {'loss':pred_loss, 'log':logs}
 
     def _pred_loss(self, pred_action, real_action):
@@ -225,11 +252,17 @@ class LightningTemplate(pl.LightningModule):
             return F.cross_entropy(pred_action, real_action, reduction='none')
 
     def validation_step(self, batch, batch_idx):
-        train_dict = self.training_step(batch, batch_idx)
-        # rename
-        train_dict['log']['policy_val_loss'] = train_dict['log'].pop('policy_loss')
         if self.hparams['use_advantage']:
-            train_dict['log']['advantage_val_loss'] = train_dict['log'].pop('advantage_loss')
+            # need to run for both optimizers: 
+            train_dict = self.training_step(batch, batch_idx, 0,run_eval=True)
+            train_dict['log']['policy_val_loss'] = train_dict['log'].pop('policy_loss')
+            
+            train_dict1 = self.training_step(batch, batch_idx, 1, run_eval=True)
+            train_dict['log']['advantage_val_loss'] = train_dict1['log'].pop('advantage_loss')
+        else: 
+            train_dict = self.training_step(batch, batch_idx)
+            train_dict['log']['policy_val_loss'] = train_dict['log'].pop('policy_loss')
+        
         return train_dict['log'] 
 
     def validation_epoch_end(self, outputs):

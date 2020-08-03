@@ -14,20 +14,20 @@ class AdvantageModel(nn.Module):
     '''
     
     def __init__(self, state_size, hidden_sizes=[128, 64], 
-            act_fn="relu"):
+            act_fn="ReLU"):
         super().__init__()
-        self.act_fn = getattr(torch, act_fn)
+        self.act_fn = getattr(torch.nn, act_fn)
         hidden_sizes.insert(0, state_size)
         self.layers = nn.ModuleList()
         for j in range(len(hidden_sizes)-1):
             self.layers.append( nn.Linear(hidden_sizes[j], hidden_sizes[j+1])  )
-            self.layer.append( self.act_fn() )
+            self.layers.append( self.act_fn() )
         self.layers = nn.Sequential(*self.layers)
         self.output_fc = nn.Linear(hidden_sizes[-1], 1 )
 
     def forward(self, state):
         v = self.layers(state)
-        v = self.output_fc(state)
+        v = self.output_fc(v)
         return v
 
     def calculate_advantages(self, states, rewards, discount, td_lambda):
