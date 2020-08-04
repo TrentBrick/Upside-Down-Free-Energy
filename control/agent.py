@@ -315,10 +315,11 @@ class Agent:
                 if k =='rew':
                     if self.advantage_model:
                         # computing the TD(lambda) advantage values
-                        rollout_dict[k] = self.advantage_model.calculate_advantages(torch.Tensor(rollout_dict['obs']), torch.Tensor(v), self.discount_factor, self.td_lambda)
+                        rollout_dict[k], to_desire = self.advantage_model.calculate_advantages(torch.Tensor(rollout_dict['obs']), torch.Tensor(v), self.discount_factor, self.td_lambda)
                     else: 
                         # rewards to go. 
                         rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
+                        to_desire = rollout_dict['rew'][0]
                 else: 
                     rollout_dict[k] = np.asarray(v)
             # repeat the cum reward up to length times. 
@@ -333,7 +334,7 @@ class Agent:
             #print(rollout_dict['final_obs'], rollout_dict['horizon'], rollout_dict['cum_rew'])
             #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['rew']), len(rollout_dict['terminal']) )
             # discounted cumulative!
-            return cumulative, rollout_dict['rew'][0], time, rollout_dict # passed back to simulate. 
+            return cumulative, to_desire, time, rollout_dict # passed back to simulate. 
         else: 
             return cumulative, time # ending time and cum reward
                 
@@ -368,7 +369,7 @@ class Agent:
 
         cum_reward_list = []
         terminal_time_list = []
-        discount_reward_list = []
+        to_desire_list = []
         if self.return_events:
             data_dict_list = []
 
@@ -384,10 +385,10 @@ class Agent:
                     self.env.seed(int(rand_env_seed))
 
                 if self.return_events: 
-                    rew, discounted_rew, time, data_dict = self.rollout(render=render_mode, greedy=greedy)
+                    rew, to_desire, time, data_dict = self.rollout(render=render_mode, greedy=greedy)
                     # data dict has the keys 'obs', 'rewards', 'actions', 'terminal'
                     data_dict_list.append(data_dict)
-                    discount_reward_list.append(discounted_rew)
+                    to_desire_list.append(to_desire)
                 else: 
                     rew, time = self.rollout(render=render_mode, greedy=greedy)
                 if render_mode: 
@@ -402,6 +403,6 @@ class Agent:
             print('Mean reward over', num_episodes, 'episodes is:', np.mean(cum_reward_list))
 
         if self.return_events: 
-            return cum_reward_list, discount_reward_list, terminal_time_list, data_dict_list 
+            return cum_reward_list, to_desire_list, terminal_time_list, data_dict_list 
         else: 
             return cum_reward_list, terminal_time_list

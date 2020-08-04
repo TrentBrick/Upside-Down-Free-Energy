@@ -121,7 +121,7 @@ class LightningTemplate(pl.LightningModule):
         
         train_data =output[3][:-1]
         test_data = [output[3][-1]]
-        reward_losses, discounted_rewards, termination_times = output[0], output[1], output[2]
+        reward_losses, to_desire, termination_times = output[0], output[1], output[2]
 
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
@@ -132,7 +132,16 @@ class LightningTemplate(pl.LightningModule):
         if self.Levine_Implementation:
             self.desired_horizon = None
             # Beta is 1. Otherwise would appear in the log sum exp here. 
-            self.desired_reward_stats = (np.log(np.sum(np.exp(discounted_rewards))), np.std(discounted_rewards))
+            if self.hparams['use_advantage']:
+                #print("to desire is:", to_desire, len(to_desire))
+                # sample from everything not just the very first ones. 
+                self.desired_reward_stats = (np.log(np.sum(np.exp(to_desire))), np.std(to_desire))
+                #self.desired_reward_stats = (np.log(np.sum(np.exp( self.train_buffer.rew_buf ))), np.std(self.train_buffer.rew_buf)  )
+                #self.desired_reward_stats = (1.0, 0.5)
+            else: 
+                # TODO: get all of the starting discounted values from the whole buffer. 
+                # not just the most recent values. 
+                self.desired_reward_stats = (np.log(np.sum(np.exp(to_desire))), np.std(to_desire))
             self.desired_state = np.unique(self.train_buffer.final_obs).mean(axis=0) # take the mean or sample from everything. 
         else: 
             # TODO: return mean and std to sample from the desired states. 
@@ -161,13 +170,13 @@ class LightningTemplate(pl.LightningModule):
         # process the data/add to the buffer.
         self.add_rollouts_to_buffer(output)
 
-        # evaluate the agents
+        # evaluate the agents where greedy actions are taken. 
         if self.current_epoch % self.hparams['eval_every']==0:
             output = self.collect_rollouts(greedy=True, num_episodes=self.hparams['eval_episodes'])
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
 
-    def training_step(self, batch, batch_idx, run_eval=False):
+    def training_step(self, batch, batch_idx):
         # run training on this data
         if self.Levine_Implementation: 
             # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
@@ -203,7 +212,7 @@ class LightningTemplate(pl.LightningModule):
             if self.hparams['norm_advantage']:
                 adv = (adv - adv.mean()) / adv.std()
             # set it as a desire. 
-            print("advantage in train desire:", adv[0])
+            #print("advantage in train desire:", adv[0])
             desires[0] = adv.unsqueeze(1)
 
         pred_action = self.model.forward(obs, desires)
@@ -214,8 +223,10 @@ class LightningTemplate(pl.LightningModule):
         pred_loss = self._pred_loss(pred_action, act)
         if self.hparams['Levine_Implementation'] and self.hparams['weight_loss']:
             #print('weights used ', torch.exp(rew/beta_reward_weighting))
+            if self.hparams['use_advantage']:
+                rew = (rew - rew.mean()) / rew.std()
             loss_weighting = torch.clamp( torch.exp(rew/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
-            print('loss weights post clamp and their rewards', loss_weighting[-1], rew[-1])
+            #print('loss weights post clamp and their rewards', loss_weighting[-1], rew[-1])
             pred_loss = pred_loss*loss_weighting
         pred_loss = pred_loss.mean(dim=0)
         logs = {"policy_loss": pred_loss}

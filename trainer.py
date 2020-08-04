@@ -77,8 +77,8 @@ def main(args):
         num_val_batches = 5,
         ############ this here is important! 
         use_Levine_model = True, 
-        use_advantage = True, 
-        norm_advantage = True,
+        use_advantage = False, 
+        norm_advantage = False, #TODO: get rid of this as an option. 
         desire_states = False 
     )
     if not constants['use_Levine_model']:
@@ -96,18 +96,18 @@ def main(args):
             batch_size = 256,
             max_buffer_size = 100000,
             discount_factor = 0.99,
-            beta_reward_weighting = 25, 
-            max_loss_weighting = 100000000, 
+            beta_reward_weighting = 1.0, 
+            max_loss_weighting = 20, 
             weight_loss = True,
             desire_scalings =None,
             num_grad_steps = 1000,
             hidden_sizes = [128,128,64]
         )
         if constants['use_advantage']:
-            if constants['norm_advantage']:
-                config['beta_reward_weighting'] = 1.0 # because of advantage norm.
-            else: 
-                config['beta_reward_weighting'] = 0.05
+            #if constants['norm_advantage']:
+            config['beta_reward_weighting'] = 1.0 # because of advantage norm.
+            #else: 
+            #    config['beta_reward_weighting'] = 0.05
             config['max_loss_weighting'] = 20
 
     else: 
