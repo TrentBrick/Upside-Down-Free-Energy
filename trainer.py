@@ -78,6 +78,7 @@ def main(args):
         ############ this here is important! 
         use_Levine_model = True, 
         use_advantage = True, 
+        norm_advantage = False,
         desire_states = False 
     )
     if not constants['use_Levine_model']:
@@ -103,8 +104,12 @@ def main(args):
             hidden_sizes = [128,128,64]
         )
         if constants['use_advantage']:
-            config['beta_reward_weighting'] = 1.0 # because of advantage norm.
+            if constants['norm_advantage']:
+                config['beta_reward_weighting'] = 1.0 # because of advantage norm.
+            else: 
+                config['beta_reward_weighting'] = 0.05
             config['max_loss_weighting'] = 20
+
     else: 
         config= dict(
         lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
