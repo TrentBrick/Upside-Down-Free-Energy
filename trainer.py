@@ -77,7 +77,7 @@ def main(args):
         num_val_batches = 5,
         ############ this here is important! 
         use_Levine_model = True, 
-        use_advantage = False, 
+        use_advantage = True, 
         norm_advantage = False, #TODO: get rid of this as an option. 
         desire_states = False 
     )
