@@ -78,7 +78,7 @@ def main(args):
         ############ this here is important! 
         use_Levine_model = True, 
         use_advantage = True, 
-        norm_advantage = False,
+        norm_advantage = True,
         desire_states = False 
     )
     if not constants['use_Levine_model']:

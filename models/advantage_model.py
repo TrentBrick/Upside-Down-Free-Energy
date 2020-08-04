@@ -34,6 +34,8 @@ class AdvantageModel(nn.Module):
         # compute the advantages to use as desires during training. 
         # I then do MSE loss between the these advantages and the value function
         vals = self.forward(states)
+        # appending zero to the end. 
+        vals = torch.cat( [vals, torch.Tensor([0])], axis=0)
         new_vals = self._compute_return(vals, rewards, discount, td_lambda)
         return new_vals
 
@@ -41,6 +43,7 @@ class AdvantageModel(nn.Module):
         # computes td-lambda return of path
         # TODO: vectorize all of this or find a vectorized version. 
         path_len = len(rewards)
+        assert len(val_t) == path_len + 1
         return_t = np.zeros(path_len)
         last_val = rewards[-1] + discount * val_t[-1]
         return_t[-1] = last_val
@@ -49,6 +52,7 @@ class AdvantageModel(nn.Module):
             next_ret = return_t[i + 1]
             curr_val = curr_r + discount * ((1.0 - td_lambda) * val_t[i + 1] + td_lambda * next_ret)
             return_t[i] = curr_val
+    
         return return_t
 
 

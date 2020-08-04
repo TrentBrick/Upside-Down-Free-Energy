@@ -183,7 +183,7 @@ class LightningTemplate(pl.LightningModule):
 
         if self.hparams['use_advantage']:
             if batch_idx%self.hparams['val_func_update_iterval']==0: 
-                pred_vals = self.advantage_model.forward(obs2).squeeze()
+                pred_vals = self.advantage_model.forward(obs).squeeze()
                 if self.hparams['norm_advantage']:
                     rew_norm = (rew - rew.mean()) / rew.std()
                     # compute loss for advantage model.
@@ -203,7 +203,7 @@ class LightningTemplate(pl.LightningModule):
             if self.hparams['norm_advantage']:
                 adv = (adv - adv.mean()) / adv.std()
             # set it as a desire. 
-            print("advantage in desire:", adv[0])
+            print("advantage in train desire:", adv[0])
             desires[0] = adv.unsqueeze(1)
 
         pred_action = self.model.forward(obs, desires)

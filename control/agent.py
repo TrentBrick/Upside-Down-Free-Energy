@@ -315,7 +315,7 @@ class Agent:
                 if k =='rew':
                     if self.advantage_model:
                         # computing the TD(lambda) advantage values
-                        rollout_dict[k] = self.advantage_model.calculate_advantages(torch.Tensor(rollout_dict['obs2']), torch.Tensor(v), self.discount_factor, self.td_lambda)
+                        rollout_dict[k] = self.advantage_model.calculate_advantages(torch.Tensor(rollout_dict['obs']), torch.Tensor(v), self.discount_factor, self.td_lambda)
                     else: 
                         # rewards to go. 
                         rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
