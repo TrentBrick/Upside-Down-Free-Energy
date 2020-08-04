@@ -65,6 +65,7 @@ def main(args):
     constants = dict(
         random_action_epochs = 1,
         td_lambda = 0.95,
+        val_func_update_iterval = 5, # 200 out of the 1000.
         grad_clip_val = 100, 
         eval_every = 10,
         eval_episodes=10,

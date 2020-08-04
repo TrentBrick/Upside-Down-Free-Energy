@@ -156,8 +156,8 @@ class Agent:
         # sample a desired reward
         if not self.take_rand_actions:
             if self.Levine_Implementation:
-                curr_desired_reward = torch.Tensor([np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)])
-                #curr_desired_reward = self.desired_reward_dist.sample([1])
+                #curr_desired_reward = torch.Tensor([np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)])
+                curr_desired_reward = self.desired_reward_dist.sample([1])
                 curr_desired_state = torch.Tensor([self.desired_state])
             else: 
                 curr_desired_reward = np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)

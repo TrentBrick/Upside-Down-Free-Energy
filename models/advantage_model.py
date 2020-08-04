@@ -35,7 +35,6 @@ class AdvantageModel(nn.Module):
         # I then do MSE loss between the these advantages and the value function
         vals = self.forward(states)
         new_vals = self._compute_return(vals, rewards, discount, td_lambda)
-
         return new_vals
 
     def _compute_return(self, val_t, rewards, discount, td_lambda):
@@ -51,33 +50,6 @@ class AdvantageModel(nn.Module):
             curr_val = curr_r + discount * ((1.0 - td_lambda) * val_t[i + 1] + td_lambda * next_ret)
             return_t[i] = curr_val
         return return_t
-
-    '''def _compute_batch_new_vals(self, vals, rewards, discount, td_lambda):
-        # use td-lambda to compute new values
-        # TODO: vectorize all of this or find a vectorized version. 
-        new_vals = np.zeros_like(val_buffer)
-        n = len(vals)
-
-        start_i = 0
-        while start_i < n:
-            start_idx = idx[start_i]
-            path_len = self._replay_buffer.get_pathlen(start_idx)
-            end_i = start_i + path_len
-            end_idx = idx[end_i]
-
-            test_start_idx = self._replay_buffer.get_path_start(start_idx)
-            test_end_idx = self._replay_buffer.get_path_end(start_idx)
-            assert(start_idx == test_start_idx)
-            assert(end_idx == test_end_idx)
-
-            path_indices = idx[start_i:(end_i + 1)]
-            r = self._replay_buffer.get("rewards", path_indices[:-1])
-            v = val_buffer[start_i:(end_i + 1)]
-
-            new_vals[start_i:end_i] = self._compute_return(r, self._discount, self._td_lambda, v)
-            start_i = end_i + 1
-        
-        return new_vals'''
 
 
 
