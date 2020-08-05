@@ -318,10 +318,13 @@ class Agent:
                     if self.advantage_model:
                         # computing the TD(lambda) advantage values
                         # do this before the rewards are set as being discounted. 
-                        rollout_dict['td_lambda'], rollout_dict['desire'] = self.advantage_model.calculate_lambda_target(torch.Tensor(rollout_dict['obs']), 
+                        temp = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
+                        rollout_dict['v_func_target'] = temp
+                        rollout_dict['desire'] = temp
+                        '''self.advantage_model.calculate_lambda_target(torch.Tensor(rollout_dict['obs']), 
                                                             torch.Tensor(rollout_dict['rew']), discount_cumsum(np.asarray(rollout_dict['rew']), self.discount_factor),
-                                                            self.discount_factor, self.td_lambda)
-                        to_desire = None 
+                                                            self.discount_factor, self.td_lambda)'''
+                        to_desire = rollout_dict['desire'][0] 
                     else: 
                         # discounted rewards to go. 
                         rollout_dict['desire'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)

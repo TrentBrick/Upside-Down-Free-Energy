@@ -69,7 +69,7 @@ class UpsdModel(nn.Module):
         https://arxiv.org/pdf/1912.13465.pdf """
     def __init__(self, state_size, desires_size, 
         action_size, hidden_sizes, desires_scalings = None, 
-        state_act_fn="relu", desires_act_fn="sigmoid", 
+        state_act_fn="relu", desires_act_fn="relu", 
         desire_states = False):
         super().__init__()
         self.desires_size = desires_size

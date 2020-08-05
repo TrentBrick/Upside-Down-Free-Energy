@@ -134,11 +134,11 @@ class RingBuffer:
                                 #'final_obs'
                                 ]
 
-        self.use_td_lambda_buf = use_td_lambda_buf
+        '''self.use_td_lambda_buf = use_td_lambda_buf
         if self.use_td_lambda_buf:
             self.td_lambda_buf = np.zeros(size, dtype=np.float32)
             self.buf_list.append(self.td_lambda_buf)
-            self.value_names.append('td_lambda')
+            self.value_names.append('td_lambda')'''
 
         self.ptr, self.size, self.max_size = 0, 0, size
         self.total_num_steps_added = 0
@@ -181,8 +181,8 @@ class RingBuffer:
                      #cum_rew=self.cum_rew[idxs],
                      #final_obs=self.final_obs[idxs]
                      )
-        if self.use_td_lambda_buf:
-            batch['td_lambda'] = self.td_lambda_buf[idxs]
+        #if self.use_td_lambda_buf:
+        #    batch['td_lambda'] = self.td_lambda_buf[idxs]
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 

@@ -124,6 +124,8 @@ class LightningTemplate(pl.LightningModule):
         test_data = [output[3][-1]]
         reward_losses, to_desire, termination_times = output[0], output[1], output[2]
 
+        print("termination times for rollouts are:", np.mean(termination_times), termination_times)
+        print("first advantages from these rollouts:", np.mean(to_desire), to_desire)
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
         # add data to the buffer. 
@@ -183,7 +185,7 @@ class LightningTemplate(pl.LightningModule):
         # run training on this data
         if self.Levine_Implementation: 
             # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
-            # desire here is the advantage. 
+            # desire here is the discounted rewards to go. 
             obs, act, des = batch['obs'], batch['act'], batch['desire']
             if self.hparams['desire_states']:
                 raise Exception("Still need to implement this. ")
@@ -200,8 +202,14 @@ class LightningTemplate(pl.LightningModule):
                 pred_vals = self.advantage_model.forward(obs).squeeze()
                 #print('adv loss: pred vs real. ', pred_vals[0], des[0])
                 # des here is TD lambda as modified and set by the agent. 
-                adv_loss = F.mse_loss(pred_vals, batch['td_lambda'], reduction='none').mean(dim=0)
-            
+                adv_loss = F.mse_loss(pred_vals, des, reduction='none').mean(dim=0)
+            else: 
+                with torch.no_grad(): pred_vals = self.advantage_model.forward(obs).squeeze()
+
+            # need to compute this here to use the most up to date V(s)
+            # des is the rewards to go. 
+            des = des - pred_vals # this is the advantage.
+            desires[0] = des.unsqueeze(1)
             #print("advantage in train desire:", des[0])
 
         pred_action = self.model.forward(obs, desires)
@@ -211,7 +219,6 @@ class LightningTemplate(pl.LightningModule):
             act = act.squeeze().long()
         pred_loss = self._pred_loss(pred_action, act)
         if self.hparams['Levine_Implementation'] and self.hparams['weight_loss']:
-            
             des = (des - des.mean()) / des.std()
             #print('weights used ', torch.exp(des/beta_reward_weighting))
             loss_weighting = torch.clamp( torch.exp(des/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])

@@ -64,7 +64,7 @@ def get_env_params(gamename):
             'continuous_actions':False,
             'desired_reward':200,
             'num_action_repeats': 1,
-            'avg_episode_length':70,
+            'avg_episode_length':200,
             'time_limit':300, # max time limit for the rollouts generated
             'over_max_time_limit_penalty':-50,
             'ACTION_SIZE': 4, # number possible actions

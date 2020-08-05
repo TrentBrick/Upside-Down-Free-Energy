@@ -258,13 +258,13 @@ def main(args):
         
 if __name__ =='__main__':
     parser = argparse.ArgumentParser("Training Script")
-    parser.add_argument('--gamename', type=str,
+    parser.add_argument('--gamename', type=str, default='lunarlander',
                         help="What Gym environment to train in.")
-    parser.add_argument('--exp_name', type=str,
+    parser.add_argument('--exp_name', type=str, default='debug',
                         help="Name of the experiment.")                
     parser.add_argument('--logdir', type=str, default='exp_dir',
                         help="Where things are logged and models are loaded from.")
-    parser.add_argument('--no_reload', action='store_true',
+    parser.add_argument('--no_reload', action='store_true', default=True,
                         help="Won't load in models for MODEL from the joint file. \
                         NB. This will create new models with random inits and will overwrite \
                         the best and checkpoints!")
@@ -272,10 +272,10 @@ if __name__ =='__main__':
                         help="If pretrained models are being provided, avoids loading in an optimizer \
                         or previous lowest loss score.")
     parser.add_argument('--num_workers', type=int, help='Maximum number of workers.',
-                        default=16)
+                        default=1)
     parser.add_argument('--display', action='store_true', help="Use progress bars if "
                         "specified.")
-    parser.add_argument('--seed', type=int, default=27,
+    parser.add_argument('--seed', type=int, default=25,
                         help="Starter seed for reproducible results")
     parser.add_argument('--eval_agent', type=bool, default=False,
                         help="Able to eval the agent!")
