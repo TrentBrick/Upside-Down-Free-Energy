@@ -30,16 +30,18 @@ class AdvantageModel(nn.Module):
         v = self.output_fc(v)
         return v
 
-    def calculate_advantages(self, states, rewards, discount, td_lambda):
+    def calculate_lambda_target(self, states, rewards, discount_rewards, discount, td_lambda):
         # compute the advantages to use as desires during training. 
         # I then do MSE loss between the these advantages and the value function
         vals = self.forward(states).squeeze()
+        adv = discount_rewards - vals.numpy()
+        # need to clamp to 700 so log sum exp doesnt explode!
+        #adv = np.minimum(adv, 50)
         # appending zero to the end. 
         # TODO: if terminal set to 0, otherwise use the value that was given. 
         vals = torch.cat( [vals, torch.Tensor([0])], axis=0)
-        new_vals = self._compute_return(vals, rewards, discount, td_lambda)
-        adv = np.mean(new_vals-vals[:-1].numpy())
-        return new_vals, adv
+        td_lambda_target = self._compute_return(vals, rewards, discount, td_lambda)
+        return td_lambda_target, adv
 
     def _compute_return(self, val_t, rewards, discount, td_lambda):
         # computes td-lambda return of path

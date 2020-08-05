@@ -310,29 +310,36 @@ class Agent:
             print('the last state for agent is:', rollout_dict['obs'][-1].round(3)  )
 
         if self.return_events:
-            for k,v in rollout_dict.items(): # list of tensors arrays.
+
+            list_of_keys = list(rollout_dict.keys())
+            for k in list_of_keys: # list of tensors arrays.
                 # rewards to go here for levine
                 if k =='rew':
                     if self.advantage_model:
                         # computing the TD(lambda) advantage values
-                        rollout_dict[k], to_desire = self.advantage_model.calculate_advantages(torch.Tensor(rollout_dict['obs']), torch.Tensor(v), self.discount_factor, self.td_lambda)
+                        # do this before the rewards are set as being discounted. 
+                        rollout_dict['td_lambda'], rollout_dict['desire'] = self.advantage_model.calculate_lambda_target(torch.Tensor(rollout_dict['obs']), 
+                                                            torch.Tensor(rollout_dict['rew']), discount_cumsum(np.asarray(rollout_dict['rew']), self.discount_factor),
+                                                            self.discount_factor, self.td_lambda)
+                        to_desire = None 
                     else: 
-                        # rewards to go. 
-                        rollout_dict[k] = discount_cumsum(np.asarray(v), self.discount_factor)
-                        to_desire = rollout_dict['rew'][0]
+                        # discounted rewards to go. 
+                        rollout_dict['desire'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
+                        to_desire = rollout_dict['desire'][0]
                 else: 
-                    rollout_dict[k] = np.asarray(v)
+                    rollout_dict[k] = np.asarray(rollout_dict[k])
             # repeat the cum reward up to length times. 
             # setting cum_rew to be the first reward to go. This is equivalent to the cum reward 
-            # but accounts too for any discounting factor. 
-            rollout_dict['cum_rew'] = np.repeat(rollout_dict['rew'][0], time)
+            # but accounts too for any discounting factor.
+
+            rollout_dict['cum_rew'] = np.repeat(rollout_dict['desire'][0], time)
             rollout_dict['rollout_length'] = np.repeat(time, time)
             rollout_dict['horizon'] = time - np.arange(0, time) 
             rollout_dict['final_obs'] = np.repeat(np.expand_dims(rollout_dict['obs'][-1],0), time, axis=0)
             #print('rollout final obs is:', rollout_dict['final_obs'].shape )
             # so that the horizon is always 1 away
             #print(rollout_dict['final_obs'], rollout_dict['horizon'], rollout_dict['cum_rew'])
-            #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['rew']), len(rollout_dict['terminal']) )
+            #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['desire']), len(rollout_dict['terminal']) )
             # discounted cumulative!
             return cumulative, to_desire, time, rollout_dict # passed back to simulate. 
         else: 

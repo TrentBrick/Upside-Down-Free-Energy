@@ -77,8 +77,7 @@ def main(args):
         num_val_batches = 5,
         ############ this here is important! 
         use_Levine_model = True, 
-        use_advantage = True, 
-        norm_advantage = False, #TODO: get rid of this as an option. 
+        use_advantage = True,  
         desire_states = False 
     )
     if not constants['use_Levine_model']:
@@ -193,9 +192,12 @@ def main(args):
     def run_lightning(config):
 
         if Levine_Implementation:
-            train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'])
+            train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
+                act_dim=env_params['STORED_ACTION_SIZE'], 
+                size=config['max_buffer_size'], use_td_lambda_buf=config['use_advantage'])
             test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
-                act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
+                act_dim=env_params['STORED_ACTION_SIZE'], 
+                size=config['batch_size']*10, use_td_lambda_buf=config['use_advantage'])
         else:
             config['max_buffer_size'] *= env_params['avg_episode_length']
             train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'] )

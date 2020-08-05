@@ -51,7 +51,6 @@ class LightningTemplate(pl.LightningModule):
             self.advantage_model = None 
         # log the hparams. 
         if self.logger:
-            print("Adding the hparams to the logger!!!")
             self.logger.experiment.add_hparams(hparams)
 
         # start filling up the buffer.
@@ -96,7 +95,9 @@ class LightningTemplate(pl.LightningModule):
         if self.current_epoch<self.hparams['random_action_epochs']:
             agent = Agent(self.hparams['gamename'], 
                 take_rand_actions=True,
-                discount_factor=self.hparams['discount_factor'])
+                discount_factor=self.hparams['discount_factor'],
+                advantage_model=self.advantage_model,
+                td_lambda=self.hparams['td_lambda'])
         else: 
             agent = Agent(self.hparams['gamename'], 
                 model = self.model, 
@@ -134,8 +135,10 @@ class LightningTemplate(pl.LightningModule):
             # Beta is 1. Otherwise would appear in the log sum exp here. 
             if self.hparams['use_advantage']:
                 #print("to desire is:", to_desire, len(to_desire))
-                # sample from everything not just the very first ones. 
-                self.desired_reward_stats = (np.log(np.sum(np.exp(to_desire))), np.std(to_desire))
+                # sample from all of the advantages in the FIFO! 
+                print("max advantage in the buffer iss:", self.train_buffer.desire_buf[:self.train_buffer.size].max())
+                self.desired_reward_stats = (np.max(self.train_buffer.desire_buf[:self.train_buffer.size]), np.std(self.train_buffer.desire_buf[:self.train_buffer.size]))
+                #self.desired_reward_stats = (np.log(np.sum(np.exp(self.train_buffer.desire_buf[:self.train_buffer.size]))), np.std(self.train_buffer.desire_buf[:self.train_buffer.size]))
                 #self.desired_reward_stats = (np.log(np.sum(np.exp( self.train_buffer.rew_buf ))), np.std(self.train_buffer.rew_buf)  )
                 #self.desired_reward_stats = (1.0, 0.5)
             else: 
@@ -180,40 +183,26 @@ class LightningTemplate(pl.LightningModule):
         # run training on this data
         if self.Levine_Implementation: 
             # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
-            obs, obs2, act, rew = batch['obs'], batch['obs2'], batch['act'], batch['rew']
+            # desire here is the advantage. 
+            obs, act, des = batch['obs'], batch['act'], batch['desire']
             if self.hparams['desire_states']:
                 raise Exception("Still need to implement this. ")
             else: 
-                desires = [rew.unsqueeze(1), None]
+                desires = [des.unsqueeze(1), None]
         else:
-            obs, final_obs, act, rew, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['rew'], batch['horizon']
-            desires = [rew.unsqueeze(1), horizon.unsqueeze(1), final_obs]
+            # desire here is the reward to go. 
+            obs, final_obs, act, des, horizon = batch['obs'], batch['final_obs'], batch['act'], batch['desire'], batch['horizon']
+            desires = [des.unsqueeze(1), horizon.unsqueeze(1), final_obs]
             #print(desires[0].shape, desires[1].shape, desires[2].shape, desires[2] )
 
         if self.hparams['use_advantage']:
             if batch_idx%self.hparams['val_func_update_iterval']==0: 
                 pred_vals = self.advantage_model.forward(obs).squeeze()
-                if self.hparams['norm_advantage']:
-                    rew_norm = (rew - rew.mean()) / rew.std()
-                    # compute loss for advantage model.
-                    adv_loss = F.mse_loss(pred_vals, rew_norm ,reduction='none').mean(dim=0)
-                else: 
-                    print('adv loss: pred vs real. ', pred_vals[0], rew[0])
-                    adv_loss = F.mse_loss(pred_vals, rew ,reduction='none').mean(dim=0)
-            else: 
-                with torch.no_grad():
-                    # just get the predictions but without a gradient. 
-                    # could have stored and computed this inside the buffer. 
-                    pred_vals = self.advantage_model.forward(obs2).squeeze()
-
-            # detach for use in the desires
-            # TD-lambda is the reward value. 
-            adv = rew - pred_vals.detach()
-            if self.hparams['norm_advantage']:
-                adv = (adv - adv.mean()) / adv.std()
-            # set it as a desire. 
-            #print("advantage in train desire:", adv[0])
-            desires[0] = adv.unsqueeze(1)
+                #print('adv loss: pred vs real. ', pred_vals[0], des[0])
+                # des here is TD lambda as modified and set by the agent. 
+                adv_loss = F.mse_loss(pred_vals, batch['td_lambda'], reduction='none').mean(dim=0)
+            
+            #print("advantage in train desire:", des[0])
 
         pred_action = self.model.forward(obs, desires)
 
@@ -222,15 +211,16 @@ class LightningTemplate(pl.LightningModule):
             act = act.squeeze().long()
         pred_loss = self._pred_loss(pred_action, act)
         if self.hparams['Levine_Implementation'] and self.hparams['weight_loss']:
-            #print('weights used ', torch.exp(rew/beta_reward_weighting))
-            if self.hparams['use_advantage']:
-                rew = (rew - rew.mean()) / rew.std()
-            loss_weighting = torch.clamp( torch.exp(rew/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
-            #print('loss weights post clamp and their rewards', loss_weighting[-1], rew[-1])
+            
+            des = (des - des.mean()) / des.std()
+            #print('weights used ', torch.exp(des/beta_reward_weighting))
+            loss_weighting = torch.clamp( torch.exp(des/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
+            #print('loss weights post clamp and their rewards', loss_weighting[-1], des[-1])
             pred_loss = pred_loss*loss_weighting
         pred_loss = pred_loss.mean(dim=0)
         logs = {"policy_loss": pred_loss}
 
+        # learn the advantage function too by adding it to the loss if this is the correct iteration. 
         if self.hparams['use_advantage'] and batch_idx%self.hparams['val_func_update_iterval']==0:
             pred_loss += adv_loss 
             logs["advantage_loss"] = adv_loss

@@ -1,10 +1,25 @@
-# Evolutionary Bootstrapping for Active Inference
+# Evolutionary Bootstrapping for Upside Down Active Inference
 
-## Acknowledgements
+## Relevant Scripts: 
 
-Thanks to Beren Millidge and Alexander Tschantz for their supervision which made this research possible and successful.
+* train.py - has most of the relevant settings for the code. Also starts either ray tune (for hyperparam optimization) or a single model (for debugging). Able to switch between different model and learning types in a modular fashion
+* bash_train.sh - uses GNU parallel to run multiple seeds of a model
+* lighting-trainer.py - meat of the code. Uses pytorch lightning for training
+* control/agent.py - runs rollouts of the environment and processes their rewards
+* envs/gym_params.py - provides environment specific parameters
+* exp_dir/ - contains all experiments separated by: environment_name/experiment_name/seed/logged_versions
+* models/upsd_model.py - contains the [Schmidhuber](https://arxiv.org/pdf/1912.13465.pdf) and [Levine](https://arxiv.org/abs/1912.02877) upside down models.
+* models/advantage_model.py - model to learn the advantage of actions as in the Levine paper
 
-Thanks to [Ha and Schmidhuber, "World Models", 2018]() and the [open source PyTorch implementation](https://github.com/ctallec/world-models) of their code, which provided a solid starting point for the research performed here.
+## Running the code: 
+
+## Evaluating Training
+
+All training results along with important metrics are saved out to Tensorboard. To view them call: 
+
+`tensorboard --logdir /Users/trentonbricken/fem/exp_dir/*ENVIRONMENT_NAME*/*EXPERIMENT_NAME*`
+
+To visualize the performance of a trained model, locate the model's checkpoint which will be under: `exp_dir/*ENVIRONMENT_NAME*/*EXPERIMENT_NAME*/*SEED*/epoch=*VALUE*.ckpt` and put this inside ... then call the code with `--eval 1` flag. 
 
 ## Instructions for running on a Google Cloud VM:
 
@@ -96,66 +111,11 @@ sudo apt-get install python-opengl
 Your server should now be fully set up to run all of the following experiments! Please don't post Issues on installation as I won't be able to provide any further support and have already provided a lot more than most other ML code reproductions/support!
 NB. If you are not using Conda be sure either uninstall it or to call `conda deactivate` every time you SSH in and whenever you start a new tmux terminal.
 
+## Acknowledgements
 
-## Running the code: 
+Thanks to Beren Millidge and Alexander Tschantz for their supervision which made this research possible and successful.
 
-The model is composed of two parts:
-
-  1. A Conditional Variational Auto-Encoder (VAE), this builds a "world model" and the probabilities of visual observations while also producing a useful latent space.
-  2. A Mixture-Density Recurrent Network (MDN-RNN), trained to predict the latent encoding of the next frame given past latent encodings, actions and rewards. This uses an LSTM to pass memories over time. It also predicts the future rewards and (optionally) whether or not we are in a terminal state.
-  Unlike in World Models we don't learn a policy (controller) and instead use planning with the Cross Entropy Method (CEM) very similar to that used in [1](https://arxiv.org/pdf/2002.12636.pdf), [2](https://arxiv.org/pdf/1811.04551.pdf) and [3](https://arxiv.org/pdf/1805.12114.pdf). Except we don't use an ensemble of models.
-
-Across all training scripts, there are the arguments:
-* **--logdir** : The directory in which the models will be stored. If the logdir specified already exists, it loads the old model and continues the training.
-* **--noreload** : If you want to override a model in *logdir* instead of reloading it, add this option. NB. This will overwrite the `best.tar` and `checkpoint.tar` models that were previously saved.
-
-### Pretraining
-These two models can be first pre-trained separately on simulations using a random policy: 
-TODO: NOTE IF THIS USES ACTION REPEATS!
-
-1. Collect simulations using a random policy: 
-Before doing this make the directory: `datasets/carracing`
-```
-python3 data/generation_script.py --rollouts 1000 --rootdir datasets/carracing --threads 16
-```
-
-2. Call 
-```
-python3 trainvae.py --log_dir exp_dir
-```
-
-3. Call 
-```
-python3 trainmdrnn.py --log_dir exp_dir
-```
-
-### Joint Training
-If you use pretraining, use `cp exp_dir/vae/best.tar exp_dir/joint/vae_best.tar` and 
-`cp exp_dir/mdrnn/best.tar exp_dir/joint/mdrnn_best.tar` to have these models loaded in. Be sure to add the `--giving_pretrained` flag when calling the script.
-
-Assuming that you have 16 CPUs:
-```
-xvfb-run -s "-screen 0 1400x900x24" python3 joint_train.py --log_dir exp_dir --num_workers 16
-```
-Should you have the `--giving_pretrained` flag on?
-There are a number of additional settings at the top of `joint_train.py`.
-Fun Fact: `xvfb-run` is necessary for the simulations to run on the headless server. (This is called behind the scenes for `data/generation_script.py` also).
-
-## Evaluating Training
-
-`trainvae.py` and `trainmdrnn.py` write out `logger.json` files and `joint_train.py` outputs a `logger.txt` (I made this as its a big more readable and efficient, also maintains state between training runs). Their learning curves can be plotted using the Jupyter notebooks in `notebooks/plot_MODEL_training.ipynb`.
-
-If you download the trained models, (I would use either `scp` through the Google Cloud SDK command line interface or the VSCode SSH (right click on a file to download it!)) you can run simulations to visualize their performance using `simulated_carracing.py`. In order to see the jointly trained model use:
-
-```
-python3 simulated_carracing.py --logdir exp_dir --real_obs --use_planner --test_agent
-```
-TODO: provide instructions on how to show the dream state and the imagined trajectories the planner creates. 
-
-The following command will allow you to drive the car yourself. Its harder than you would think no?!: 
-```
-python3 simulated_carracing.py --logdir exp_dir --real_obs
-```
+Thanks to [Ha and Schmidhuber, "World Models", 2018]() and the [open source PyTorch implementation](https://github.com/ctallec/world-models) of their code, which provided a solid starting point for the research performed here. Thanks also to the opensource implementation of Upside Down Reinforcement Learning: https://github.com/jscriptcoder/Upside-Down-Reinforcement-Learning which provided an initial test base. Also to [Reward Conditioned Policies](https://arxiv.org/pdf/1912.13465.pdf) and [Training Agents using Upside-Down Reinforcement Learning](https://arxiv.org/abs/1912.02877) for initial research and results (I just wish both of them shared code...).
 
 ## Authors
 

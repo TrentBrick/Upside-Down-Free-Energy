@@ -18,14 +18,14 @@ class SortedBuffer:
         self.obs_buf = None
         #self.obs2_buf= None
         self.act_buf= None
-        #self.rew_buf= None
+        #self.desire_buf= None
         self.cum_rew= None
         self.horizon= None
         self.rollout_length = None
         self.final_obs = None
         self.buffer_dict = dict(obs=self.obs_buf, #obs2=self.obs2_buf, 
                                 act=self.act_buf, 
-                                rew=self.rew_buf,
+                                desire=self.desire_buf,
                                 cum_rew=self.cum_rew, horizon=self.horizon, 
                                 rollout_length=self.rollout_length, 
                                 final_obs=self.final_obs)
@@ -107,17 +107,39 @@ class RingBuffer:
     # Taken from OpenAI spinning up. 
     """
 
-    def __init__(self, obs_dim, act_dim, size):
+    def __init__(self, obs_dim, act_dim, size, use_td_lambda_buf=False):
         self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
+        #self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         if act_dim==1:
             self.act_buf = np.zeros(size, dtype=np.float32)
         else: 
             self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
-        self.rew_buf = np.zeros(size, dtype=np.float32)
-        self.cum_rew = np.zeros(size, dtype=np.float32)
+        self.desire_buf = np.zeros(size, dtype=np.float32)
+        #self.cum_rew = np.zeros(size, dtype=np.float32)
         self.final_obs = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         #self.terminal_buf = np.zeros(size, dtype=np.float32)
+
+        self.buf_list = [self.obs_buf, #self.obs2_buf, 
+                                self.desire_buf,
+                                self.act_buf, 
+                                #self.cum_rew, 
+                                #self.final_obs
+                                ]
+
+        self.value_names = ['obs', 
+                                #'obs2', 
+                                'desire', 
+                                'act', 
+                                #'cum_rew', 
+                                #'final_obs'
+                                ]
+
+        self.use_td_lambda_buf = use_td_lambda_buf
+        if self.use_td_lambda_buf:
+            self.td_lambda_buf = np.zeros(size, dtype=np.float32)
+            self.buf_list.append(self.td_lambda_buf)
+            self.value_names.append('td_lambda')
+
         self.ptr, self.size, self.max_size = 0, 0, size
         self.total_num_steps_added = 0
 
@@ -126,11 +148,8 @@ class RingBuffer:
             iters_adding = len(rollout['terminal'])
             self.total_num_steps_added += iters_adding
 
-            for np_buf, key in zip([self.obs_buf, self.obs2_buf, 
-                                self.rew_buf,
-                                self.act_buf, 
-                                self.cum_rew, self.final_obs],
-                                ['obs', 'obs2', 'rew', 'act', 'cum_rew', 'final_obs'] ):
+            for np_buf, key in zip(self.buf_list,
+                                self.value_names ):
                 
                 if (self.ptr+iters_adding)>self.max_size:
                     amount_pre_loop = self.max_size-self.ptr
@@ -155,13 +174,20 @@ class RingBuffer:
         if idxs is None:
             idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
-                     obs2=self.obs2_buf[idxs],
+                     #obs2=self.obs2_buf[idxs],
                      act=self.act_buf[idxs],
-                     rew=self.rew_buf[idxs],
+                     desire=self.desire_buf[idxs],
                      #terminal=self.terminal_buf[idxs],
-                     cum_rew=self.cum_rew[idxs],
-                     final_obs=self.final_obs[idxs])
+                     #cum_rew=self.cum_rew[idxs],
+                     #final_obs=self.final_obs[idxs]
+                     )
+        if self.use_td_lambda_buf:
+            batch['td_lambda'] = self.td_lambda_buf[idxs]
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
+
+
+######## OLD buffers no longer in use!
+
 
 class ReplayBuffer:
     def __init__(self, max_size, seed, batch_size, num_grad_steps):

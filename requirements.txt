@@ -5,3 +5,5 @@ box2d
 tqdm
 numpy
 ray
+pytorch-lightning
+tensorboard
