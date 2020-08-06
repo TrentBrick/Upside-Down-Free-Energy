@@ -78,6 +78,8 @@ def main(args):
         ############ this here is important! 
         use_Levine_model = True, 
         use_advantage = True,  
+        # TODO: ensure lambda TD doesnt get stale. 
+        use_lambda_td = True, 
         desire_states = False 
     )
     if not constants['use_Levine_model']:
@@ -194,10 +196,10 @@ def main(args):
         if Levine_Implementation:
             train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
-                size=config['max_buffer_size'], use_td_lambda_buf=config['use_advantage'])
+                size=config['max_buffer_size'], use_td_lambda_buf=config['use_lambda_td'])
             test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
-                size=config['batch_size']*10, use_td_lambda_buf=config['use_advantage'])
+                size=config['batch_size']*10, use_td_lambda_buf=config['use_lambda_td'])
         else:
             config['max_buffer_size'] *= env_params['avg_episode_length']
             train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'] )

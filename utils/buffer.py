@@ -106,7 +106,6 @@ class RingBuffer:
     A simple FIFO experience replay buffer for DDPG agents.
     # Taken from OpenAI spinning up. 
     """
-
     def __init__(self, obs_dim, act_dim, size, use_td_lambda_buf=False):
         self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         #self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
@@ -117,7 +116,7 @@ class RingBuffer:
         self.desire_buf = np.zeros(size, dtype=np.float32)
         #self.cum_rew = np.zeros(size, dtype=np.float32)
         self.final_obs = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        #self.terminal_buf = np.zeros(size, dtype=np.float32)
+        #self.terminal_buf = np.zeros(size, dtype=np.int8)
 
         self.buf_list = [self.obs_buf, #self.obs2_buf, 
                                 self.desire_buf,
@@ -134,14 +133,37 @@ class RingBuffer:
                                 #'final_obs'
                                 ]
 
-        '''self.use_td_lambda_buf = use_td_lambda_buf
+        self.use_td_lambda_buf = use_td_lambda_buf
         if self.use_td_lambda_buf:
-            self.td_lambda_buf = np.zeros(size, dtype=np.float32)
-            self.buf_list.append(self.td_lambda_buf)
-            self.value_names.append('td_lambda')'''
+            self.rollout_end_ind_buf = np.zeros(size, dtype=np.int32)
+            self.raw_rew_buf = np.zeros(size, dtype=np.float32)
+            
+            self.buf_list.append(self.raw_rew_buf)
+            self.value_names.append('raw_rew')
 
         self.ptr, self.size, self.max_size = 0, 0, size
         self.total_num_steps_added = 0
+
+    def retrieve_path(self, start_index):
+        end_index = self.rollout_end_ind_buf[start_index]
+        if end_index<= start_index:
+            # we have looping
+            obs = np.concatenate( [self.obs_buf[start_index:], self.obs_buf[:end_index]], axis=0)
+            rew = np.concatenate( [self.raw_rew_buf[start_index:], self.raw_rew_buf[:end_index]], axis=0)
+        else: 
+            obs = self.obs_buf[start_index:end_index]
+            rew = self.raw_rew_buf[start_index:end_index]
+
+        return torch.as_tensor(obs, dtype=torch.float32), torch.as_tensor(rew, dtype=torch.float32)
+
+    def add_to_buffer(self,np_buf, iters_adding, data ):
+        if (self.ptr+iters_adding)>self.max_size:
+            amount_pre_loop = self.max_size-self.ptr
+            amount_post_loop = iters_adding-amount_pre_loop
+            np_buf[self.ptr:] = data[:amount_pre_loop]
+            np_buf[:amount_post_loop] = data[amount_pre_loop:]
+        else: 
+            np_buf[self.ptr:self.ptr+iters_adding] = data
 
     def add_rollouts(self, list_of_rollout_dicts):
         for rollout in list_of_rollout_dicts:
@@ -150,14 +172,13 @@ class RingBuffer:
 
             for np_buf, key in zip(self.buf_list,
                                 self.value_names ):
+                self.add_to_buffer(np_buf, iters_adding, rollout[key])
                 
-                if (self.ptr+iters_adding)>self.max_size:
-                    amount_pre_loop = self.max_size-self.ptr
-                    amount_post_loop = iters_adding-amount_pre_loop
-                    np_buf[self.ptr:] = rollout[key][:amount_pre_loop]
-                    np_buf[:amount_post_loop] = rollout[key][amount_pre_loop:]
-                else: 
-                    np_buf[self.ptr:self.ptr+iters_adding] = rollout[key]
+            if self.use_td_lambda_buf:
+                end_ind = int((self.ptr+iters_adding) % self.max_size)
+                assert end_ind >=0
+                end_ind = np.repeat(end_ind, iters_adding)
+                self.add_to_buffer(self.rollout_end_ind_buf, iters_adding, end_ind)
 
             self.ptr = (self.ptr+iters_adding) % self.max_size
             self.size = min(self.size+iters_adding, self.max_size)
@@ -181,8 +202,10 @@ class RingBuffer:
                      #cum_rew=self.cum_rew[idxs],
                      #final_obs=self.final_obs[idxs]
                      )
-        #if self.use_td_lambda_buf:
-        #    batch['td_lambda'] = self.td_lambda_buf[idxs]
+        if self.use_td_lambda_buf:
+            batch['start_index'] = idxs
+            batch['rollout_end_ind'] = self.rollout_end_ind_buf[idxs]
+            batch['raw_rew'] = self.raw_rew_buf[idxs]
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 

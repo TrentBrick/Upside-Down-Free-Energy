@@ -316,14 +316,11 @@ class Agent:
                 # rewards to go here for levine
                 if k =='rew':
                     if self.advantage_model:
+                        rollout_dict['raw_rew'] = np.asarray(rollout_dict[k]) # need for TD lambda
+
                         # computing the TD(lambda) advantage values
                         # do this before the rewards are set as being discounted. 
-                        temp = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
-                        rollout_dict['v_func_target'] = temp
-                        rollout_dict['desire'] = temp
-                        '''self.advantage_model.calculate_lambda_target(torch.Tensor(rollout_dict['obs']), 
-                                                            torch.Tensor(rollout_dict['rew']), discount_cumsum(np.asarray(rollout_dict['rew']), self.discount_factor),
-                                                            self.discount_factor, self.td_lambda)'''
+                        rollout_dict['desire'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
                         to_desire = rollout_dict['desire'][0] 
                     else: 
                         # discounted rewards to go. 

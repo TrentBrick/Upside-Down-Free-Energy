@@ -29,6 +29,9 @@ class LightningTemplate(pl.LightningModule):
         self.test_buffer = test_buffer
         self.mean_reward_over_20_epochs = []
 
+        # init the desired stats. 
+        self.desired_reward_stats = (-10000000, -10000000)
+
         if self.hparams['use_Levine_model']:
             self.model = UpsdModel(self.hparams['STORED_STATE_SIZE'], 
             self.hparams['desires_size'], 
@@ -136,13 +139,9 @@ class LightningTemplate(pl.LightningModule):
             self.desired_horizon = None
             # Beta is 1. Otherwise would appear in the log sum exp here. 
             if self.hparams['use_advantage']:
-                #print("to desire is:", to_desire, len(to_desire))
-                # sample from all of the advantages in the FIFO! 
-                print("max advantage in the buffer iss:", self.train_buffer.desire_buf[:self.train_buffer.size].max())
-                self.desired_reward_stats = (np.max(self.train_buffer.desire_buf[:self.train_buffer.size]), np.std(self.train_buffer.desire_buf[:self.train_buffer.size]))
-                #self.desired_reward_stats = (np.log(np.sum(np.exp(self.train_buffer.desire_buf[:self.train_buffer.size]))), np.std(self.train_buffer.desire_buf[:self.train_buffer.size]))
-                #self.desired_reward_stats = (np.log(np.sum(np.exp( self.train_buffer.rew_buf ))), np.std(self.train_buffer.rew_buf)  )
-                #self.desired_reward_stats = (1.0, 0.5)
+                # doing all of this inside of training step where I am 
+                # already computing the advantage!
+                pass
             else: 
                 # TODO: get all of the starting discounted values from the whole buffer. 
                 # not just the most recent values. 
@@ -181,6 +180,9 @@ class LightningTemplate(pl.LightningModule):
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
 
+        # reset the desired stats.
+        self.desired_reward_stats = (-10000000, -10000000)
+
     def training_step(self, batch, batch_idx):
         # run training on this data
         if self.Levine_Implementation: 
@@ -199,18 +201,60 @@ class LightningTemplate(pl.LightningModule):
 
         if self.hparams['use_advantage']:
             if batch_idx%self.hparams['val_func_update_iterval']==0: 
-                pred_vals = self.advantage_model.forward(obs).squeeze()
-                #print('adv loss: pred vs real. ', pred_vals[0], des[0])
-                # des here is TD lambda as modified and set by the agent. 
-                adv_loss = F.mse_loss(pred_vals, des, reduction='none').mean(dim=0)
+                if self.hparams['use_lambda_td']:
+
+                    # randomly sample indices from the buffer
+                    # TODO: set the number of indices to sample from here. 
+                    # NOTE: the number of values going into the NN will be changing. 
+                    idxs = np.random.randint(0, self.train_buffer.size, 4)
+
+                    obs_paths, td_lambda_paths = [], []
+                    for idx in idxs: 
+                        path_obs, path_rew = self.train_buffer.retrieve_path(idx)
+                        path_obs = self.advantage_model.forward(path_obs).squeeze()
+                        # compute TD lambda for this path: 
+                        if len(path_obs.shape)==0:
+                            path_obs = path_obs.unsqueeze(0)
+                            td_lambda_target = path_rew
+                        else: 
+                            td_lambda_target = self.advantage_model.calculate_lambda_target(path_obs.detach(), path_rew,
+                                                                self.hparams['discount_factor'], 
+                                                                self.hparams['td_lambda'])
+                        obs_paths.append(path_obs)
+                        td_lambda_paths.append(td_lambda_target)
+                    obs_paths = torch.cat(obs_paths, dim=0)
+                    td_lambda_paths = torch.cat(td_lambda_paths, dim=0)
+
+                    #pred_vals = self.advantage_model.forward(obs_paths).squeeze()
+                    adv_loss = F.mse_loss(obs_paths, td_lambda_paths, reduction='none').mean(dim=0)
+
+                    # to use for the calcs below. 
+                    with torch.no_grad(): pred_vals = self.advantage_model.forward(obs).squeeze()
+
+                else: 
+                    pred_vals = self.advantage_model.forward(obs).squeeze()
+                    # need to compute all of the TD lambda losses right here. 
+                    #print('adv loss: pred vs real. ', pred_vals[0], des[0])
+                    # des here is TD lambda as modified and set by the agent. 
+                    adv_loss = F.mse_loss(pred_vals, des, reduction='none').mean(dim=0)
             else: 
                 with torch.no_grad(): pred_vals = self.advantage_model.forward(obs).squeeze()
 
             # need to compute this here to use the most up to date V(s)
             # des is the rewards to go. 
-            des = des - pred_vals # this is the advantage.
+            des = des - pred_vals.detach() # this is the advantage.
+
+            # clamping it to prevent the desires and advantages 
+            # from being too high. 
+            des = torch.clamp(des, max=50)
+
             desires[0] = des.unsqueeze(1)
-            #print("advantage in train desire:", des[0])
+
+            # set the desired rewards here 
+            max_adv = float(des.max().numpy())
+            if max_adv>= self.desired_reward_stats[0]:
+                self.desired_reward_stats = ( max_adv, float(des.std().numpy()) )
+                print("new max adv desired mu and std are:", self.desired_reward_stats)
 
         pred_action = self.model.forward(obs, desires)
 
