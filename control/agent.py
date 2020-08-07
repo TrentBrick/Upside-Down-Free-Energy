@@ -332,7 +332,7 @@ class Agent:
             # setting cum_rew to be the first reward to go. This is equivalent to the cum reward 
             # but accounts too for any discounting factor.
 
-            rollout_dict['cum_rew'] = np.repeat(rollout_dict['desire'][0], time)
+            rollout_dict['cum_rew'] = np.repeat(cumulative, time)
             rollout_dict['rollout_length'] = np.repeat(time, time)
             rollout_dict['horizon'] = time - np.arange(0, time) 
             rollout_dict['final_obs'] = np.repeat(np.expand_dims(rollout_dict['obs'][-1],0), time, axis=0)

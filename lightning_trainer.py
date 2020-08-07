@@ -108,7 +108,6 @@ class LightningTemplate(pl.LightningModule):
                 desired_reward_stats = self.desired_reward_stats, 
                 desired_horizon = self.desired_horizon,
                 desired_state = self.desired_state,
-                #beta_reward_weighting=self.hparams['beta_reward_weighting'],
                 discount_factor=self.hparams['discount_factor'], 
                 advantage_model=self.advantage_model,
                 td_lambda=self.hparams['td_lambda'])
@@ -144,8 +143,15 @@ class LightningTemplate(pl.LightningModule):
                 pass
             else: 
                 # TODO: get all of the starting discounted values from the whole buffer. 
-                # not just the most recent values. 
-                self.desired_reward_stats = (np.log(np.sum(np.exp(to_desire))), np.std(to_desire))
+                # not just the most recent values.
+                if self.hparams['desire_cum_rew']: 
+                    self.desired_reward_stats = [np.max(self.train_buffer.cum_rew[:self.train_buffer.size]), np.std(self.train_buffer.cum_rew[:self.train_buffer.size])]
+                else: 
+                    self.desired_reward_stats = [np.max(to_desire), np.std(to_desire)]
+
+                if self.hparams['desire_mu_minus_std']:
+                    self.desired_reward_stats[0] = self.desired_reward_stats[0]-self.desired_reward_stats[1]
+
             self.desired_state = np.unique(self.train_buffer.final_obs).mean(axis=0) # take the mean or sample from everything. 
         else: 
             # TODO: return mean and std to sample from the desired states. 
@@ -188,7 +194,12 @@ class LightningTemplate(pl.LightningModule):
         if self.Levine_Implementation: 
             # TODO: input final obs here. it will be fine as the model knows when to ignore it. 
             # desire here is the discounted rewards to go. 
-            obs, act, des = batch['obs'], batch['act'], batch['desire']
+            obs, act = batch['obs'], batch['act']
+            if self.hparams['desire_cum_rew']:
+                 des = batch['cum_rew']
+            else: 
+                des = batch['desire']
+            
             if self.hparams['desire_states']:
                 raise Exception("Still need to implement this. ")
             else: 
@@ -201,8 +212,8 @@ class LightningTemplate(pl.LightningModule):
 
         if self.hparams['use_advantage']:
             if batch_idx%self.hparams['val_func_update_iterval']==0: 
-                if self.hparams['use_lambda_td']:
 
+                if self.hparams['use_lambda_td']:
                     # randomly sample indices from the buffer
                     # TODO: set the number of indices to sample from here. 
                     # NOTE: the number of values going into the NN will be changing. 
@@ -261,6 +272,7 @@ class LightningTemplate(pl.LightningModule):
         if not self.hparams['continuous_actions']:
             #pred_action = torch.sigmoid(pred_action)
             act = act.squeeze().long()
+
         pred_loss = self._pred_loss(pred_action, act)
         if self.hparams['Levine_Implementation'] and self.hparams['weight_loss']:
             des = (des - des.mean()) / des.std()

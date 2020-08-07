@@ -74,13 +74,15 @@ def main(args):
         # TODO: actually implement this!
         antithetic = False,
         Levine_Implementation=Levine_Implementation,
-        num_val_batches = 5,
+        num_val_batches = 2,
         ############ this here is important! 
         use_Levine_model = True, 
-        use_advantage = True,  
+        use_advantage = False,  
         # TODO: ensure lambda TD doesnt get stale. 
-        use_lambda_td = True, 
-        desire_states = False 
+        use_lambda_td = False, 
+        desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
+        desire_states = False,
+        desire_mu_minus_std = True  
     )
     if not constants['use_Levine_model']:
         assert constants['use_advantage'] is False, "Use advantage must be turned off for now. "

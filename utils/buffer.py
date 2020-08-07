@@ -114,14 +114,14 @@ class RingBuffer:
         else: 
             self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
         self.desire_buf = np.zeros(size, dtype=np.float32)
-        #self.cum_rew = np.zeros(size, dtype=np.float32)
+        self.cum_rew = np.zeros(size, dtype=np.float32)
         self.final_obs = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         #self.terminal_buf = np.zeros(size, dtype=np.int8)
 
         self.buf_list = [self.obs_buf, #self.obs2_buf, 
                                 self.desire_buf,
                                 self.act_buf, 
-                                #self.cum_rew, 
+                                self.cum_rew, 
                                 #self.final_obs
                                 ]
 
@@ -129,7 +129,7 @@ class RingBuffer:
                                 #'obs2', 
                                 'desire', 
                                 'act', 
-                                #'cum_rew', 
+                                'cum_rew', 
                                 #'final_obs'
                                 ]
 
@@ -199,7 +199,7 @@ class RingBuffer:
                      act=self.act_buf[idxs],
                      desire=self.desire_buf[idxs],
                      #terminal=self.terminal_buf[idxs],
-                     #cum_rew=self.cum_rew[idxs],
+                     cum_rew=self.cum_rew[idxs],
                      #final_obs=self.final_obs[idxs]
                      )
         if self.use_td_lambda_buf:
