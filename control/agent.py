@@ -51,12 +51,9 @@ class Agent:
         model = None, 
         desire_scalings=None, 
         take_rand_actions = False,
-        desired_reward_stats=(1,1),
-        desired_horizon = 250,
-        desired_state = None, 
+        desire_dict = None, 
         delta_state = False, 
         Levine_Implementation = False, 
-        #desired_reward_dist_beta = 1.0,
         discount_factor=1.0, model_version = 'checkpoint',
         return_plan_images=False,
         advantage_model=None, 
@@ -71,11 +68,10 @@ class Agent:
         self.Levine_Implementation = Levine_Implementation
         self.advantage_model = advantage_model
 
-        self.desired_state = desired_state
+        self.desire_dict = desire_dict
         self.delta_state = delta_state
         self.td_lambda = td_lambda
             
-        self.desired_rew_mu, self.desired_rew_std, self.desired_horizon = desired_reward_stats[0], desired_reward_stats[1], desired_horizon
         if self.Levine_Implementation:
             print('the desired stats for mu and std are:', desired_reward_stats)
             self.desired_reward_dist = Normal(self.desired_rew_mu, 
@@ -153,7 +149,7 @@ class Agent:
             obs = self.env.render(mode='rgb_array')
             #self.env.viewer.window.dispatch_events()
 
-        # sample a desired reward
+        # sample a desired reward for this rollout! 
         if not self.take_rand_actions:
             if self.Levine_Implementation:
                 #curr_desired_reward = torch.Tensor([np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)])
@@ -316,8 +312,8 @@ class Agent:
                         rollout_dict['raw_rew'] = np.asarray(rollout_dict[k]) # need for TD lambda
 
                     # discounted rewards to go
-                    rollout_dict['desire'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
-                    to_desire = rollout_dict['desire'][0]
+                    rollout_dict['discounted_rew_to_go'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
+                    to_desire = rollout_dict['discounted_rew_to_go'][0]
                 else: 
                     rollout_dict[k] = np.asarray(rollout_dict[k])
                     
@@ -331,7 +327,7 @@ class Agent:
             #print('rollout final obs is:', rollout_dict['final_obs'].shape )
             # so that the horizon is always 1 away
             #print(rollout_dict['final_obs'], rollout_dict['horizon'], rollout_dict['cum_rew'])
-            #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['desire']), len(rollout_dict['terminal']) )
+            #print('lenghts of things being added:', time, len(rollout_dict['cum_rew']), len(rollout_dict['horizon']), len(rollout_dict['discounted_rew_to_go']), len(rollout_dict['terminal']) )
             # discounted cumulative!
             return cumulative, to_desire, time, rollout_dict # passed back to simulate. 
         else: 

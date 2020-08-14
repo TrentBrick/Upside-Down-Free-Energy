@@ -76,53 +76,53 @@ def main(args):
         ############ These here are important!
         Levine_Implementation=False, 
         exp_weight_losses = True,
-        use_Levine_model = False, 
-        desire_advantage = False,  
+        use_Levine_model = True, 
+        use_Levine_buffer = False, 
         # TODO: ensure lambda TD doesnt get stale. 
         use_lambda_td = False, 
         clamp_adv_to_max = False, 
         desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
-        
         # get these to be swappable and workable. 
-        desire_cum_and_rew_to_go = False,
-        desire_time = False,
-
+        desire_discounted_rew_to_go = False,
+        desire_advantage = False,  
+        desire_horizon = False,
         desire_states = False,
         desire_mu_minus_std = False  
     )
+    if constants['use_Levine_buffer']:
+        constants['max_buffer_size'] = 100000
+    else: 
+        constants['max_buffer_size'] = 500, #tune.choice([300, 400, 500, 600, 700]),
+        constants['last_few'] = 25, #tune.choice([25, 75]),
+    
     if not constants['use_Levine_model']:
         assert constants['desire_advantage'] is False, "Use advantage must be turned off for now. "
-    # accounts for rewards and/or time too. 
-    additional_desires = 1 if constants['Levine_Implementation'] else 2
-    if constants['desire_cum_and_rew_to_go']: additional_desires += 1
-    if constants['desire_states']: additional_desires += env_params['STORED_STATE_SIZE']
-    constants['desires_size'] = additional_desires
+
+    desires_size = 0
+    for key in ['desire_discounted_rew_to_go',
+    'desire_cum_rew', 'desire_horizon', 'desire_advantage']:
+        desires_size+= constants[key]
+
+    if constants['desire_states']: 
+        desires_size += env_params['STORED_STATE_SIZE']
+
+    constants['desires_size'] = desires_size
+     # actual size accounting for the STORED STATE SIZE too
 
     if constants['Levine_Implementation']:
         config= dict(
-            lr=0.001,
             batch_size = 256,
-            max_buffer_size = 100000,
             discount_factor = 0.99,
             beta_reward_weighting = 1.0, 
             max_loss_weighting = 20
         )
-        if constants['desire_cum_rew']:
-            constants['discount_factor'] = 1.0 
-
-        '''if constants['desire_advantage']:
-            #if constants['norm_advantage']:
-            config['beta_reward_weighting'] = 1.0 # because of advantage norm.
-            #else: 
-            #    config['beta_reward_weighting'] = 0.05
-            config['max_loss_weighting'] = 20'''
+        if constants['desire_cum_rew'] and constants['desire_discounted_rew_to_go']:
+            # this is so that I can anneal the rewards to go over time. and have it be fine. 
+            config['discount_factor']=1.0
     else: 
         config= dict(
             batch_size = 768, #tune.choice([512, 768, 1024, 1536, 2048]),
-            max_buffer_size = 500, #tune.choice([300, 400, 500, 600, 700]),
-            state_scale = 1.0,
             discount_factor = 1.0,
-            last_few = 25, #tune.choice([25, 75]),
         )
         
     if constants['use_Levine_model']:
@@ -139,6 +139,7 @@ def main(args):
             desire_scalings =True,
             horizon_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
             reward_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
+            state_scale = 1.0,
             num_grad_steps = 100
             #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
             #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
@@ -208,7 +209,7 @@ def main(args):
 
     def run_lightning(config):
 
-        if constants['Levine_Implementation']:
+        if constants['use_Levine_buffer']:
             train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
                 size=config['max_buffer_size'], use_td_lambda_buf=config['use_lambda_td'])

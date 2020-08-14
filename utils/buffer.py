@@ -18,14 +18,14 @@ class SortedBuffer:
         self.obs_buf = None
         #self.obs2_buf= None
         self.act_buf= None
-        self.desire_buf= None
+        self.discounted_rew_to_go_buf= None
         self.cum_rew= None
         self.horizon= None
         self.rollout_length = None
         self.final_obs = None
         self.buffer_dict = dict(obs=self.obs_buf, #obs2=self.obs2_buf, 
                                 act=self.act_buf, 
-                                desire=self.desire_buf,
+                                discounted_rew_to_go=self.discounted_rew_to_go_buf,
                                 cum_rew=self.cum_rew, horizon=self.horizon, 
                                 rollout_length=self.rollout_length, 
                                 final_obs=self.final_obs)
@@ -112,13 +112,13 @@ class RingBuffer:
             self.act_buf = np.zeros(size, dtype=np.float32)
         else: 
             self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
-        self.desire_buf = np.zeros(size, dtype=np.float32)
+        self.discounted_rew_to_go_buf = np.zeros(size, dtype=np.float32)
         self.cum_rew = np.zeros(size, dtype=np.float32)
         self.final_obs = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         #self.terminal_buf = np.zeros(size, dtype=np.int8)
 
         self.buf_list = [self.obs_buf, #self.obs2_buf, 
-                                self.desire_buf,
+                                self.discounted_rew_to_go_buf,
                                 self.act_buf, 
                                 self.cum_rew, 
                                 #self.final_obs
@@ -126,7 +126,7 @@ class RingBuffer:
 
         self.value_names = ['obs', 
                                 #'obs2', 
-                                'desire', 
+                                'discounted_rew_to_go', 
                                 'act', 
                                 'cum_rew', 
                                 #'final_obs'
@@ -196,7 +196,7 @@ class RingBuffer:
         batch = dict(obs=self.obs_buf[idxs],
                      #obs2=self.obs2_buf[idxs],
                      act=self.act_buf[idxs],
-                     desire=self.desire_buf[idxs],
+                     discounted_rew_to_go=self.discounted_rew_to_go_buf[idxs],
                      #terminal=self.terminal_buf[idxs],
                      cum_rew=self.cum_rew[idxs],
                      #final_obs=self.final_obs[idxs]
