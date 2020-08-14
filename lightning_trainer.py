@@ -16,7 +16,7 @@ class LightningTemplate(pl.LightningModule):
     def __init__(self, game_dir, hparams, train_buffer, test_buffer):
         super().__init__()
 
-        '''if hparams['use_advantage']:
+        '''if hparams['desire_advantage']:
             self.training_step = self.training_step_multi_model
             self.optimizer_step = self.optimizer_step_multi
         else: 
@@ -48,7 +48,7 @@ class LightningTemplate(pl.LightningModule):
                 desires_scalings,
                 desire_states=self.hparams['desire_states'] )
 
-        if self.hparams['use_advantage']:
+        if self.hparams['desire_advantage']:
             self.advantage_model = AdvantageModel(self.hparams['STORED_STATE_SIZE'] )
         else: 
             self.advantage_model = None 
@@ -73,7 +73,7 @@ class LightningTemplate(pl.LightningModule):
         return self.model(state, command)
 
     def configure_optimizers(self):
-        if self.hparams['use_advantage']:
+        if self.hparams['desire_advantage']:
             opt = torch.optim.Adam( list(self.model.parameters())+list(self.advantage_model.parameters()) , lr=self.hparams['lr'])
         else:
             opt = torch.optim.Adam(self.model.parameters(), lr=self.hparams['lr'])
@@ -123,17 +123,17 @@ class LightningTemplate(pl.LightningModule):
         if self.Levine_Implementation:
             self.desired_horizon = None
             # Beta is 1. Otherwise would appear in the log sum exp here. 
-            if self.hparams['use_advantage']:
+            if self.hparams['desire_advantage']:
                 # doing all of this inside of training step where I am 
                 # already computing the advantage!
                 pass
             else: 
                 # TODO: get all of the starting discounted values from the whole buffer. 
                 # not just the most recent values.
-                if self.hparams['desire_cum_rew']: 
+                '''if self.hparams['desire_cum_rew']: 
                     self.desired_reward_stats = [np.max(self.train_buffer.cum_rew[:self.train_buffer.size]), np.std(self.train_buffer.cum_rew[:self.train_buffer.size])]
-                else: 
-                    self.desired_reward_stats = [np.max(to_desire), np.std(to_desire)]
+                else: '''
+                self.desired_reward_stats = [np.max(to_desire), np.std(to_desire)]
 
                 if self.hparams['desire_mu_minus_std']:
                     self.desired_reward_stats[0] = self.desired_reward_stats[0]-self.desired_reward_stats[1]
@@ -160,7 +160,7 @@ class LightningTemplate(pl.LightningModule):
             self.logger.experiment.add_scalars('desires', to_write, self.global_step)
             self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
-        if self.Levine_Implementation and self.hparams['use_advantage']:  
+        if self.Levine_Implementation and self.hparams['desire_advantage']:  
             # reset the desired stats. Important for Levine use advantage. 
             # do so after saving whatever had appeared before. 
             self.desired_reward_stats = (-10000000, -10000000)
@@ -198,7 +198,7 @@ class LightningTemplate(pl.LightningModule):
             desires = [des.unsqueeze(1), horizon.unsqueeze(1), final_obs]
             #print(desires[0].shape, desires[1].shape, desires[2].shape, desires[2] )
 
-        if self.hparams['use_advantage']:
+        if self.hparams['desire_advantage']:
             if batch_idx%self.hparams['val_func_update_iterval']==0: 
 
                 if self.hparams['use_lambda_td']:
@@ -263,17 +263,18 @@ class LightningTemplate(pl.LightningModule):
             act = act.squeeze().long()
 
         pred_loss = self._pred_loss(pred_action, act)
-        if self.hparams['Levine_Implementation'] and self.hparams['weight_loss']:
+        if self.hparams['Levine_Implementation'] and self.hparams['exp_weight_losses']:
+            print("pre weight norm", des[-1])
             des = (des - des.mean()) / des.std()
             #print('weights used ', torch.exp(des/beta_reward_weighting))
             loss_weighting = torch.clamp( torch.exp(des/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
-            #print('loss weights post clamp', loss_weighting[-1], 'the reward itself.', des[-1])
+            print('loss weights post clamp', loss_weighting[-1], 'the reward itself.', des[-1])
             pred_loss = pred_loss*loss_weighting
         pred_loss = pred_loss.mean(dim=0)
         logs = {"policy_loss": pred_loss}
 
         # learn the advantage function too by adding it to the loss if this is the correct iteration. 
-        if self.hparams['use_advantage'] and batch_idx%self.hparams['val_func_update_iterval']==0:
+        if self.hparams['desire_advantage'] and batch_idx%self.hparams['val_func_update_iterval']==0:
             pred_loss += adv_loss 
             logs["advantage_loss"] = adv_loss
             
@@ -290,7 +291,7 @@ class LightningTemplate(pl.LightningModule):
         batch_idx=0 # so that advantage_val_loss is always called. 
         train_dict = self.training_step(batch, batch_idx)
         train_dict['log']['policy_val_loss'] = train_dict['log'].pop('policy_loss')
-        if self.hparams['use_advantage']:
+        if self.hparams['desire_advantage']:
             train_dict['log']['advantage_val_loss'] = train_dict['log'].pop('advantage_loss')
         return train_dict['log'] 
 

@@ -315,20 +315,15 @@ class Agent:
                     if self.advantage_model:
                         rollout_dict['raw_rew'] = np.asarray(rollout_dict[k]) # need for TD lambda
 
-                        # computing the TD(lambda) advantage values
-                        # do this before the rewards are set as being discounted. 
-                        rollout_dict['desire'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
-                        to_desire = rollout_dict['desire'][0] 
-                    else: 
-                        # discounted rewards to go. 
-                        rollout_dict['desire'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
-                        to_desire = rollout_dict['desire'][0]
+                    # discounted rewards to go
+                    rollout_dict['desire'] = discount_cumsum(np.asarray(rollout_dict[k]), self.discount_factor)
+                    to_desire = rollout_dict['desire'][0]
                 else: 
                     rollout_dict[k] = np.asarray(rollout_dict[k])
+                    
             # repeat the cum reward up to length times. 
             # setting cum_rew to be the first reward to go. This is equivalent to the cum reward 
             # but accounts too for any discounting factor.
-
             rollout_dict['cum_rew'] = np.repeat(cumulative, time)
             rollout_dict['rollout_length'] = np.repeat(time, time)
             rollout_dict['horizon'] = time - np.arange(0, time) 

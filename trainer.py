@@ -47,8 +47,6 @@ def main(args):
     dir_rand_seed = np.random.randint(0,1000)
 
     assert args.num_workers <= cpu_count(), "Providing too many workers!" 
-
-    Levine_Implementation = True 
     if args.seed:
         print('Setting the random seed!!!')
         random.seed(args.seed)
@@ -60,6 +58,7 @@ def main(args):
 
     # Constants
     epochs = 2000
+    use_tune = False
     #training_rollouts_total = 20
     #training_rollouts_total//args.num_workers
     constants = dict(
@@ -73,73 +72,86 @@ def main(args):
         num_rand_action_rollouts = 10,
         # TODO: actually implement this!
         antithetic = False,
-        Levine_Implementation=Levine_Implementation,
         num_val_batches = 2,
-        ############ this here is important! 
-        use_Levine_model = True, 
-        use_advantage = False,  
+        ############ These here are important!
+        Levine_Implementation=False, 
+        exp_weight_losses = True,
+        use_Levine_model = False, 
+        desire_advantage = False,  
         # TODO: ensure lambda TD doesnt get stale. 
         use_lambda_td = False, 
         clamp_adv_to_max = False, 
         desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
+        
+        # get these to be swappable and workable. 
+        desire_cum_and_rew_to_go = False,
+        desire_time = False,
+
         desire_states = False,
-        desire_mu_minus_std = True  
+        desire_mu_minus_std = False  
     )
     if not constants['use_Levine_model']:
-        assert constants['use_advantage'] is False, "Use advantage must be turned off for now. "
-    # rewards and or time. 
-    additional_desires = 1 if Levine_Implementation else 2
-    if constants['desire_states']:
-        constants['desires_size'] = env_params['STORED_STATE_SIZE']+additional_desires
-    else: 
-        # TODO: account for time not just in Levine implementation. 
-        constants['desires_size'] = additional_desires
-    if Levine_Implementation:
+        assert constants['desire_advantage'] is False, "Use advantage must be turned off for now. "
+    # accounts for rewards and/or time too. 
+    additional_desires = 1 if constants['Levine_Implementation'] else 2
+    if constants['desire_cum_and_rew_to_go']: additional_desires += 1
+    if constants['desire_states']: additional_desires += env_params['STORED_STATE_SIZE']
+    constants['desires_size'] = additional_desires
+
+    if constants['Levine_Implementation']:
         config= dict(
             lr=0.001,
             batch_size = 256,
             max_buffer_size = 100000,
             discount_factor = 0.99,
             beta_reward_weighting = 1.0, 
-            max_loss_weighting = 20, 
-            weight_loss = True,
-            desire_scalings =None,
-            num_grad_steps = 1000,
-            hidden_sizes = [128,128,64]
+            max_loss_weighting = 20
         )
-        '''if constants['use_advantage']:
+        if constants['desire_cum_rew']:
+            constants['discount_factor'] = 1.0 
+
+        '''if constants['desire_advantage']:
             #if constants['norm_advantage']:
             config['beta_reward_weighting'] = 1.0 # because of advantage norm.
             #else: 
             #    config['beta_reward_weighting'] = 0.05
             config['max_loss_weighting'] = 20'''
-
     else: 
         config= dict(
-        lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
-        batch_size = 768, #tune.choice([512, 768, 1024, 1536, 2048]),
-        max_buffer_size = 500, #tune.choice([300, 400, 500, 600, 700]),
-        state_scale = 1.0,
-        horizon_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
-        reward_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
-        discount_factor = 1.0,
-        last_few = 25, #tune.choice([25, 75]),
-        beta_reward_weighting=1,
-        num_grad_steps = 100,#tune.choice([100, 150, 200, 250, 300])
-        hidden_sizes = [32, 64,64,64] #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
-        #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
+            batch_size = 768, #tune.choice([512, 768, 1024, 1536, 2048]),
+            max_buffer_size = 500, #tune.choice([300, 400, 500, 600, 700]),
+            state_scale = 1.0,
+            discount_factor = 1.0,
+            last_few = 25, #tune.choice([25, 75]),
         )
-        # TODO: do I need to provide seeds to the buffer like this? 
         
-    # TODO: do I need to scale different parts of this differently? 
-    if config['desire_scalings']:
-        config['state_scale'] = np.repeat(config['state_scale'], env_params['STORED_STATE_SIZE']).tolist()
+    if constants['use_Levine_model']:
+        model_params = dict(
+            lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
+            hidden_sizes = [128,128,64],
+            desire_scalings =False,
+            num_grad_steps = 1000
+        )
+    else: 
+        model_params = dict(
+            lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
+            hidden_sizes = [32,64,64,64],
+            desire_scalings =True,
+            horizon_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
+            reward_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
+            num_grad_steps = 100
+            #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
+            #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
+        )
 
     config.update(constants) 
     config.update(env_params)
-    config.update(vars(args))
+    config.update(model_params)
+    config.update(vars(args))   
 
-    use_tune = False   
+    # TODO: do I need to scale different parts of this differently? 
+    if config['desire_scalings']:
+        config['state_scale'] = np.repeat(config['state_scale'], env_params['STORED_STATE_SIZE']).tolist()
 
     # for plotting example horizons. Useful with VAE:
     '''if env_params['use_vae']:
@@ -196,7 +208,7 @@ def main(args):
 
     def run_lightning(config):
 
-        if Levine_Implementation:
+        if constants['Levine_Implementation']:
             train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
                 size=config['max_buffer_size'], use_td_lambda_buf=config['use_lambda_td'])

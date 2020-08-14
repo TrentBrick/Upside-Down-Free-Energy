@@ -18,7 +18,7 @@ class SortedBuffer:
         self.obs_buf = None
         #self.obs2_buf= None
         self.act_buf= None
-        #self.desire_buf= None
+        self.desire_buf= None
         self.cum_rew= None
         self.horizon= None
         self.rollout_length = None
@@ -44,7 +44,7 @@ class SortedBuffer:
             
             self.num_steps = min(self.num_steps+len_rollout, self.max_num_steps)
             
-            if self.buffer_dict['terminal'] is not None:
+            if self.buffer_dict['obs'] is not None:
                 # find where everything from this rollout should be inserted into 
                 # each of the numpy buffers. Uses the cumulative/terminal rewards
                 # minus so that highest values are at the front. 
@@ -89,7 +89,7 @@ class SortedBuffer:
     def __getitem__(self, idx):
         # turn this into a random value!
         #rand_ind = np.random.randint(0,self.num_steps) # up to current max size. 
-        return self.sample_batch(idx)
+        return self.sample_batch(idxs=idx)
 
     def __len__(self):
         return self.num_steps #self.num_batches_per_epoch
@@ -97,8 +97,7 @@ class SortedBuffer:
     def sample_batch(self, idxs=None, batch_size=256):
         if idxs is None:
             idxs = np.random.randint(0, self.num_steps, size=batch_size)
-        batch = {key:torch.as_tensor(arr[idxs],dtype=torch.float32) for key, arr in self.buffer_dict.items()}
-        return batch 
+        return {key:torch.as_tensor(arr[idxs],dtype=torch.float32) for key, arr in self.buffer_dict.items()}
 
 
 class RingBuffer:
