@@ -72,20 +72,6 @@ class LightningTemplate(pl.LightningModule):
     def forward(self,state, command):
         return self.model(state, command)
 
-    '''def optimizer_step_multi(self, current_epoch, batch_nb, optimizer, 
-        optimizer_i, second_order_closure=None, on_tpu=False, 
-        using_native_amp=False, using_lbfgs=False):
-
-        if optimizer_i == 1: # for the 2nd optimizer which is the 
-            # advantage function, only update it every 
-            # 5th step, ie 200 grad updates each round. 
-            if batch_nb % 5 == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-        else: 
-            optimizer.step()
-            optimizer.zero_grad()'''
-
     def configure_optimizers(self):
         if self.hparams['use_advantage']:
             opt = torch.optim.Adam( list(self.model.parameters())+list(self.advantage_model.parameters()) , lr=self.hparams['lr'])
@@ -174,6 +160,11 @@ class LightningTemplate(pl.LightningModule):
             self.logger.experiment.add_scalars('desires', to_write, self.global_step)
             self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
+        if self.Levine_Implementation and self.hparams['use_advantage']:  
+            # reset the desired stats. Important for Levine use advantage. 
+            # do so after saving whatever had appeared before. 
+            self.desired_reward_stats = (-10000000, -10000000)
+
     def on_epoch_end(self):
         # create new rollouts using stochastic actions. 
         output = self.collect_rollouts(num_episodes=self.hparams['training_rollouts_per_worker'])
@@ -185,9 +176,6 @@ class LightningTemplate(pl.LightningModule):
             output = self.collect_rollouts(greedy=True, num_episodes=self.hparams['eval_episodes'])
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
-
-        # reset the desired stats. Important for Levine use advantage. 
-        self.desired_reward_stats = (-10000000, -10000000)
 
     def training_step(self, batch, batch_idx):
         # run training on this data
@@ -279,7 +267,7 @@ class LightningTemplate(pl.LightningModule):
             des = (des - des.mean()) / des.std()
             #print('weights used ', torch.exp(des/beta_reward_weighting))
             loss_weighting = torch.clamp( torch.exp(des/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
-            print('loss weights post clamp', loss_weighting[-1], 'the reward itself.', des[-1])
+            #print('loss weights post clamp', loss_weighting[-1], 'the reward itself.', des[-1])
             pred_loss = pred_loss*loss_weighting
         pred_loss = pred_loss.mean(dim=0)
         logs = {"policy_loss": pred_loss}

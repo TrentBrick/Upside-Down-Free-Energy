@@ -77,13 +77,13 @@ def main(args):
         num_val_batches = 2,
         ############ this here is important! 
         use_Levine_model = True, 
-        use_advantage = True,  
+        use_advantage = False,  
         # TODO: ensure lambda TD doesnt get stale. 
-        use_lambda_td = True, 
+        use_lambda_td = False, 
         clamp_adv_to_max = False, 
-        desire_cum_rew = False, # mutually exclusive to discounted rewards to go. 
+        desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
         desire_states = False,
-        desire_mu_minus_std = False  
+        desire_mu_minus_std = True  
     )
     if not constants['use_Levine_model']:
         assert constants['use_advantage'] is False, "Use advantage must be turned off for now. "
@@ -107,12 +107,12 @@ def main(args):
             num_grad_steps = 1000,
             hidden_sizes = [128,128,64]
         )
-        if constants['use_advantage']:
+        '''if constants['use_advantage']:
             #if constants['norm_advantage']:
             config['beta_reward_weighting'] = 1.0 # because of advantage norm.
             #else: 
             #    config['beta_reward_weighting'] = 0.05
-            config['max_loss_weighting'] = 20
+            config['max_loss_weighting'] = 20'''
 
     else: 
         config= dict(
