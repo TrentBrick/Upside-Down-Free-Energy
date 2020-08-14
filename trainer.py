@@ -77,12 +77,13 @@ def main(args):
         num_val_batches = 2,
         ############ this here is important! 
         use_Levine_model = True, 
-        use_advantage = False,  
+        use_advantage = True,  
         # TODO: ensure lambda TD doesnt get stale. 
-        use_lambda_td = False, 
-        desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
+        use_lambda_td = True, 
+        clamp_adv_to_max = False, 
+        desire_cum_rew = False, # mutually exclusive to discounted rewards to go. 
         desire_states = False,
-        desire_mu_minus_std = True  
+        desire_mu_minus_std = False  
     )
     if not constants['use_Levine_model']:
         assert constants['use_advantage'] is False, "Use advantage must be turned off for now. "

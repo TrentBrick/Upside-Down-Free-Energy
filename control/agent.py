@@ -268,27 +268,24 @@ class Agent:
 
             # update reward desires! 
             if not self.take_rand_actions:
-                if self.Levine_Implementation:
-                    #curr_desired_reward -= reward
-                    pass
+                
+                if self.Levine_Implementation: 
+                    if self.advantage_model:
+                        # sample a new desired reward
+                        curr_desired_reward = self.desired_reward_dist.sample([1])
+                    else:
+                        pass 
+                    # dont touch curr_desired reward. 
+                    # or state or horizon. 
                 else: 
-                    if self.Levine_Implementation: 
-                        if self.advantage_model:
-                            # sample a new desired reward
-                            curr_desired_reward = self.desired_reward_dist.sample([1])
-                        else:
-                            pass 
-                        # dont touch curr_desired reward. 
-                        # or state or horizon. 
-                    else: 
-                        curr_desired_reward = torch.Tensor( [min(curr_desired_reward-reward, self.env_params['max_reward'])])
-                        curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
-                    # TODO: implement delta states here. in the buffer. and in the
-                    # training loop. 
-                    if self.delta_state:
-                        curr_desired_state = torch.Tensor(obs-[curr_desired_state])
-                    else: 
-                        pass
+                    curr_desired_reward = torch.Tensor( [min(curr_desired_reward-reward, self.env_params['max_reward'])])
+                    curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
+                # TODO: implement delta states here. in the buffer. and in the
+                # training loop. 
+                if self.delta_state:
+                    curr_desired_state = torch.Tensor(obs-[curr_desired_state])
+                else: 
+                    pass
            
             # save out things.
             # doesnt save out the time so dont need to worry about it here. 

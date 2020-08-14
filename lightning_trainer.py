@@ -186,7 +186,7 @@ class LightningTemplate(pl.LightningModule):
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
 
-        # reset the desired stats.
+        # reset the desired stats. Important for Levine use advantage. 
         self.desired_reward_stats = (-10000000, -10000000)
 
     def training_step(self, batch, batch_idx):
@@ -196,7 +196,7 @@ class LightningTemplate(pl.LightningModule):
             # desire here is the discounted rewards to go. 
             obs, act = batch['obs'], batch['act']
             if self.hparams['desire_cum_rew']:
-                 des = batch['cum_rew']
+                des = batch['cum_rew']
             else: 
                 des = batch['desire']
             
@@ -257,7 +257,8 @@ class LightningTemplate(pl.LightningModule):
 
             # clamping it to prevent the desires and advantages 
             # from being too high. 
-            des = torch.clamp(des, max=50)
+            if self.hparams['clamp_adv_to_max']:
+                des = torch.clamp(des, max=50)
 
             desires[0] = des.unsqueeze(1)
 
@@ -278,7 +279,7 @@ class LightningTemplate(pl.LightningModule):
             des = (des - des.mean()) / des.std()
             #print('weights used ', torch.exp(des/beta_reward_weighting))
             loss_weighting = torch.clamp( torch.exp(des/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
-            #print('loss weights post clamp and their rewards', loss_weighting[-1], des[-1])
+            print('loss weights post clamp', loss_weighting[-1], 'the reward itself.', des[-1])
             pred_loss = pred_loss*loss_weighting
         pred_loss = pred_loss.mean(dim=0)
         logs = {"policy_loss": pred_loss}
