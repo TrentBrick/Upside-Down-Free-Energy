@@ -23,7 +23,6 @@ class LightningTemplate(pl.LightningModule):
             self.training_step = self.training_step_single_model'''
 
         self.game_dir = game_dir
-        self.Levine_Implementation = hparams['Levine_Implementation']
         self.hparams = hparams
         self.train_buffer = train_buffer
         self.test_buffer = test_buffer
@@ -37,8 +36,7 @@ class LightningTemplate(pl.LightningModule):
             self.model = UpsdModel(self.hparams['STORED_STATE_SIZE'],
             self.hparams['desires_size'], 
             self.hparams['ACTION_SIZE'], 
-            self.hparams['hidden_sizes'], desires_scalings=None, 
-            desire_states=self.hparams['desire_states'])
+            self.hparams['hidden_sizes'])
         else: 
             # concatenate all of these lists together. 
             desires_scalings = [hparams['reward_scale']]+[hparams['horizon_scale']]+ hparams['state_scale']
@@ -46,8 +44,7 @@ class LightningTemplate(pl.LightningModule):
                 self.hparams['desires_size'],
                 self.hparams['ACTION_SIZE'], 
                 self.hparams['hidden_sizes'], 
-                desires_scalings,
-                desire_states=self.hparams['desire_states'] )
+                desires_scalings )
 
         if self.hparams['desire_advantage']:
             self.advantage_model = AdvantageModel(self.hparams['STORED_STATE_SIZE'] )
@@ -85,17 +82,15 @@ class LightningTemplate(pl.LightningModule):
         if self.current_epoch<self.hparams['random_action_epochs']:
             agent = Agent(self.hparams['gamename'], 
                 take_rand_actions=True,
-                discount_factor=self.hparams['discount_factor'],
+                hparams=self.hparams,
                 advantage_model=self.advantage_model,
-                td_lambda=self.hparams['td_lambda'])
+                )
         else:
             agent = Agent(self.hparams['gamename'], 
                 model = self.model, 
-                Levine_Implementation= self.Levine_Implementation,
+                hparams= self.hparams,
                 desire_dict = self.desire_dict, 
-                discount_factor=self.hparams['discount_factor'], 
-                advantage_model=self.advantage_model,
-                td_lambda=self.hparams['td_lambda'])
+                advantage_model=self.advantage_model)
         
         seed = np.random.randint(0, 1e9, 1)[0]
         print('seed used for agent simulate:', seed )
@@ -128,20 +123,20 @@ class LightningTemplate(pl.LightningModule):
         if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew']:
             # cumulative and reward to go start the same/sampled the same. then RTG is 
             # annealed. 
-            if self.Levine_Implementation:
+            if self.hparams['use_Levine_desire_sampling']:
                 self.desire_dict['reward_dist'] = [np.max(to_desire), np.std(to_desire)]
             else: 
                 self.desire_dict['reward_dist'] = [last_few_mean_returns, last_few_std_returns]
         if self.hparams['desire_horizon']:
-            if self.Levine_Implementation:
+            if self.hparams['use_Levine_desire_sampling']:
                 # get the highest scoring rollouts here and use the mean of these. 
                 rew_inds = np.argsort(reward_losses)[-5:]
                 # TODO: make number used for this adjustable. 
                 self.desire_dict['horizon'] = round(np.asarray(termination_times)[rew_inds].mean())
             else: 
                 self.desire_dict['horizon'] = desired_horizon
-        if self.hparams['desire_states']:
-            if self.Levine_Implementation:
+        if self.hparams['desire_state']:
+            if self.hparams['use_Levine_desire_sampling']:
                 self.desire_dict['state'] = np.unique(self.train_buffer.final_obs).mean(axis=0) # take the mean or sample from everything. 
             else: 
                 self.desire_dict['state'] = desired_state
@@ -158,7 +153,8 @@ class LightningTemplate(pl.LightningModule):
             self.logger.experiment.add_scalars('rollout_stats', {"std_reward":np.std(reward_losses),
                 "max_reward":np.max(reward_losses), "min_reward":np.min(reward_losses)}, self.global_step)
             
-            self.logger.experiment.add_scalars('desires', self.desire_dict, self.global_step)
+            to_write = {k:v[0] if len(v)==2 else v for k, v in self.desire_dict.items()}
+            self.logger.experiment.add_scalars('desires', to_write, self.global_step)
             self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
         if self.hparams['desire_advantage']:  
@@ -183,14 +179,20 @@ class LightningTemplate(pl.LightningModule):
         obs, act = batch['obs'], batch['act']
         
         desires = []
-        if self.hparams['desire_discounted_rew_to_go']:
+        for key in self.hparams['desires_order']:
+            if 'state' in key: 
+                desires.append( batch['final_obs'] )
+            else: 
+                desires.append( batch[key.split('desire_')[-1]].unsqueeze(1) )
+
+        '''if self.hparams['desire_discounted_rew_to_go']:
             desires.append( batch['discounted_rew_to_go'].unsqueeze(1) )
         if self.hparams['desire_cum_rew']:
             desires.append( batch['cum_rew'].unsqueeze(1) )
         if self.hparams['desire_horizon']:
             desires.append( batch['horizon'].unsqueeze(1) )
-        if self.hparams['desire_states']:
-            desires.append( batch['final_obs'] )
+        if self.hparams['desire_state']:
+            desires.append( batch['final_obs'] )'''
 
         if self.hparams['desire_advantage']:
             if batch_idx%self.hparams['val_func_update_iterval']==0: 
@@ -254,18 +256,18 @@ class LightningTemplate(pl.LightningModule):
             act = act.squeeze().long()
 
         pred_loss = self._pred_loss(pred_action, act)
-        if self.hparams['Levine_Implementation'] and self.hparams['exp_weight_losses']:
+        if self.hparams['use_exp_weight_losses']:
             
             if self.hparams['desire_advantage']:
                 loss_weight_var = advantage
             else: 
                 loss_weight_var = batch['cum_rew']
 
-            print("pre weight norm", loss_weight_var[-1])
+            #print("pre weight norm", loss_weight_var[-1])
             loss_weight_var = (loss_weight_var - loss_weight_var.mean()) / loss_weight_var.std()
             #print('weights used ', torch.exp(loss_weight_var/beta_reward_weighting))
             loss_weighting = torch.clamp( torch.exp(loss_weight_var/self.hparams['beta_reward_weighting']), max=self.hparams['max_loss_weighting'])
-            print('loss weights post clamp', loss_weighting[-1], 'the reward itself.', loss_weight_var[-1])
+            #print('loss weights post clamp', loss_weighting[-1], 'the reward itself.', loss_weight_var[-1])
             pred_loss = pred_loss*loss_weighting
         pred_loss = pred_loss.mean(dim=0)
         logs = {"policy_loss": pred_loss}

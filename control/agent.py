@@ -49,35 +49,26 @@ def discount_cumsum(x, discount):
 class Agent:
     def __init__(self, gamename,
         model = None, 
-        desire_scalings=None, 
+        hparams=None, 
         take_rand_actions = False,
         desire_dict = None, 
         delta_state = False, 
-        Levine_Implementation = False, 
-        discount_factor=1.0, model_version = 'checkpoint',
+        model_version = 'checkpoint',
         return_plan_images=False,
-        advantage_model=None, 
-        td_lambda=1.0):
-        """ Build vae, forward model, and environment. """
+        advantage_model=None):
+        """ Runs and collects rollouts """
 
         self.gamename = gamename
+        self.hparams = hparams
         self.env_params = get_env_params(gamename)
         self.action_noise = self.env_params['action_noise']
         self.take_rand_actions = take_rand_actions
-        self.discount_factor = discount_factor
-        self.Levine_Implementation = Levine_Implementation
+        self.discount_factor = self.hparams['discount_factor']
         self.advantage_model = advantage_model
 
         self.desire_dict = desire_dict
         self.delta_state = delta_state
-        self.td_lambda = td_lambda
-            
-        if self.Levine_Implementation:
-            print('the desired stats for mu and std are:', desired_reward_stats)
-            self.desired_reward_dist = Normal(self.desired_rew_mu, 
-                self.desired_rew_std)
-            #WeightedNormal(desired_reward_stats[0], 
-            #    desired_reward_stats[1], beta=desired_reward_dist_beta)
+        self.td_lambda = self.hparams['td_lambda']
 
         # top, bottom, left, right
         self.obs_trim = self.env_params['trim_shape']
@@ -148,18 +139,35 @@ class Agent:
         if self.env_params['give_raw_pixels']:
             obs = self.env.render(mode='rgb_array')
             #self.env.viewer.window.dispatch_events()
-
-        # sample a desired reward for this rollout! 
+        
+        # initialize all of the desires. 
         if not self.take_rand_actions:
-            if self.Levine_Implementation:
-                #curr_desired_reward = torch.Tensor([np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)])
-                curr_desired_reward = self.desired_reward_dist.sample([1])
-                curr_desired_state = torch.Tensor([self.desired_state])
-            else: 
-                curr_desired_reward = np.random.uniform(self.desired_rew_mu, self.desired_rew_mu+self.desired_rew_std)
-                curr_desired_reward = torch.Tensor([min(curr_desired_reward, self.env_params['max_reward']  )])
-                curr_desired_horizon = torch.Tensor([self.desired_horizon])
-                curr_desired_state = torch.Tensor([self.desired_state])
+            current_desires_dict = dict()
+            if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew']:
+                if self.hparams['use_Levine_desire_sampling']:
+                    init_rew = Normal(self.desire_dict['reward_dist'][0], 
+                                        self.desire_dict['reward_dist'][1]).sample([1])
+                else: 
+                    init_rew = torch.Tensor([min(np.random.uniform(self.desire_dict['reward_dist'][0], self.desire_dict['reward_dist'][0]+self.desire_dict['reward_dist'][1]), self.env_params['max_reward']  )])
+                    
+            # cumulative and reward to go start the same/sampled the same. then RTG is 
+            # annealed. 
+            if self.hparams['desire_discounted_rew_to_go']:
+                current_desires_dict['discounted_rew_to_go'] = init_rew
+            
+            if self.hparams['desire_cum_rew']:
+                current_desires_dict['cum_rew'] = init_rew
+
+            if self.hparams['desire_horizon']:
+                current_desires_dict['horizon'] = torch.Tensor([self.desire_dict['horizon']])
+                
+            if self.hparams['desire_state']:
+                current_desires_dict['state'] = torch.Tensor([ self.desire_dict['state'] ] )
+            
+            if self.hparams['desire_advantage']:
+                current_desires_dict['advantage'] = Normal(self.desire_dict['advantage_dist'][0], 
+                                        self.desire_dict['advantage_dist'][1]).sample([1])
+
 
         # useful if use an LSTM. 
         #hidden, state, action = self.model.init_hidden_state_action(1)
@@ -194,13 +202,16 @@ class Agent:
             if self.take_rand_actions:
                 action = self.env.action_space.sample()
             else: 
-                # use upside down model: 
-                #print("desired state is:", curr_desired_state.shape )
-                if self.Levine_Implementation:
-                    desires = [curr_desired_reward.unsqueeze(1), curr_desired_state]
-                else: 
-                    desires = [curr_desired_reward.unsqueeze(1), curr_desired_horizon.unsqueeze(1), curr_desired_state]
+
+                desires = []
+                for key in self.hparams['desires_order']:
+                    if 'state' in key: 
+                        desires.append( current_desires_dict[key.split('desire_')[-1]] )
+                    else: 
+                        desires.append( current_desires_dict[key.split('desire_')[-1]].unsqueeze(1) )
+                    
                 action = self.model(obs, desires )
+
                 # need to constrain the action! 
                 if self.env_params['continuous_actions']:
                     if not greedy: 
@@ -211,7 +222,7 @@ class Agent:
                     #sample action
                     # to do add temperature noise. 
                     #print('action is:', action)
-                    #if self.Levine_Implementation:
+                    
                     if greedy: 
                         action = torch.argmax(action).squeeze().detach().numpy()
                     else: 
@@ -234,12 +245,13 @@ class Agent:
                 next_obs = self.env.render(mode='rgb_array')
                 #self.env.viewer.window.dispatch_events()
 
-            if not hit_done and time>=self.time_limit:
-                # add in any penalty for hitting the time limit and still not being done. 
-                reward += self.env_params['over_max_time_limit_penalty']
+            if self.time_limit is not None: 
+                if not hit_done and time>=self.time_limit:
+                    # add in any penalty for hitting the time limit and still not being done. 
+                    reward += self.env_params['over_max_time_limit_penalty']
 
-            if time >= self.time_limit:
-                hit_done=True
+                if time >= self.time_limit:
+                    hit_done=True
             
             time += 1
                 
@@ -264,24 +276,29 @@ class Agent:
 
             # update reward desires! 
             if not self.take_rand_actions:
-                
-                if self.Levine_Implementation: 
-                    if self.advantage_model:
-                        # sample a new desired reward
-                        curr_desired_reward = self.desired_reward_dist.sample([1])
-                    else:
+
+                if self.hparams['desire_discounted_rew_to_go']:
+                    if self.hparams['use_Levine_desire_sampling']:
                         pass 
-                    # dont touch curr_desired reward. 
-                    # or state or horizon. 
-                else: 
-                    curr_desired_reward = torch.Tensor( [min(curr_desired_reward-reward, self.env_params['max_reward'])])
-                    curr_desired_horizon = torch.Tensor ( [max( curr_desired_horizon-1, 1)])
-                # TODO: implement delta states here. in the buffer. and in the
-                # training loop. 
-                if self.delta_state:
-                    curr_desired_state = torch.Tensor(obs-[curr_desired_state])
-                else: 
+                    else: 
+                        current_desires_dict['discounted_rew_to_go'] = torch.Tensor( [min(current_desires_dict['discounted_rew_to_go']-reward, self.env_params['max_reward'])])
+
+                if self.hparams['desire_cum_rew']:
                     pass
+
+                if self.hparams['desire_horizon']:
+                    current_desires_dict['horizon'] = torch.Tensor ( [max( current_desires_dict['horizon']-1, 1)])
+                    
+                if self.hparams['desire_state']:
+                    if self.delta_state:
+                        current_desires_dict['state'] = torch.Tensor(obs-[current_desires_dict['state']])
+                    else: 
+                        pass
+                
+                if self.hparams['desire_advantage']:
+                    current_desires_dict['advantage'] = Normal(self.desire_dict['advantage_dist'][0], 
+                                            self.desire_dict['advantage_dist'][1]).sample([1])
+                    
            
             # save out things.
             # doesnt save out the time so dont need to worry about it here. 

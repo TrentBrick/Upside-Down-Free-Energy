@@ -61,71 +61,45 @@ def main(args):
     use_tune = False
     #training_rollouts_total = 20
     #training_rollouts_total//args.num_workers
-    constants = dict(
+    config = dict(
         random_action_epochs = 1,
-        td_lambda = 0.95,
         val_func_update_iterval = 5, # 200 out of the 1000.
         grad_clip_val = 100, 
         eval_every = 10,
         eval_episodes=10,
         training_rollouts_per_worker = 20, #tune.choice( [10, 20, 30, 40]),
         num_rand_action_rollouts = 10,
-        # TODO: actually implement this!
-        antithetic = False,
+        antithetic = False, # TODO: actually implement this!
         num_val_batches = 2,
         ############ These here are important!
-        Levine_Implementation=False, 
-        exp_weight_losses = True,
+        use_Levine_desire_sampling=True, 
         use_Levine_model = True, 
-        use_Levine_buffer = False, 
+        use_Levine_buffer = True, 
+
+        use_exp_weight_losses = True,
+        beta_reward_weighting = 1.0, 
+        max_loss_weighting = 20,
         # TODO: ensure lambda TD doesnt get stale. 
-        use_lambda_td = False, 
         clamp_adv_to_max = False, 
-        desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
-        # get these to be swappable and workable. 
         desire_discounted_rew_to_go = False,
-        desire_advantage = False,  
+        desire_cum_rew = False , # mutually exclusive to discounted rewards to go. 
+        # get these to be swappable and workable. 
+        discount_factor = 1.0,
+        use_lambda_td = True, 
+        desire_advantage = True,  
+        td_lambda = 0.95,
         desire_horizon = False,
-        desire_states = False,
+        desire_state = False,
         desire_mu_minus_std = False  
     )
-    if constants['use_Levine_buffer']:
-        constants['max_buffer_size'] = 100000
-    else: 
-        constants['max_buffer_size'] = 500, #tune.choice([300, 400, 500, 600, 700]),
-        constants['last_few'] = 25, #tune.choice([25, 75]),
-    
-    if not constants['use_Levine_model']:
-        assert constants['desire_advantage'] is False, "Use advantage must be turned off for now. "
 
-    desires_size = 0
-    for key in ['desire_discounted_rew_to_go',
-    'desire_cum_rew', 'desire_horizon', 'desire_advantage']:
-        desires_size+= constants[key]
+    if config['desire_cum_rew'] and config['desire_discounted_rew_to_go']:
+        # NOTE: this is so that I can anneal the rewards to go over time. and have it be fine. 
+        config['discount_factor']=1.0
+    if config['use_Levine_desire_sampling']:
+        config['discount_factor']=0.99
 
-    if constants['desire_states']: 
-        desires_size += env_params['STORED_STATE_SIZE']
-
-    constants['desires_size'] = desires_size
-     # actual size accounting for the STORED STATE SIZE too
-
-    if constants['Levine_Implementation']:
-        config= dict(
-            batch_size = 256,
-            discount_factor = 0.99,
-            beta_reward_weighting = 1.0, 
-            max_loss_weighting = 20
-        )
-        if constants['desire_cum_rew'] and constants['desire_discounted_rew_to_go']:
-            # this is so that I can anneal the rewards to go over time. and have it be fine. 
-            config['discount_factor']=1.0
-    else: 
-        config= dict(
-            batch_size = 768, #tune.choice([512, 768, 1024, 1536, 2048]),
-            discount_factor = 1.0,
-        )
-        
-    if constants['use_Levine_model']:
+    if config['use_Levine_model']:
         model_params = dict(
             lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
             hidden_sizes = [128,128,64],
@@ -145,7 +119,33 @@ def main(args):
             #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
         )
 
-    config.update(constants) 
+    if config['use_Levine_buffer']:
+        config['batch_size'] = 256
+        config['max_buffer_size'] = 100000
+    else: 
+        config['batch_size'] = 768 #tune.choice([512, 768, 1024, 1536, 2048]),
+        config['max_buffer_size'] = 500 #tune.choice([300, 400, 500, 600, 700]),
+        config['last_few'] = 25 #tune.choice([25, 75]),
+    
+    if not config['use_Levine_model']:
+        assert config['desire_advantage'] is False, "Use advantage must be turned off for now. "
+
+    desires_size = 0
+    desires_order = []
+    for key in ['desire_discounted_rew_to_go',
+    'desire_cum_rew', 'desire_horizon', 'desire_advantage']:
+        desires_size+= config[key]
+        if config[key]:
+            desires_order.append(key)
+
+    if config['desire_state']: 
+        desires_size += env_params['STORED_STATE_SIZE']
+        desires_order.append('desire_state')
+
+    config['desires_order'] = desires_order
+    config['desires_size'] = desires_size
+     # actual size accounting for the STORED STATE SIZE too
+
     config.update(env_params)
     config.update(model_params)
     config.update(vars(args))   
@@ -189,14 +189,15 @@ def main(args):
     else: 
         logger = TensorBoardLogger(game_dir, "logger")
         # have the checkpoint overwrite itself. 
-        every_checkpoint_callback = ModelCheckpoint(
+        every_checkpoint_callback = False 
+        '''ModelCheckpoint(
             filepath=game_dir,
             save_top_k=1,
             verbose=False ,
             monitor='policy_loss',
             mode='min',
             prefix=''
-        )
+        )'''
         callback_list = []
     '''best_checkpoint_callback = ModelCheckpoint(
         filepath=filenames_dict['best'],
@@ -209,7 +210,7 @@ def main(args):
 
     def run_lightning(config):
 
-        if constants['use_Levine_buffer']:
+        if config['use_Levine_buffer']:
             train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
                 size=config['max_buffer_size'], use_td_lambda_buf=config['use_lambda_td'])

@@ -20,9 +20,8 @@ class UpsdBehavior(nn.Module):
     
     def __init__(self, state_size, desires_size,
             action_size, hidden_sizes,
-            desires_scalings, desire_states=False ):
+            desires_scalings ):
         super().__init__()
-        self.desire_states = desire_states
         self.desires_scalings = torch.FloatTensor(desires_scalings[:desires_size])
         
         self.state_fc = nn.Sequential(nn.Linear(state_size, hidden_sizes[0]), 
@@ -51,8 +50,10 @@ class UpsdBehavior(nn.Module):
         Returns:
             FloatTensor -- action logits
         '''
-        
-        command = torch.cat(command, dim=1)
+        if len(desires)==1:
+            command=command[0]
+        else: 
+            command = torch.cat(command, dim=1)
         #print('entering the model', state.shape, command.shape)
         state_output = self.state_fc(state)
         command_output = self.command_fc(command * self.desires_scalings)
@@ -64,17 +65,11 @@ class UpsdModel(nn.Module):
     """ Using Fig.1 from Reward Conditioned Policies 
         https://arxiv.org/pdf/1912.13465.pdf """
     def __init__(self, state_size, desires_size, 
-        action_size, hidden_sizes, desires_scalings = None, 
-        state_act_fn="relu", desires_act_fn="sigmoid", 
-        desire_states = False):
+        action_size, hidden_sizes,
+        state_act_fn="relu", desires_act_fn="sigmoid"):
         super().__init__()
-        self.extra_desires_wanted = extra_desires_wanted
         self.state_act_fn = getattr(torch, state_act_fn)
         self.desires_act_fn = getattr(torch, desires_act_fn)
-        '''if desires_scalings is not None: 
-            self.desires_scalings = torch.FloatTensor(desires_scalings)
-        else: 
-            self.desires_scalings = desires_scalings'''
 
         self.state_layers = nn.ModuleList()
         self.desires_layers = nn.ModuleList()
@@ -89,10 +84,10 @@ class UpsdModel(nn.Module):
         ''' Returns an action '''
 
         # always will want the first element of the list. 
-        desires = torch.cat(desires, dim=1)
-
-        '''if self.desires_scalings:
-            desires *= self.desires_scalings'''
+        if len(desires)==1:
+            desires=desires[0]
+        else: 
+            desires = torch.cat(desires, dim=1)
 
         for state_layer, desires_layer in zip(self.state_layers, self.desires_layers):
             state = torch.mul( self.state_act_fn(state_layer(state)), 
