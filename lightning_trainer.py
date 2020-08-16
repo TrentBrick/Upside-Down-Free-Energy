@@ -180,6 +180,8 @@ class LightningTemplate(pl.LightningModule):
         
         desires = []
         for key in self.hparams['desires_order']:
+            if 'advantage' in key:
+                continue # this is added later down. 
             if 'state' in key: 
                 desires.append( batch['final_obs'] )
             else: 

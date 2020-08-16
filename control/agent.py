@@ -52,7 +52,6 @@ class Agent:
         hparams=None, 
         take_rand_actions = False,
         desire_dict = None, 
-        delta_state = False, 
         model_version = 'checkpoint',
         return_plan_images=False,
         advantage_model=None):
@@ -67,7 +66,6 @@ class Agent:
         self.advantage_model = advantage_model
 
         self.desire_dict = desire_dict
-        self.delta_state = delta_state
         self.td_lambda = self.hparams['td_lambda']
 
         # top, bottom, left, right
@@ -290,7 +288,7 @@ class Agent:
                     current_desires_dict['horizon'] = torch.Tensor ( [max( current_desires_dict['horizon']-1, 1)])
                     
                 if self.hparams['desire_state']:
-                    if self.delta_state:
+                    if self.hparams['delta_state']:
                         current_desires_dict['state'] = torch.Tensor(obs-[current_desires_dict['state']])
                     else: 
                         pass

@@ -81,15 +81,17 @@ def main(args):
         max_loss_weighting = 20,
         # TODO: ensure lambda TD doesnt get stale. 
         clamp_adv_to_max = False, 
-        desire_discounted_rew_to_go = False,
-        desire_cum_rew = False , # mutually exclusive to discounted rewards to go. 
+        
+        desire_discounted_rew_to_go = True,
+        desire_cum_rew = True , # mutually exclusive to discounted rewards to go. 
         # get these to be swappable and workable. 
         discount_factor = 1.0,
         use_lambda_td = True, 
         desire_advantage = True,  
         td_lambda = 0.95,
-        desire_horizon = False,
-        desire_state = False,
+        desire_horizon = True,
+        desire_state = True,
+
         desire_mu_minus_std = False  
     )
 
