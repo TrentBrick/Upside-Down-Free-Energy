@@ -103,12 +103,13 @@ def main(args):
     'desire_advantage']
 
     args_dict = vars(args)
-    if args.multirun is True:
+    if bool(args.multirun) is True:
         # refers to bash_multiple_tests.sh
         num_on = 0
         for k in desires_official_order:
-            config[k] = args_dict[k]
+            config[k] = bool(args_dict[k])
             num_on += args_dict[k]
+            print('running!!!!')
         if num_on == 0: 
             raise Exception('No desires turned on! Killing this job!')
     
@@ -325,17 +326,17 @@ if __name__ =='__main__':
     parser.add_argument('--eval_agent', type=bool, default=False,
                         help="Able to eval the agent!")
 
-    parser.add_argument('--multirun', type=bool, default=False,
+    parser.add_argument('--multirun', type=int, default=0,
                         help="Able to eval the agent!")
-    parser.add_argument('--desire_discounted_rew_to_go', type=bool, default=None,
+    parser.add_argument('--desire_discounted_rew_to_go', type=int, default=0,
                         help="Able to eval the agent!")
-    parser.add_argument('--desire_cum_rew', type=bool, default=None,
+    parser.add_argument('--desire_cum_rew', type=int, default=0,
                         help="Able to eval the agent!")
-    parser.add_argument('--desire_horizon', type=bool, default=None,
+    parser.add_argument('--desire_horizon', type=int, default=0,
                         help="Able to eval the agent!")
-    parser.add_argument('--desire_state', type=bool, default=None,
+    parser.add_argument('--desire_state', type=int, default=0,
                         help="Able to eval the agent!")
-    parser.add_argument('--desire_advantage', type=bool, default=None,
+    parser.add_argument('--desire_advantage', type=int, default=0,
                         help="Able to eval the agent!")
 
 
