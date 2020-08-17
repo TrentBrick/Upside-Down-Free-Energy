@@ -3,6 +3,7 @@
 Training of the UpsideDown RL model.
 """
 import argparse
+import time
 from functools import partial
 from os.path import join, exists
 from os import mkdir, unlink
@@ -25,7 +26,7 @@ import time
 import random 
 from utils import set_seq_and_batch_vals
 # TODO: test if this seed everything actually works! 
-from pytorch_lightning import Trainer, seed_everything
+from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
@@ -37,28 +38,21 @@ from ray.tune.schedulers import ASHAScheduler, PopulationBasedTraining
 class TuneReportCallback(Callback):
     def on_epoch_end(self, trainer, pl_module):
         tune.report(
-            loss=trainer.callback_metrics["train_loss"],
+            loss=trainer.callback_metrics["policy_loss"],
             mean_reward=pl_module.mean_reward_rollouts,
             mean_reward_20_epochs = sum(pl_module.mean_reward_over_20_epochs[-20:])/20,
             epoch=trainer.current_epoch)
 
 def main(args):
 
-    dir_rand_seed = np.random.randint(0,1000)
-
-    assert args.num_workers <= cpu_count(), "Providing too many workers!" 
-    if args.seed:
-        print('Setting the random seed!!!')
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-
     # get environment parameters: 
     env_params = get_env_params(args.gamename)
 
+    assert args.num_workers <= cpu_count(), "Providing too many workers!"
+
     # Constants
     epochs = 2000
-    use_tune = False
+    use_tune = True
     #training_rollouts_total = 20
     #training_rollouts_total//args.num_workers
     config = dict(
@@ -67,7 +61,7 @@ def main(args):
         grad_clip_val = 100, 
         eval_every = 10,
         eval_episodes=10,
-        training_rollouts_per_worker = 20, #tune.choice( [10, 20, 30, 40]),
+        training_rollouts_per_worker = 20, #tune.grid_search( [10, 20, 30, 40]),
         num_rand_action_rollouts = 10,
         antithetic = False, # TODO: actually implement this!
         num_val_batches = 2,
@@ -82,37 +76,39 @@ def main(args):
         # TODO: ensure lambda TD doesnt get stale. 
         clamp_adv_to_max = False, 
 
-        desire_discounted_rew_to_go = True,
-        desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
+        desire_discounted_rew_to_go = tune.grid_search( [True, False]),
+        desire_cum_rew = tune.grid_search( [True, False]), # mutually exclusive to discounted rewards to go. 
         # get these to be swappable and workable. 
         discount_factor = 1.0, 
         # NOTE: if desire rew to go then this should always be 1.0 
         # as this value is annealed. When Schmidhuber desires is on. 
         use_lambda_td = True, 
-        desire_advantage = True,  
+        desire_advantage = tune.grid_search( [True, False]),  
         td_lambda = 0.95,
-        desire_horizon = True,
-        desire_state = True,
+        desire_horizon = tune.grid_search( [True, False]),
+        desire_state = tune.grid_search( [True, False]),
         delta_state = False,
 
         desire_mu_minus_std = False  
     )
 
-    desires_official_order = ['desire_discounted_rew_to_go',
+    config['desires_official_order'] = ['desire_discounted_rew_to_go',
     'desire_cum_rew', 'desire_horizon', 'desire_state',
     'desire_advantage']
 
     args_dict = vars(args)
     if bool(args.multirun) is True:
+        # sleep for a random interval to stop overlapping loggers made. 
+        time.sleep(np.random.random()*5)
         # refers to bash_multiple_tests.sh
         num_on = 0
-        for k in desires_official_order:
+        for k in config['desires_official_order']:
             config[k] = bool(args_dict[k])
             num_on += args_dict[k]
         if num_on == 0: 
             raise Exception('No desires turned on! Killing this job!')
     
-    for k in desires_official_order:
+    for k in config['desires_official_order']:
         args_dict.pop(k) # so these settings dont mess up what is assigned. 
 
     if config['desire_cum_rew'] and config['desire_discounted_rew_to_go']:
@@ -123,21 +119,21 @@ def main(args):
 
     if config['use_Levine_model']:
         model_params = dict(
-            lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
+            lr= 0.001, #tune.grid_search(np.logspace(-4, -2, num = 101)),
             hidden_sizes = [128,128,64],
             desire_scalings =False,
             num_grad_steps = 1000
         )
     else: 
         model_params = dict(
-            lr= 0.001, #tune.choice(np.logspace(-4, -2, num = 101)),
+            lr= 0.001, #tune.grid_search(np.logspace(-4, -2, num = 101)),
             hidden_sizes = [32,64,64,64],
             desire_scalings =True,
-            horizon_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
-            reward_scale = 0.01, #tune.choice( [0.01, 0.015, 0.02, 0.025, 0.03]),
+            horizon_scale = 0.01, #tune.grid_search( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
+            reward_scale = 0.01, #tune.grid_search( [0.01, 0.015, 0.02, 0.025, 0.03]),
             state_scale = 1.0,
             num_grad_steps = 100
-            #tune.choice([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
+            #tune.grid_search([[32], [32, 32], [32, 64], [32, 64, 64], [32, 64, 64, 64],
             #[64], [64, 64], [64, 128], [64, 128, 128], [64, 128, 128, 128]])
         )
 
@@ -145,25 +141,9 @@ def main(args):
         config['batch_size'] = 256
         config['max_buffer_size'] = 100000
     else: 
-        config['batch_size'] = 768 #tune.choice([512, 768, 1024, 1536, 2048]),
-        config['max_buffer_size'] = 250 #tune.choice([300, 400, 500, 600, 700]),
-        config['last_few'] = 25 #tune.choice([25, 75]),
-    
-    desires_size = 0
-    desires_order = []
-    for key in desires_official_order:
-    # advantage needs to go last because it is computed on the fly 
-    # in the training loop. 
-        if 'state' in key and config[key]:
-            desires_size += env_params['STORED_STATE_SIZE']
-        else: 
-            desires_size+= config[key]
-        if config[key]:
-            desires_order.append(key)
-
-    config['desires_order'] = desires_order
-    config['desires_size'] = desires_size
-     # actual size accounting for the STORED STATE SIZE too
+        config['batch_size'] = 768 #tune.grid_search([512, 768, 1024, 1536, 2048]),
+        config['max_buffer_size'] = 250 #tune.grid_search([300, 400, 500, 600, 700]),
+        config['last_few'] = 25 #tune.grid_search([25, 75]),
 
     config.update(args_dict)
     config.update(env_params)
@@ -183,9 +163,15 @@ def main(args):
         kl_tolerance=0.5
         free_nats = torch.Tensor([kl_tolerance*env_params['LATENT_SIZE']], device=device )
     '''
+
+    # Load in the Model, Loggers, etc:
     if use_tune:
         game_dir = ''
         run_name = str(np.random.randint(0,1000,1)[0])
+        logger=False 
+        every_checkpoint_callback = False 
+        callback_list = [TuneReportCallback()]
+        config['seed'] = tune.grid_search([25,27])
     else: 
         # Init save filenames 
         base_game_dir = join(args.logdir, args.gamename)
@@ -196,16 +182,6 @@ def main(args):
             if not exists(dirr):
                 mkdir(dirr)
 
-    # Load in the Model, Loggers, etc:
-    seed_everything(args.seed)
-
-    # Logging and Checkpointing:
-    # have logger and versions work with the seed. 
-    if use_tune:
-        logger=False 
-        every_checkpoint_callback = False 
-        callback_list = [TuneReportCallback()]
-    else: 
         logger = TensorBoardLogger(game_dir, "logger")
         # have the checkpoint overwrite itself. 
         every_checkpoint_callback = False 
@@ -232,21 +208,21 @@ def main(args):
         if config['use_Levine_buffer']:
             train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
-                size=config['max_buffer_size'], use_td_lambda_buf=config['use_advantage'])
+                size=config['max_buffer_size'], use_td_lambda_buf=config['desire_advantage'])
             test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
-                size=config['batch_size']*10, use_td_lambda_buf=config['use_advantage'])
+                size=config['batch_size']*10, use_td_lambda_buf=config['desire_advantage'])
         else:
             config['max_buffer_size'] *= env_params['avg_episode_length']
             
             train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
                 size=config['max_buffer_size'], 
-                use_td_lambda_buf=config['use_advantage'] )
+                use_td_lambda_buf=config['desire_advantage'] )
             test_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
                 size=config['batch_size']*10,
-                use_td_lambda_buf=config['use_advantage'])
+                use_td_lambda_buf=config['desire_advantage'])
 
         model = LightningTemplate(game_dir, config, train_buffer, test_buffer)
 
@@ -278,14 +254,14 @@ def main(args):
         metric="mean_reward_20_epochs",
         mode="max",
         max_t=epochs,
-        grace_period=25,
+        grace_period=1000,
         reduction_factor=4)
 
     reporter = CLIReporter(
         metric_columns=["loss", "mean_reward_20_epochs", "epoch"],
         )
 
-    num_samples = 256
+    num_samples = 1
     if use_tune:
         tune.run(
             run_lightning,
@@ -296,7 +272,7 @@ def main(args):
             scheduler=scheduler,
             progress_reporter=reporter,
             verbose=1,
-            fail_fast=True )
+            fail_fast=False )
 
     else: 
         run_lightning(config)
@@ -323,6 +299,9 @@ if __name__ =='__main__':
     parser.add_argument('--seed', type=int, default=25,
                         help="Starter seed for reproducible results")
     parser.add_argument('--eval_agent', type=bool, default=False,
+                        help="Able to eval the agent!")
+
+    parser.add_argument('--print_statements', type=int, default=0,
                         help="Able to eval the agent!")
 
     parser.add_argument('--multirun', type=int, default=0,

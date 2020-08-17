@@ -1,4 +1,4 @@
-parallel python trainer.py --gamename lunarlander \
+parallel python3 trainer.py --gamename lunarlander \
 --exp_name all_desires_test_one \
 --num_workers 1 --no_reload --multirun 1 --seed {1} \
 --desire_discounted_rew_to_go {2} --desire_cum_rew {3} --desire_horizon {4} \

@@ -10,6 +10,8 @@ from torch.utils.data import DataLoader, RandomSampler, BatchSampler
 from utils import save_checkpoint, generate_model_samples, \
     generate_rollouts, write_logger, ReplayBuffer, \
     RingBuffer, combine_single_worker
+from pytorch_lightning import seed_everything
+import random 
 
 class LightningTemplate(pl.LightningModule):
 
@@ -22,11 +24,34 @@ class LightningTemplate(pl.LightningModule):
         else: 
             self.training_step = self.training_step_single_model'''
 
+        if hparams['print_statements']:
+            print('Setting the random seed!!!')
+        random.seed(hparams['seed'])
+        np.random.seed(hparams['seed'])
+        torch.manual_seed(hparams['seed'])
+        seed_everything(hparams['seed'])
+
         self.game_dir = game_dir
         self.hparams = hparams
         self.train_buffer = train_buffer
         self.test_buffer = test_buffer
         self.mean_reward_over_20_epochs = []
+
+        desires_size = 0
+        desires_order = []
+        for key in self.hparams['desires_official_order']:
+        # advantage needs to go last because it is computed on the fly 
+        # in the training loop. 
+            if 'state' in key and self.hparams[key]:
+                desires_size += self.hparams['STORED_STATE_SIZE']
+            else: 
+                desires_size+= self.hparams[key]
+            if self.hparams[key]:
+                desires_order.append(key)
+
+        self.hparams['desires_order'] = desires_order
+        self.hparams['desires_size'] = desires_size
+        # actual size accounting for the STORED STATE SIZE too
 
         # init the desired advantage. 
         if hparams['desire_advantage']:
@@ -62,7 +87,8 @@ class LightningTemplate(pl.LightningModule):
         self.desire_dict['horizon'] = 285
         self.desire_dict['reward_dist'] = (319, 1)
         self.desired_state = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1., 1.]
-        print('Desired Horizon and Rewards are:', self.desire_dict['horizon'], self.desire_dict['reward_dist'], 
+        if self.hparams['print_statements']:
+            print('Desired Horizon and Rewards are:', self.desire_dict['horizon'], self.desire_dict['reward_dist'], 
         self.desired_state)
         self.current_epoch = self.hparams['random_action_epochs']+1
         output = self.collect_rollouts(num_episodes=100, greedy=True, render=True  ) 
@@ -93,7 +119,8 @@ class LightningTemplate(pl.LightningModule):
                 advantage_model=self.advantage_model)
         
         seed = np.random.randint(0, 1e9, 1)[0]
-        print('seed used for agent simulate:', seed )
+        if self.hparams['print_statements']:
+            print('seed used for agent simulate:', seed )
         output = agent.simulate(seed, return_events=True,
                                 num_episodes=num_episodes,
                                 greedy=greedy, render_mode=render)
@@ -106,8 +133,9 @@ class LightningTemplate(pl.LightningModule):
         test_data = [output[3][-1]]
         reward_losses, to_desire, termination_times = output[0], output[1], output[2]
 
-        print("termination times for rollouts are:", np.mean(termination_times), termination_times)
-        print("'to desire' from these rollouts:", np.mean(to_desire), to_desire)
+        if self.hparams['print_statements']:
+            print("termination times for rollouts are:", np.mean(termination_times), termination_times)
+            print("'to desire' from these rollouts:", np.mean(to_desire), to_desire)
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
         # add data to the buffer. 
@@ -177,7 +205,7 @@ class LightningTemplate(pl.LightningModule):
         self.add_rollouts_to_buffer(output)
 
         # evaluate the agents where greedy actions are taken. 
-        if self.current_epoch % self.hparams['eval_every']==0:
+        if self.current_epoch % self.hparams['eval_every']==0 and self.logger:
             output = self.collect_rollouts(greedy=True, num_episodes=self.hparams['eval_episodes'])
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
@@ -257,7 +285,8 @@ class LightningTemplate(pl.LightningModule):
             max_adv = float(advantage.max().numpy())
             if max_adv>= self.desired_advantage_dist[0]:
                 self.desired_advantage_dist = [ max_adv, float(advantage.std().numpy()) ]
-                print("new max adv desired mu and std are:", self.desired_advantage_dist)
+                if self.hparams['print_statements']:
+                    print("new max adv desired mu and std are:", self.desired_advantage_dist)
 
         pred_action = self.model.forward(obs, desires)
 
