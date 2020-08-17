@@ -59,9 +59,9 @@ class SortedBuffer:
                 # each of the numpy buffers. Uses the cumulative/terminal rewards
                 # minus so that highest values are at the front. 
                 sort_ind = np.searchsorted(-self.buffer_dict['cum_rew'], -rollout['cum_rew'][0]  )
-                end_ind = len_rollout+sort_ind
+                end_ind = len_rollout+sort_ind 
             else: 
-                end_ind = len_rollout
+                end_ind = len_rollout 
             
             if self.use_td_lambda_buf:
                 # will be appended and treated like everything else. 
@@ -75,6 +75,9 @@ class SortedBuffer:
                     self.buffer_dict[key] = rollout[key]
                 else: 
                     self.buffer_dict[key] = np.insert(self.buffer_dict[key], sort_ind, rollout[key], axis=0)
+
+                if key == 'rollout_end_ind': 
+                    self.buffer_dict[key][end_ind[0]:] = self.buffer_dict[key][end_ind[0]:]+len_rollout
 
                 if self.size >= self.max_size:
                     # buffer is full. Need to trim!

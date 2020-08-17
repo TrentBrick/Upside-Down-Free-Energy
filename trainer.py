@@ -72,10 +72,10 @@ def main(args):
         antithetic = False, # TODO: actually implement this!
         num_val_batches = 2,
         ############ These here are important!
-        use_Levine_desire_sampling=True, 
+        use_Levine_desire_sampling=False, 
+        use_Levine_buffer = False, 
         use_Levine_model = True, 
-        use_Levine_buffer = True, 
-
+        
         use_exp_weight_losses = True,
         beta_reward_weighting = 1.0, 
         max_loss_weighting = 20,
@@ -85,7 +85,9 @@ def main(args):
         desire_discounted_rew_to_go = True,
         desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
         # get these to be swappable and workable. 
-        discount_factor = 1.0,
+        discount_factor = 1.0, 
+        # NOTE: if desire rew to go then this should always be 1.0 
+        # as this value is annealed. When Schmidhuber desires is on. 
         use_lambda_td = True, 
         desire_advantage = True,  
         td_lambda = 0.95,
@@ -96,10 +98,27 @@ def main(args):
         desire_mu_minus_std = False  
     )
 
+    desires_official_order = ['desire_discounted_rew_to_go',
+    'desire_cum_rew', 'desire_horizon', 'desire_state',
+    'desire_advantage']
+
+    args_dict = vars(args)
+    if args.multirun is True:
+        # refers to bash_multiple_tests.sh
+        num_on = 0
+        for k in desires_official_order:
+            config[k] = args_dict[k]
+            num_on += args_dict[k]
+        if num_on == 0: 
+            raise Exception('No desires turned on! Killing this job!')
+    
+    for k in desires_official_order:
+        args_dict.pop(k) # so these settings dont mess up what is assigned. 
+
     if config['desire_cum_rew'] and config['desire_discounted_rew_to_go']:
         # NOTE: this is so that I can anneal the rewards to go over time. and have it be fine. 
         config['discount_factor']=1.0
-    if config['use_Levine_desire_sampling']:
+    if config['use_Levine_desire_sampling'] and not config['desire_cum_rew']:
         config['discount_factor']=0.99
 
     if config['use_Levine_model']:
@@ -127,17 +146,14 @@ def main(args):
         config['max_buffer_size'] = 100000
     else: 
         config['batch_size'] = 768 #tune.choice([512, 768, 1024, 1536, 2048]),
-        config['max_buffer_size'] = 500 #tune.choice([300, 400, 500, 600, 700]),
+        config['max_buffer_size'] = 250 #tune.choice([300, 400, 500, 600, 700]),
         config['last_few'] = 25 #tune.choice([25, 75]),
     
-    if not config['use_Levine_model']:
-        assert config['desire_advantage'] is False, "Use advantage must be turned off for now. "
-
     desires_size = 0
     desires_order = []
-    for key in ['desire_discounted_rew_to_go',
-    'desire_cum_rew', 'desire_horizon', 'desire_state',
-    'desire_advantage']:
+    for key in desires_official_order:
+    # advantage needs to go last because it is computed on the fly 
+    # in the training loop. 
         if 'state' in key and config[key]:
             desires_size += env_params['STORED_STATE_SIZE']
         else: 
@@ -149,9 +165,9 @@ def main(args):
     config['desires_size'] = desires_size
      # actual size accounting for the STORED STATE SIZE too
 
+    config.update(args_dict)
     config.update(env_params)
     config.update(model_params)
-    config.update(vars(args))   
 
     # TODO: do I need to scale different parts of this differently? 
     if config['desire_scalings']:
@@ -222,8 +238,15 @@ def main(args):
                 size=config['batch_size']*10, use_td_lambda_buf=config['use_lambda_td'])
         else:
             config['max_buffer_size'] *= env_params['avg_episode_length']
-            train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['max_buffer_size'] )
-            test_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], act_dim=env_params['STORED_ACTION_SIZE'], size=config['batch_size']*10)
+            
+            train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
+                act_dim=env_params['STORED_ACTION_SIZE'], 
+                size=config['max_buffer_size'], 
+                use_td_lambda_buf=config['use_lambda_td'] )
+            test_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
+                act_dim=env_params['STORED_ACTION_SIZE'], 
+                size=config['batch_size']*10,
+                use_td_lambda_buf=config['use_lambda_td'])
 
         model = LightningTemplate(game_dir, config, train_buffer, test_buffer)
 
@@ -301,5 +324,20 @@ if __name__ =='__main__':
                         help="Starter seed for reproducible results")
     parser.add_argument('--eval_agent', type=bool, default=False,
                         help="Able to eval the agent!")
+
+    parser.add_argument('--multirun', type=bool, default=False,
+                        help="Able to eval the agent!")
+    parser.add_argument('--desire_discounted_rew_to_go', type=bool, default=None,
+                        help="Able to eval the agent!")
+    parser.add_argument('--desire_cum_rew', type=bool, default=None,
+                        help="Able to eval the agent!")
+    parser.add_argument('--desire_horizon', type=bool, default=None,
+                        help="Able to eval the agent!")
+    parser.add_argument('--desire_state', type=bool, default=None,
+                        help="Able to eval the agent!")
+    parser.add_argument('--desire_advantage', type=bool, default=None,
+                        help="Able to eval the agent!")
+
+
     args = parser.parse_args()
     main(args)

@@ -52,7 +52,8 @@ class LightningTemplate(pl.LightningModule):
             self.advantage_model = None 
         # log the hparams. 
         if self.logger:
-            self.logger.experiment.add_hparams(hparams)
+            metric_placeholder = {'mean_reward':0, 'eval_mean':0}
+            self.logger.experiment.add_hparams(hparams, metric_placeholder)
 
         # start filling up the buffer.
         output = self.collect_rollouts(num_episodes=self.hparams['num_rand_action_rollouts']) 
@@ -107,7 +108,7 @@ class LightningTemplate(pl.LightningModule):
         reward_losses, to_desire, termination_times = output[0], output[1], output[2]
 
         print("termination times for rollouts are:", np.mean(termination_times), termination_times)
-        print("first advantages from these rollouts:", np.mean(to_desire), to_desire)
+        print("'to desire' from these rollouts:", np.mean(to_desire), to_desire)
         # modify the training data how I want to now while its in a list of rollouts. 
         # dictionary of items with lists inside of each rollout. 
         # add data to the buffer. 
@@ -161,7 +162,7 @@ class LightningTemplate(pl.LightningModule):
                     to_write[k] = v[0]  
                 else:
                     to_write[k] = v
-                    
+
             self.logger.experiment.add_scalars('desires', to_write, self.global_step)
             self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
