@@ -28,9 +28,6 @@ class LightningTemplate(pl.LightningModule):
         self.test_buffer = test_buffer
         self.mean_reward_over_20_epochs = []
 
-        print(self.hparams)
-        boog
-
         # init the desired advantage. 
         if hparams['desire_advantage']:
             self.desired_advantage_dist = [-10000000, -10000000]

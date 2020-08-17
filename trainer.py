@@ -109,7 +109,6 @@ def main(args):
         for k in desires_official_order:
             config[k] = bool(args_dict[k])
             num_on += args_dict[k]
-            print('running!!!!')
         if num_on == 0: 
             raise Exception('No desires turned on! Killing this job!')
     
@@ -233,21 +232,21 @@ def main(args):
         if config['use_Levine_buffer']:
             train_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
-                size=config['max_buffer_size'], use_td_lambda_buf=config['use_lambda_td'])
+                size=config['max_buffer_size'], use_td_lambda_buf=config['use_advantage'])
             test_buffer = RingBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
-                size=config['batch_size']*10, use_td_lambda_buf=config['use_lambda_td'])
+                size=config['batch_size']*10, use_td_lambda_buf=config['use_advantage'])
         else:
             config['max_buffer_size'] *= env_params['avg_episode_length']
             
             train_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
                 size=config['max_buffer_size'], 
-                use_td_lambda_buf=config['use_lambda_td'] )
+                use_td_lambda_buf=config['use_advantage'] )
             test_buffer = SortedBuffer(obs_dim=env_params['STORED_STATE_SIZE'], 
                 act_dim=env_params['STORED_ACTION_SIZE'], 
                 size=config['batch_size']*10,
-                use_td_lambda_buf=config['use_lambda_td'])
+                use_td_lambda_buf=config['use_advantage'])
 
         model = LightningTemplate(game_dir, config, train_buffer, test_buffer)
 
