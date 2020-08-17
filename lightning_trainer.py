@@ -52,11 +52,12 @@ class LightningTemplate(pl.LightningModule):
             self.advantage_model = None 
         # log the hparams. 
         if self.logger:
-            self.logger.experiment.add_hparams(hparams)
+            metric_placeholder = {'mean_reward':0}
+            self.logger.log_hyperparams(hparams, metric_placeholder)
 
         # start filling up the buffer.
         output = self.collect_rollouts(num_episodes=self.hparams['num_rand_action_rollouts']) 
-        self.add_rollouts_to_buffer(output)
+        mean_reward = self.add_rollouts_to_buffer(output)
     
     def eval_agent(self):
         self.desire_dict['horizon'] = 285
@@ -149,7 +150,7 @@ class LightningTemplate(pl.LightningModule):
         self.mean_reward_over_20_epochs.append( self.mean_reward_rollouts)
 
         if self.logger:
-            self.logger.experiment.add_scalar("mean_reward", np.mean(reward_losses), self.global_step)
+            #self.logger.experiment.add_scalar("mean_reward", np.mean(reward_losses), self.global_step)
             self.logger.experiment.add_scalars('rollout_stats', {"std_reward":np.std(reward_losses),
                 "max_reward":np.max(reward_losses), "min_reward":np.min(reward_losses)}, self.global_step)
             
@@ -165,6 +166,8 @@ class LightningTemplate(pl.LightningModule):
             self.logger.experiment.add_scalars('desires', to_write, self.global_step)
             self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
+        return np.mean(reward_losses)
+
         if self.hparams['desire_advantage']:  
             # reset the desired stats. Important for Levine use advantage. 
             # do so after saving whatever had appeared before. 
@@ -174,13 +177,15 @@ class LightningTemplate(pl.LightningModule):
         # create new rollouts using stochastic actions. 
         output = self.collect_rollouts(num_episodes=self.hparams['training_rollouts_per_worker'])
         # process the data/add to the buffer.
-        self.add_rollouts_to_buffer(output)
+        mean_reward = self.add_rollouts_to_buffer(output)
 
         # evaluate the agents where greedy actions are taken. 
         if self.current_epoch % self.hparams['eval_every']==0:
             output = self.collect_rollouts(greedy=True, num_episodes=self.hparams['eval_episodes'])
             reward_losses = output[0]
             self.logger.experiment.add_scalar("eval_mean", np.mean(reward_losses), self.global_step)
+
+        return {"log": {'mean_reward':mean_reward}}
 
     def training_step(self, batch, batch_idx):
         # run training on this data
