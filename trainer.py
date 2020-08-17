@@ -81,9 +81,9 @@ def main(args):
         max_loss_weighting = 20,
         # TODO: ensure lambda TD doesnt get stale. 
         clamp_adv_to_max = False, 
-        
+
         desire_discounted_rew_to_go = True,
-        desire_cum_rew = True , # mutually exclusive to discounted rewards to go. 
+        desire_cum_rew = True, # mutually exclusive to discounted rewards to go. 
         # get these to be swappable and workable. 
         discount_factor = 1.0,
         use_lambda_td = True, 
@@ -91,6 +91,7 @@ def main(args):
         td_lambda = 0.95,
         desire_horizon = True,
         desire_state = True,
+        delta_state = False,
 
         desire_mu_minus_std = False  
     )
@@ -135,14 +136,14 @@ def main(args):
     desires_size = 0
     desires_order = []
     for key in ['desire_discounted_rew_to_go',
-    'desire_cum_rew', 'desire_horizon', 'desire_advantage']:
-        desires_size+= config[key]
+    'desire_cum_rew', 'desire_horizon', 'desire_state',
+    'desire_advantage']:
+        if 'state' in key and config[key]:
+            desires_size += env_params['STORED_STATE_SIZE']
+        else: 
+            desires_size+= config[key]
         if config[key]:
             desires_order.append(key)
-
-    if config['desire_state']: 
-        desires_size += env_params['STORED_STATE_SIZE']
-        desires_order.append('desire_state')
 
     config['desires_order'] = desires_order
     config['desires_size'] = desires_size

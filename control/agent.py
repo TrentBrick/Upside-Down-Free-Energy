@@ -289,7 +289,8 @@ class Agent:
                     
                 if self.hparams['desire_state']:
                     if self.hparams['delta_state']:
-                        current_desires_dict['state'] = torch.Tensor(obs-[current_desires_dict['state']])
+                        raise Exception('need to modifying the buffer to save the delta states first')
+                        #current_desires_dict['state'] = torch.Tensor(obs-[current_desires_dict['state']])
                     else: 
                         pass
                 

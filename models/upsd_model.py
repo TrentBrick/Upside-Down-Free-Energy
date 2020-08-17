@@ -50,7 +50,7 @@ class UpsdBehavior(nn.Module):
         Returns:
             FloatTensor -- action logits
         '''
-        if len(desires)==1:
+        if len(command)==1:
             command=command[0]
         else: 
             command = torch.cat(command, dim=1)

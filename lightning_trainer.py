@@ -30,7 +30,7 @@ class LightningTemplate(pl.LightningModule):
 
         # init the desired advantage. 
         if hparams['desire_advantage']:
-            self.desired_advantage_dist = (-10000000, -10000000)
+            self.desired_advantage_dist = [-10000000, -10000000]
 
         if self.hparams['use_Levine_model']:
             self.model = UpsdModel(self.hparams['STORED_STATE_SIZE'],
@@ -137,7 +137,7 @@ class LightningTemplate(pl.LightningModule):
                 self.desire_dict['horizon'] = desired_horizon
         if self.hparams['desire_state']:
             if self.hparams['use_Levine_desire_sampling']:
-                self.desire_dict['state'] = np.unique(self.train_buffer.final_obs).mean(axis=0) # take the mean or sample from everything. 
+                self.desire_dict['state'] = np.unique(self.train_buffer.final_obs, axis=0).mean(axis=0) # take the mean or sample from everything. 
             else: 
                 self.desire_dict['state'] = desired_state
         if self.hparams['desire_advantage']:
@@ -153,14 +153,22 @@ class LightningTemplate(pl.LightningModule):
             self.logger.experiment.add_scalars('rollout_stats', {"std_reward":np.std(reward_losses),
                 "max_reward":np.max(reward_losses), "min_reward":np.min(reward_losses)}, self.global_step)
             
-            to_write = {k:v[0] if len(v)==2 else v for k, v in self.desire_dict.items()}
+            to_write = dict()
+            for k, v in self.desire_dict.items():
+                if k =='state':
+                    continue
+                if type(v) is list: 
+                    to_write[k] = v[0]  
+                else:
+                    to_write[k] = v
+                    
             self.logger.experiment.add_scalars('desires', to_write, self.global_step)
             self.logger.experiment.add_scalar("steps", self.train_buffer.total_num_steps_added, self.global_step)
 
         if self.hparams['desire_advantage']:  
             # reset the desired stats. Important for Levine use advantage. 
             # do so after saving whatever had appeared before. 
-            self.desired_advantage_dist = (-10000000, -10000000)
+            self.desired_advantage_dist = [-10000000, -10000000]
 
     def on_epoch_end(self):
         # create new rollouts using stochastic actions. 
@@ -248,7 +256,7 @@ class LightningTemplate(pl.LightningModule):
             # set the desired rewards here
             max_adv = float(advantage.max().numpy())
             if max_adv>= self.desired_advantage_dist[0]:
-                self.desired_advantage_dist = ( max_adv, float(advantage.std().numpy()) )
+                self.desired_advantage_dist = [ max_adv, float(advantage.std().numpy()) ]
                 print("new max adv desired mu and std are:", self.desired_advantage_dist)
 
         pred_action = self.model.forward(obs, desires)

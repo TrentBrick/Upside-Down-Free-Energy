@@ -14,7 +14,8 @@ class SortedBuffer:
     """
     Buffer that efficiently remains sorted.  
     """
-    def __init__(self, obs_dim, act_dim, size ):
+    def __init__(self, obs_dim, act_dim, size,
+                use_td_lambda_buf=False ):
         self.obs_buf = None
         #self.obs2_buf= None
         self.act_buf= None
@@ -29,7 +30,16 @@ class SortedBuffer:
                                 cum_rew=self.cum_rew, horizon=self.horizon, 
                                 rollout_length=self.rollout_length, 
                                 final_obs=self.final_obs)
-        self.num_steps, self.max_num_steps = 0, size
+        
+        self.use_td_lambda_buf = use_td_lambda_buf
+        if self.use_td_lambda_buf:
+            self.rollout_end_ind_buf = None
+            self.raw_rew_buf = None
+            
+            self.buffer_dict['rollout_end_ind'] = self.rollout_end_ind_buf
+            self.buffer_dict['raw_rew'] = self.raw_rew_buf
+        
+        self.size, self.max_size = 0, size
         self.total_num_steps_added = 0
 
     def add_rollouts(self, list_of_rollout_dicts):
@@ -39,16 +49,25 @@ class SortedBuffer:
             # but still count them to the overall number of rollouts seen. 
             len_rollout = len(rollout['terminal'])
             self.total_num_steps_added += len_rollout
-            if self.num_steps == self.max_num_steps and rollout['cum_rew'][0] <= self.buffer_dict['cum_rew'][-1]:
+            if self.size == self.max_size and rollout['cum_rew'][0] <= self.buffer_dict['cum_rew'][-1]:
                 continue 
             
-            self.num_steps = min(self.num_steps+len_rollout, self.max_num_steps)
+            self.size = min(self.size+len_rollout, self.max_size)
             
             if self.buffer_dict['obs'] is not None:
                 # find where everything from this rollout should be inserted into 
                 # each of the numpy buffers. Uses the cumulative/terminal rewards
                 # minus so that highest values are at the front. 
                 sort_ind = np.searchsorted(-self.buffer_dict['cum_rew'], -rollout['cum_rew'][0]  )
+                end_ind = len_rollout+sort_ind
+            else: 
+                end_ind = len_rollout
+            
+            if self.use_td_lambda_buf:
+                # will be appended and treated like everything else. 
+                end_ind = np.repeat(end_ind, len_rollout)
+                rollout['rollout_end_ind'] = end_ind
+
             for key in self.buffer_dict.keys(): 
                 # NOTE: assumes that buffer and rollout use the same keys!
                 # needed at init!
@@ -57,12 +76,25 @@ class SortedBuffer:
                 else: 
                     self.buffer_dict[key] = np.insert(self.buffer_dict[key], sort_ind, rollout[key], axis=0)
 
-                if self.num_steps >= self.max_num_steps:
+                if self.size >= self.max_size:
                     # buffer is full. Need to trim!
                     # this will have a bias in that it will favour 
                     # the longer horizons at the end of the training data
                     # but it shouldnt make a major diff. 
-                    self.buffer_dict[key] = self.buffer_dict[key][:self.max_num_steps]
+                    self.buffer_dict[key] = self.buffer_dict[key][:self.max_size]
+
+    def retrieve_path(self, start_index):
+        end_index = self.buffer_dict['rollout_end_ind'][start_index]
+        if end_index<= start_index:
+            # we have looping 
+            obs = np.concatenate( [self.buffer_dict['obs'][start_index:], self.buffer_dict['obs'][:end_index]], axis=0)
+            rew = np.concatenate( [self.buffer_dict['raw_rew'][start_index:], self.buffer_dict['raw_rew'][:end_index]], axis=0)
+        else: 
+            obs = self.buffer_dict['obs'][start_index:end_index]
+            rew = self.buffer_dict['raw_rew'][start_index:end_index]
+
+        return torch.as_tensor(obs, dtype=torch.float32), torch.as_tensor(rew, dtype=torch.float32)
+
 
     def get_desires(self, last_few = 75):
         """
@@ -88,15 +120,15 @@ class SortedBuffer:
 
     def __getitem__(self, idx):
         # turn this into a random value!
-        #rand_ind = np.random.randint(0,self.num_steps) # up to current max size. 
+        #rand_ind = np.random.randint(0,self.size) # up to current max size. 
         return self.sample_batch(idxs=idx)
 
     def __len__(self):
-        return self.num_steps #self.num_batches_per_epoch
+        return self.size #self.num_batches_per_epoch
 
     def sample_batch(self, idxs=None, batch_size=256):
         if idxs is None:
-            idxs = np.random.randint(0, self.num_steps, size=batch_size)
+            idxs = np.random.randint(0, self.size, size=batch_size)
         return {key:torch.as_tensor(arr[idxs],dtype=torch.float32) for key, arr in self.buffer_dict.items()}
 
 
@@ -115,22 +147,26 @@ class RingBuffer:
         self.discounted_rew_to_go_buf = np.zeros(size, dtype=np.float32)
         self.cum_rew = np.zeros(size, dtype=np.float32)
         self.final_obs = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
+        self.horizon_buf = np.zeros(size, dtype=np.float32)
         #self.terminal_buf = np.zeros(size, dtype=np.int8)
 
-        self.buf_list = [self.obs_buf, #self.obs2_buf, 
-                                self.discounted_rew_to_go_buf,
-                                self.act_buf, 
-                                self.cum_rew, 
-                                #self.final_obs
-                                ]
+        self.buf_list = [self.obs_buf, 
+                        #self.obs2_buf, 
+                        self.discounted_rew_to_go_buf,
+                        self.act_buf, 
+                        self.cum_rew, 
+                        self.horizon_buf,
+                        self.final_obs
+                        ]
 
         self.value_names = ['obs', 
-                                #'obs2', 
-                                'discounted_rew_to_go', 
-                                'act', 
-                                'cum_rew', 
-                                #'final_obs'
-                                ]
+                            #'obs2', 
+                            'discounted_rew_to_go', 
+                            'act', 
+                            'cum_rew', 
+                            'horizon',
+                            'final_obs'
+                            ]
 
         self.use_td_lambda_buf = use_td_lambda_buf
         if self.use_td_lambda_buf:
@@ -184,7 +220,7 @@ class RingBuffer:
 
     def __getitem__(self, idx):
         # turn this into a random value!
-        #rand_ind = np.random.randint(0,self.num_steps) # up to current max size. 
+        #rand_ind = np.random.randint(0,self.size) # up to current max size. 
         return self.sample_batch(idxs=idx)
 
     def __len__(self):
@@ -198,8 +234,9 @@ class RingBuffer:
                      act=self.act_buf[idxs],
                      discounted_rew_to_go=self.discounted_rew_to_go_buf[idxs],
                      #terminal=self.terminal_buf[idxs],
+                     horizon=self.horizon_buf[idxs],
                      cum_rew=self.cum_rew[idxs],
-                     #final_obs=self.final_obs[idxs]
+                     final_obs=self.final_obs[idxs]
                      )
         if self.use_td_lambda_buf:
             batch['start_index'] = idxs
