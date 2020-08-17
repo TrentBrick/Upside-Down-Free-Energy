@@ -52,8 +52,7 @@ class LightningTemplate(pl.LightningModule):
             self.advantage_model = None 
         # log the hparams. 
         if self.logger:
-            metric_placeholder = {'mean_reward':0, 'eval_mean':0}
-            self.logger.experiment.add_hparams(hparams, metric_placeholder)
+            self.logger.experiment.add_hparams(hparams)
 
         # start filling up the buffer.
         output = self.collect_rollouts(num_episodes=self.hparams['num_rand_action_rollouts']) 
