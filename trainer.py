@@ -62,7 +62,7 @@ def main(args):
         eval_every = 10,
         eval_episodes=10,
         training_rollouts_per_worker = 20, #tune.grid_search( [10, 20, 30, 40]),
-        num_rand_action_rollouts = 10,
+        num_rand_action_rollouts = 50, # increased this by quite a bit!
         antithetic = False, # TODO: actually implement this!
         num_val_batches = 2,
         ############ These here are important!
