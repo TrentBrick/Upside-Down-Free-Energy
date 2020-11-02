@@ -54,7 +54,8 @@ class Agent:
         desire_dict = None, 
         model_version = 'checkpoint',
         return_plan_images=False,
-        advantage_model=None):
+        advantage_model=None, 
+        backward_model=None):
         """ Runs and collects rollouts """
 
         self.gamename = gamename
@@ -64,6 +65,7 @@ class Agent:
         self.take_rand_actions = take_rand_actions
         self.discount_factor = self.hparams['discount_factor']
         self.advantage_model = advantage_model
+        self.backward_model = backward_model
 
         self.desire_dict = desire_dict
         self.td_lambda = self.hparams['td_lambda']
@@ -115,6 +117,20 @@ class Agent:
             actions[:,ind] = torch.clamp(actions[:,ind], min=l, max=h)
         return actions
 
+    def get_next_obs_delta(self, obs, current_desires_dict):
+
+        # run inference for what is desired next!
+        for_net = [torch.Tensor([ self.desire_dict['state'] ] ), torch.Tensor(obs).unsqueeze(0)]
+        if self.hparams['desire_cum_rew']:
+            for_net.append(current_desires_dict['cum_rew'].unsqueeze(1)) 
+        else: # use discounted rewards to go!
+            for_net.append(current_desires_dict['discounted_rew_to_go'].unsqueeze(1))
+        if self.hparams['desire_horizon']:
+            for_net.append(current_desires_dict['horizon'].unsqueeze(1))
+
+        next_obs_delta = self.backward_model(for_net)
+        return next_obs_delta
+
     def rollout(self, render=False, display_monitor=None,
             greedy=False):
         """ Executes a rollout and returns cumulative reward along with
@@ -141,7 +157,7 @@ class Agent:
         # initialize all of the desires. 
         if not self.take_rand_actions:
             current_desires_dict = dict()
-            if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew']:
+            if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew'] or self.hparams['desire_next_obs_delta']:
                 if self.hparams['use_Levine_desire_sampling']:
                     init_rew = Normal(self.desire_dict['reward_dist'][0], 
                                         self.desire_dict['reward_dist'][1]).sample([1])
@@ -150,7 +166,7 @@ class Agent:
                     
             # cumulative and reward to go start the same/sampled the same. then RTG is 
             # annealed. 
-            if self.hparams['desire_discounted_rew_to_go']:
+            if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_next_obs_delta']:
                 current_desires_dict['discounted_rew_to_go'] = init_rew
             
             if self.hparams['desire_cum_rew']:
@@ -165,6 +181,9 @@ class Agent:
             if self.hparams['desire_advantage']:
                 current_desires_dict['advantage'] = Normal(self.desire_dict['advantage_dist'][0], 
                                         self.desire_dict['advantage_dist'][1]).sample([1])
+
+            if self.hparams['desire_next_obs_delta']:
+                current_desires_dict['next_obs_delta'] = self.get_next_obs_delta(obs, current_desires_dict)
 
 
         # useful if use an LSTM. 
@@ -203,7 +222,7 @@ class Agent:
 
                 desires = []
                 for key in self.hparams['desires_order']:
-                    if 'state' in key: 
+                    if 'state' in key or 'next_obs_delta' in key: 
                         desires.append( current_desires_dict[key.split('desire_')[-1]] )
                     else: 
                         desires.append( current_desires_dict[key.split('desire_')[-1]].unsqueeze(1) )
@@ -275,7 +294,7 @@ class Agent:
             # update reward desires! 
             if not self.take_rand_actions:
 
-                if self.hparams['desire_discounted_rew_to_go']:
+                if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_next_obs_delta']:
                     if self.hparams['use_Levine_desire_sampling']:
                         pass 
                     else: 
@@ -289,6 +308,7 @@ class Agent:
                     
                 if self.hparams['desire_state']:
                     if self.hparams['delta_state']:
+                        # need to ensure that this is passed onto the next_obs_delta too! currently doesnt take from curr dict 
                         raise Exception('need to modifying the buffer to save the delta states first')
                         #current_desires_dict['state'] = torch.Tensor(obs-[current_desires_dict['state']])
                     else: 
@@ -298,7 +318,11 @@ class Agent:
                     current_desires_dict['advantage'] = Normal(self.desire_dict['advantage_dist'][0], 
                                             self.desire_dict['advantage_dist'][1]).sample([1])
                     
-           
+                if self.hparams['desire_next_obs_delta']:
+                    # as obs has not yet been updated here!!! 
+                    # important this is last as some parameters above are used. 
+                    current_desires_dict['next_obs_delta'] = self.get_next_obs_delta(next_obs, current_desires_dict)
+
             # save out things.
             # doesnt save out the time so dont need to worry about it here. 
             if self.return_events:

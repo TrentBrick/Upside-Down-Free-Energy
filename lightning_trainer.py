@@ -1,5 +1,5 @@
 # pylint: disable=no-member
-from models import UpsdModel, UpsdBehavior, AdvantageModel
+from models import UpsdModel, UpsdBehavior, AdvantageModel, BackwardModel
 import torch
 import torch.nn.functional as F 
 from torch.distributions import Normal, Categorical
@@ -42,7 +42,7 @@ class LightningTemplate(pl.LightningModule):
         for key in self.hparams['desires_official_order']:
         # advantage needs to go last because it is computed on the fly 
         # in the training loop. 
-            if 'state' in key and self.hparams[key]:
+            if 'state' in key and self.hparams[key] or 'next_obs_delta' in key and self.hparams[key]:
                 desires_size += self.hparams['STORED_STATE_SIZE']
             else: 
                 desires_size+= self.hparams[key]
@@ -75,6 +75,13 @@ class LightningTemplate(pl.LightningModule):
             self.advantage_model = AdvantageModel(self.hparams['STORED_STATE_SIZE'] )
         else: 
             self.advantage_model = None 
+
+        if self.hparams['desire_next_obs_delta']:
+            #using_reward = bool(self.hparams['desire_cum_rew']) + bool(self.hparams['desire_discounted_rew_to_go'])
+            self.backward_model = BackwardModel(self.hparams['STORED_STATE_SIZE']*2+1+bool(self.hparams['desire_horizon']), self.hparams['STORED_STATE_SIZE'] )
+        else: 
+            self.backward_model = None
+
         # log the hparams. 
         if self.logger:
             self.logger.experiment.add_hparams(hparams)
@@ -97,10 +104,13 @@ class LightningTemplate(pl.LightningModule):
         return self.model(state, command)
 
     def configure_optimizers(self):
+        opt_params = list(self.model.parameters())
         if self.hparams['desire_advantage']:
-            opt = torch.optim.Adam( list(self.model.parameters())+list(self.advantage_model.parameters()) , lr=self.hparams['lr'])
-        else:
-            opt = torch.optim.Adam(self.model.parameters(), lr=self.hparams['lr'])
+            opt_params = opt_params + list(self.advantage_model.parameters())
+        if self.hparams['desire_next_obs_delta']:
+            opt_params = opt_params + list(self.backward_model.parameters())
+
+        opt = torch.optim.Adam(opt_params, lr=self.hparams['lr'])
         return opt
 
     def collect_rollouts(self, greedy=False, 
@@ -108,15 +118,15 @@ class LightningTemplate(pl.LightningModule):
         if self.current_epoch<self.hparams['random_action_epochs']:
             agent = Agent(self.hparams['gamename'], 
                 take_rand_actions=True,
-                hparams=self.hparams,
-                advantage_model=self.advantage_model,
+                hparams=self.hparams
                 )
         else:
             agent = Agent(self.hparams['gamename'], 
                 model = self.model, 
                 hparams= self.hparams,
                 desire_dict = self.desire_dict, 
-                advantage_model=self.advantage_model)
+                advantage_model=self.advantage_model, 
+                backward_model = self.backward_model)
         
         seed = np.random.randint(0, 1e9, 1)[0]
         if self.hparams['print_statements']:
@@ -148,13 +158,14 @@ class LightningTemplate(pl.LightningModule):
         if not self.hparams['use_Levine_buffer']:
             last_few_mean_returns, last_few_std_returns, desired_horizon, desired_state = self.train_buffer.get_desires(last_few=self.hparams['last_few'])
         
-        if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew']:
+        if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew'] or self.hparams['desire_next_obs_delta']:
             # cumulative and reward to go start the same/sampled the same. then RTG is 
             # annealed. 
             if self.hparams['use_Levine_desire_sampling']:
                 self.desire_dict['reward_dist'] = [np.max(to_desire), np.std(to_desire)]
             else: 
                 self.desire_dict['reward_dist'] = [last_few_mean_returns, last_few_std_returns]
+        
         if self.hparams['desire_horizon']:
             if self.hparams['use_Levine_desire_sampling']:
                 # get the highest scoring rollouts here and use the mean of these. 
@@ -163,13 +174,16 @@ class LightningTemplate(pl.LightningModule):
                 self.desire_dict['horizon'] = round(np.asarray(termination_times)[rew_inds].mean())
             else: 
                 self.desire_dict['horizon'] = desired_horizon
-        if self.hparams['desire_state']:
+
+        if self.hparams['desire_state'] or self.hparams['desire_next_obs_delta']:
             if self.hparams['use_Levine_desire_sampling']:
                 self.desire_dict['state'] = np.unique(self.train_buffer.final_obs, axis=0).mean(axis=0) # take the mean or sample from everything. 
             else: 
                 self.desire_dict['state'] = desired_state
+        
         if self.hparams['desire_advantage']:
             self.desire_dict['advantage_dist'] = self.desired_advantage_dist
+        
         if self.hparams['desire_mu_minus_std']:
             self.desire_dict['reward_dist'][0] = self.desire_dict['reward_dist'][0]-self.desire_dict['reward_dist'][1]
 
@@ -220,6 +234,9 @@ class LightningTemplate(pl.LightningModule):
                 continue # this is added later down. 
             if 'state' in key: 
                 desires.append( batch['final_obs'] )
+            elif 'next_obs' in key: 
+                # want the delta difference!!! 
+                desires.append( batch['obs2'] - obs )
             else: 
                 desires.append( batch[key.split('desire_')[-1]].unsqueeze(1) )
 
@@ -231,6 +248,57 @@ class LightningTemplate(pl.LightningModule):
             desires.append( batch['horizon'].unsqueeze(1) )
         if self.hparams['desire_state']:
             desires.append( batch['final_obs'] )'''
+
+        if self.hparams['desire_next_obs_delta']:
+
+            # condition on the final and current state and cum reward. predict the next state seen. 
+            for_net = [batch['final_obs'], obs]
+            if self.hparams['desire_cum_rew']:
+                for_net.append(batch['cum_rew'].unsqueeze(1)) 
+            else: # otherwise append and use discounted rewards to go!
+                for_net.append(batch['discounted_rew_to_go'].unsqueeze(1))
+            
+            # may be helpful if it is something being desired. 
+            if self.hparams['desire_horizon']:
+                for_net.append(batch['horizon'].unsqueeze(1))
+
+            pred_backwards_obs = self.backward_model.forward(for_net)
+            pos_delta = batch['obs2']-obs
+            backward_model_loss = F.mse_loss(pred_backwards_obs, pos_delta, reduction='none').sum(dim=1).mean(dim=0)
+
+
+        ''' RNN based prediction
+        if self.hparams['desire_next_obs_delta']:
+            # want it to update the same number of times as the policy
+            num_samples = 5
+
+            obs_paths, td_lambda_paths = [], []
+            for _ in range(num_samples): 
+
+                idx = np.random.randint(0, self.train_buffer.size, 1)
+                path_obs, path_rew = self.train_buffer.retrieve_path(idx)
+                while path_obs.shape[0]<=2:
+                    idx = np.random.randint(0, self.train_buffer.size, 1)
+                    path_obs, path_rew = self.train_buffer.retrieve_path(idx)
+                
+                print('path obs shape', path_obs.shape)
+                # reversing the order of the observations: 
+                curr_obs = path_obs[0]
+                # keeping all but current observation
+                path_obs = torch.flip(path_obs, dims=0)
+
+                # predict up to the observation before the current one (this is being conditioned on after all...)
+                target_obs = path_obs[2:, :]
+                # teacher forcing. giving real data. starting from terminal state predict backwards to current location
+                pred_backwards_obs = self.backwards_model.forward(path_obs[:-2, :], curr_obs).squeeze()
+
+                # TODO: put most of the weight on the predictions closest to the current position of the agent. 
+                backward_model_loss = F.mse_loss(pred_backwards_obs, target_obs, reduction='none').sum(dim=1).mean(dim=0)
+                
+                ## need to track loss. model itself. and in desires use the number of desired time steps to determine how many steps of the RNN to run. 
+                # also concat the current state to everything!
+                
+                '''
 
         if self.hparams['desire_advantage']:
             if batch_idx%self.hparams['val_func_update_iterval']==0: 
@@ -315,6 +383,10 @@ class LightningTemplate(pl.LightningModule):
         if self.hparams['desire_advantage'] and batch_idx%self.hparams['val_func_update_iterval']==0:
             pred_loss += adv_loss 
             logs["advantage_loss"] = adv_loss
+
+        if self.hparams['desire_next_obs_delta']:
+            pred_loss += backward_model_loss
+            logs['backward_model_loss'] = backward_model_loss
             
         return {'loss':pred_loss, 'log':logs}
 
@@ -331,6 +403,8 @@ class LightningTemplate(pl.LightningModule):
         train_dict['log']['policy_val_loss'] = train_dict['log'].pop('policy_loss')
         if self.hparams['desire_advantage']:
             train_dict['log']['advantage_val_loss'] = train_dict['log'].pop('advantage_loss')
+        if self.hparams['desire_next_obs_delta']:
+            train_dict['log']['backward_model_val_loss'] = train_dict['log'].pop('backward_model_loss')
         return train_dict['log'] 
 
     def validation_epoch_end(self, outputs):

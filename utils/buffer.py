@@ -17,14 +17,14 @@ class SortedBuffer:
     def __init__(self, obs_dim, act_dim, size,
                 use_td_lambda_buf=False ):
         self.obs_buf = None
-        #self.obs2_buf= None
+        self.obs2_buf= None
         self.act_buf= None
         self.discounted_rew_to_go_buf= None
         self.cum_rew= None
         self.horizon= None
         self.rollout_length = None
         self.final_obs = None
-        self.buffer_dict = dict(obs=self.obs_buf, #obs2=self.obs2_buf, 
+        self.buffer_dict = dict(obs=self.obs_buf, obs2=self.obs2_buf, 
                                 act=self.act_buf, 
                                 discounted_rew_to_go=self.discounted_rew_to_go_buf,
                                 cum_rew=self.cum_rew, horizon=self.horizon, 
@@ -89,6 +89,7 @@ class SortedBuffer:
     def retrieve_path(self, start_index):
         end_index = self.buffer_dict['rollout_end_ind'][start_index]
         if end_index<= start_index:
+            print("for sorted buffer shouldnt have looping here!")
             # we have looping 
             obs = np.concatenate( [self.buffer_dict['obs'][start_index:], self.buffer_dict['obs'][:end_index]], axis=0)
             rew = np.concatenate( [self.buffer_dict['raw_rew'][start_index:], self.buffer_dict['raw_rew'][:end_index]], axis=0)
@@ -142,7 +143,7 @@ class RingBuffer:
     """
     def __init__(self, obs_dim, act_dim, size, use_td_lambda_buf=False):
         self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        #self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
+        self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
         if act_dim==1:
             self.act_buf = np.zeros(size, dtype=np.float32)
         else: 
@@ -154,7 +155,7 @@ class RingBuffer:
         #self.terminal_buf = np.zeros(size, dtype=np.int8)
 
         self.buf_list = [self.obs_buf, 
-                        #self.obs2_buf, 
+                        self.obs2_buf, 
                         self.discounted_rew_to_go_buf,
                         self.act_buf, 
                         self.cum_rew, 
@@ -163,7 +164,7 @@ class RingBuffer:
                         ]
 
         self.value_names = ['obs', 
-                            #'obs2', 
+                            'obs2', 
                             'discounted_rew_to_go', 
                             'act', 
                             'cum_rew', 
@@ -233,7 +234,7 @@ class RingBuffer:
         if idxs is None:
             idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
-                     #obs2=self.obs2_buf[idxs],
+                     obs2=self.obs2_buf[idxs],
                      act=self.act_buf[idxs],
                      discounted_rew_to_go=self.discounted_rew_to_go_buf[idxs],
                      #terminal=self.terminal_buf[idxs],

@@ -52,7 +52,8 @@ def main(args):
 
     # Constants
     epochs = 2000
-    use_tune = True
+    use_tune = False   
+
     #training_rollouts_total = 20
     #training_rollouts_total//args.num_workers
     config = dict(
@@ -76,17 +77,18 @@ def main(args):
         # TODO: ensure lambda TD doesnt get stale. 
         clamp_adv_to_max = False, 
 
-        desire_discounted_rew_to_go = tune.grid_search( [True, False]),
-        desire_cum_rew = tune.grid_search( [True, False]), # mutually exclusive to discounted rewards to go. 
+        desire_next_obs_delta = True,
+        desire_discounted_rew_to_go = False, #tune.grid_search( [True, False]),
+        desire_cum_rew = False, #tune.grid_search( [True, False]), # mutually exclusive to discounted rewards to go. 
         # get these to be swappable and workable. 
         discount_factor = 1.0, 
         # NOTE: if desire rew to go then this should always be 1.0 
         # as this value is annealed. When Schmidhuber desires is on. 
         use_lambda_td = True, 
-        desire_advantage = tune.grid_search( [True, False]),  
+        desire_advantage = False, #tune.grid_search( [True, False]),  
         td_lambda = 0.95,
-        desire_horizon = tune.grid_search( [True, False]),
-        desire_state = tune.grid_search( [True, False]),
+        desire_horizon = False, #tune.grid_search( [True, False]),
+        desire_state = False, #tune.grid_search( [True, False]),
         delta_state = False,
 
         desire_mu_minus_std = False  
@@ -94,24 +96,21 @@ def main(args):
 
     config['desires_official_order'] = ['desire_discounted_rew_to_go',
     'desire_cum_rew', 'desire_horizon', 'desire_state',
-    'desire_advantage']
+    'desire_advantage', 'desire_next_obs_delta']
 
     args_dict = vars(args)
-    if bool(args.multirun) is True:
-        # sleep for a random interval to stop overlapping loggers made. 
-        time.sleep(np.random.random()*5)
-        # refers to bash_multiple_tests.sh
-        num_on = 0
-        for k in config['desires_official_order']:
-            config[k] = bool(args_dict[k])
-            num_on += args_dict[k]
-        if num_on == 0: 
-            raise Exception('No desires turned on! Killing this job!')
-    
+
+    num_on = 0
     for k in config['desires_official_order']:
-        args_dict.pop(k) # so these settings dont mess up what is assigned. 
+        num_on += config[k]
+    if num_on == 0: 
+        raise Exception('No desires turned on! Killing this job!')
+    
+    #for k in config['desires_official_order']:
+    #    args_dict.pop(k) # so these settings dont mess up what is assigned. 
 
     if config['desire_cum_rew'] and config['desire_discounted_rew_to_go']:
+        raise Exception("Cant have both of these live at the same time.")
         # NOTE: this is so that I can anneal the rewards to go over time. and have it be fine. 
         config['discount_factor']=1.0
     if config['use_Levine_desire_sampling'] and not config['desire_cum_rew']:
@@ -120,14 +119,14 @@ def main(args):
     if config['use_Levine_model']:
         model_params = dict(
             lr= 0.001, #tune.grid_search(np.logspace(-4, -2, num = 101)),
-            hidden_sizes = [128,128,64],
+            hidden_sizes = [64,64],#[128,128,64],
             desire_scalings =False,
             num_grad_steps = 1000
         )
     else: 
         model_params = dict(
             lr= 0.001, #tune.grid_search(np.logspace(-4, -2, num = 101)),
-            hidden_sizes = [32,64,64,64],
+            hidden_sizes = [32,64], #[32,64,64,64],
             desire_scalings =True,
             horizon_scale = 0.01, #tune.grid_search( [0.01, 0.015, 0.02, 0.025, 0.03]), #(0.02, 0.01), # reward then horizon
             reward_scale = 0.01, #tune.grid_search( [0.01, 0.015, 0.02, 0.025, 0.03]),
@@ -171,7 +170,7 @@ def main(args):
         logger=False 
         every_checkpoint_callback = False 
         callback_list = [TuneReportCallback()]
-        config['seed'] = tune.grid_search([25,27])
+        config['seed'] = tune.grid_search([25,26,27,28,29])
     else: 
         # Init save filenames 
         base_game_dir = join(args.logdir, args.gamename)
@@ -304,7 +303,7 @@ if __name__ =='__main__':
     parser.add_argument('--print_statements', type=int, default=0,
                         help="Able to eval the agent!")
 
-    parser.add_argument('--multirun', type=int, default=0,
+    '''parser.add_argument('--multirun', type=int, default=0,
                         help="Able to eval the agent!")
     parser.add_argument('--desire_discounted_rew_to_go', type=int, default=0,
                         help="Able to eval the agent!")
@@ -315,7 +314,7 @@ if __name__ =='__main__':
     parser.add_argument('--desire_state', type=int, default=0,
                         help="Able to eval the agent!")
     parser.add_argument('--desire_advantage', type=int, default=0,
-                        help="Able to eval the agent!")
+                        help="Able to eval the agent!")'''
 
 
     args = parser.parse_args()
