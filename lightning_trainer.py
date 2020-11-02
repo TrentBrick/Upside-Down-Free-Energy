@@ -11,6 +11,7 @@ from utils import save_checkpoint, generate_model_samples, \
     generate_rollouts, write_logger, ReplayBuffer, \
     RingBuffer, combine_single_worker
 from pytorch_lightning import seed_everything
+from torch.distributions import Normal 
 import random 
 
 class LightningTemplate(pl.LightningModule):
@@ -77,8 +78,16 @@ class LightningTemplate(pl.LightningModule):
             self.advantage_model = None 
 
         if self.hparams['desire_next_obs_delta']:
+            num_gaussians = 1
+            hidden_states = [128,128]
+            # NOTE: formalize these! 
+
             #using_reward = bool(self.hparams['desire_cum_rew']) + bool(self.hparams['desire_discounted_rew_to_go'])
-            self.backward_model = BackwardModel(self.hparams['STORED_STATE_SIZE']*2+1+bool(self.hparams['desire_horizon']), self.hparams['STORED_STATE_SIZE'] )
+            # input is the current state and desired reward. also maybe the horizon if desired. 
+            self.backward_model = BackwardModel(self.hparams['STORED_STATE_SIZE']+1+bool(self.hparams['desire_horizon']), self.hparams['STORED_STATE_SIZE'], 
+                    self.hparams['ACTION_SIZE'], num_gaussians, hidden_states )
+            # this was for the old BackwardModel
+            #self.backward_model = BackwardModel(self.hparams['STORED_STATE_SIZE']*2+1+bool(self.hparams['desire_horizon']), self.hparams['STORED_STATE_SIZE'] )
         else: 
             self.backward_model = None
 
@@ -252,7 +261,8 @@ class LightningTemplate(pl.LightningModule):
         if self.hparams['desire_next_obs_delta']:
 
             # condition on the final and current state and cum reward. predict the next state seen. 
-            for_net = [batch['final_obs'], obs]
+            #for_net = [batch['final_obs'], obs]
+            for_net = [obs]
             if self.hparams['desire_cum_rew']:
                 for_net.append(batch['cum_rew'].unsqueeze(1)) 
             else: # otherwise append and use discounted rewards to go!
@@ -262,7 +272,31 @@ class LightningTemplate(pl.LightningModule):
             if self.hparams['desire_horizon']:
                 for_net.append(batch['horizon'].unsqueeze(1))
 
-            pred_backwards_obs = self.backward_model.forward(for_net)
+            # compute loss for final and next states
+            backward_losses = []
+            total_loss = None
+            backward_preds = self.backward_model.forward(for_net)
+            ground_truths = [batch['final_obs'], batch['obs2']]
+            for lout, ground in ([backward_preds[0], backward_preds[1]], ground_truths]):
+
+                mus, logsigmas, log_probs = lout
+                normal_dist = Normal(mus, logsigmas.exp()) # for every gaussian in each latent dimension. 
+                g_log_probs = log_probs + normal_dist.log_prob(ground.unsqueeze(-2)) # how far off are the next obs? 
+                # sum across the gaussians, need to do so in log space: 
+                # want to sum up all of them first. 
+                lout_loss = - torch.logsumexp(g_log_probs, dim=-2).sum(-1) #.mean()
+                backward_losses.append(lout_loss)
+
+                if total_loss is None: 
+                    total_loss = lout_loss
+                else: 
+                    total_loss += lout_loss 
+
+            # action loss. 
+                
+            #
+
+
             pos_delta = batch['obs2']-obs
             backward_model_loss = F.mse_loss(pred_backwards_obs, pos_delta, reduction='none').sum(dim=1).mean(dim=0)
 
