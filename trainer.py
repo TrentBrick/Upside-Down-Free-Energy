@@ -63,7 +63,7 @@ def main(args):
         eval_every = 10,
         eval_episodes=10,
         training_rollouts_per_worker = 20, #tune.grid_search( [10, 20, 30, 40]),
-        num_rand_action_rollouts = 50, # increased this by quite a bit!
+        num_rand_action_rollouts = 5, #50 # increased this by quite a bit!
         antithetic = False, # TODO: actually implement this!
         num_val_batches = 2,
         ############ These here are important!
@@ -78,7 +78,7 @@ def main(args):
         clamp_adv_to_max = False, 
 
         desire_next_obs_delta = True,
-        desire_discounted_rew_to_go = False, #tune.grid_search( [True, False]),
+        desire_discounted_rew_to_go = True, #tune.grid_search( [True, False]),
         desire_cum_rew = False, #tune.grid_search( [True, False]), # mutually exclusive to discounted rewards to go. 
         # get these to be swappable and workable. 
         discount_factor = 1.0, 
@@ -88,7 +88,7 @@ def main(args):
         desire_advantage = False, #tune.grid_search( [True, False]),  
         td_lambda = 0.95,
         desire_horizon = False, #tune.grid_search( [True, False]),
-        desire_state = False, #tune.grid_search( [True, False]),
+        desire_state = True, #tune.grid_search( [True, False]),
         delta_state = False,
 
         desire_mu_minus_std = False  
@@ -302,20 +302,6 @@ if __name__ =='__main__':
 
     parser.add_argument('--print_statements', type=int, default=0,
                         help="Able to eval the agent!")
-
-    '''parser.add_argument('--multirun', type=int, default=0,
-                        help="Able to eval the agent!")
-    parser.add_argument('--desire_discounted_rew_to_go', type=int, default=0,
-                        help="Able to eval the agent!")
-    parser.add_argument('--desire_cum_rew', type=int, default=0,
-                        help="Able to eval the agent!")
-    parser.add_argument('--desire_horizon', type=int, default=0,
-                        help="Able to eval the agent!")
-    parser.add_argument('--desire_state', type=int, default=0,
-                        help="Able to eval the agent!")
-    parser.add_argument('--desire_advantage', type=int, default=0,
-                        help="Able to eval the agent!")'''
-
 
     args = parser.parse_args()
     main(args)

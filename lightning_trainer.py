@@ -78,8 +78,8 @@ class LightningTemplate(pl.LightningModule):
             self.advantage_model = None 
 
         if self.hparams['desire_next_obs_delta']:
-            num_gaussians = 1
-            hidden_states = [128,128]
+            num_gaussians = 2
+            hidden_states = [128,128,128]
             # NOTE: formalize these! 
 
             #using_reward = bool(self.hparams['desire_cum_rew']) + bool(self.hparams['desire_discounted_rew_to_go'])
@@ -184,11 +184,12 @@ class LightningTemplate(pl.LightningModule):
             else: 
                 self.desire_dict['horizon'] = desired_horizon
 
-        if self.hparams['desire_state'] or self.hparams['desire_next_obs_delta']:
+        # now generated on the fly for each agent. 
+        '''if self.hparams['desire_state'] or self.hparams['desire_next_obs_delta']:
             if self.hparams['use_Levine_desire_sampling']:
                 self.desire_dict['state'] = np.unique(self.train_buffer.final_obs, axis=0).mean(axis=0) # take the mean or sample from everything. 
             else: 
-                self.desire_dict['state'] = desired_state
+                self.desire_dict['state'] = desired_state'''
         
         if self.hparams['desire_advantage']:
             self.desire_dict['advantage_dist'] = self.desired_advantage_dist
@@ -245,7 +246,7 @@ class LightningTemplate(pl.LightningModule):
                 desires.append( batch['final_obs'] )
             elif 'next_obs' in key: 
                 # want the delta difference!!! 
-                desires.append( batch['obs2'] - obs )
+                desires.append( batch['obs2'] ) #batch['obs2'] - obs )
             else: 
                 desires.append( batch[key.split('desire_')[-1]].unsqueeze(1) )
 
@@ -274,11 +275,10 @@ class LightningTemplate(pl.LightningModule):
 
             # compute loss for final and next states
             backward_losses = []
-            total_loss = None
+            backward_model_loss = None
             backward_preds = self.backward_model.forward(for_net)
             ground_truths = [batch['final_obs'], batch['obs2']]
-            for lout, ground in ([backward_preds[0], backward_preds[1]], ground_truths]):
-
+            for lout, ground in zip(backward_preds, ground_truths):
                 mus, logsigmas, log_probs = lout
                 normal_dist = Normal(mus, logsigmas.exp()) # for every gaussian in each latent dimension. 
                 g_log_probs = log_probs + normal_dist.log_prob(ground.unsqueeze(-2)) # how far off are the next obs? 
@@ -286,20 +286,15 @@ class LightningTemplate(pl.LightningModule):
                 # want to sum up all of them first. 
                 lout_loss = - torch.logsumexp(g_log_probs, dim=-2).sum(-1) #.mean()
                 backward_losses.append(lout_loss)
-
-                if total_loss is None: 
-                    total_loss = lout_loss
+                if backward_model_loss is None: 
+                    backward_model_loss = lout_loss
                 else: 
-                    total_loss += lout_loss 
+                    backward_model_loss += lout_loss 
 
-            # action loss. 
-                
-            #
+            backward_model_loss = backward_model_loss.mean()
 
-
-            pos_delta = batch['obs2']-obs
-            backward_model_loss = F.mse_loss(pred_backwards_obs, pos_delta, reduction='none').sum(dim=1).mean(dim=0)
-
+            #pos_delta = batch['obs2']-obs
+            #backward_model_loss = F.mse_loss(pred_backwards_obs, pos_delta, reduction='none').sum(dim=1).mean(dim=0)
 
         ''' RNN based prediction
         if self.hparams['desire_next_obs_delta']:

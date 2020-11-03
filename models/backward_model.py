@@ -8,17 +8,18 @@ import numpy as np
 from torch.optim import Adam
 from torch.distributions import Normal 
 
+
 class BackwardModel(nn.Module):
     # this is a conditional density model (MDN), modelled after Bishop
     # implementation partly from David Ha. 
     def __init__(self, input_size, num_states, num_actions, num_g, hidden_sizes=[128, 128],
-             act_fn="relu"):
+             act_fn="ReLU"):
         super().__init__()
         self.num_g = num_g
         self.input_size = input_size
         self.num_states = num_states
         self.stride = num_g*num_states
-        self.act_fn = getattr(torch, act_fn)
+        self.act_fn = getattr(torch.nn, act_fn)
 
         # making hierarchical predictions for final obs. next obs and action. 
         # going to have 3 blocks that are all identical to the following
@@ -27,7 +28,7 @@ class BackwardModel(nn.Module):
         # first creating an embedding layer. 
         self.embedding_layer = nn.Linear(input_size, hidden_sizes[0]) 
 
-        num_blocks = 3
+        num_blocks = 2
 
         for i in range(num_blocks):
             # building a prediction block. 
@@ -36,11 +37,11 @@ class BackwardModel(nn.Module):
                 layers.append( nn.Linear(hidden_sizes[j], hidden_sizes[j+1])  )
                 layers.append( self.act_fn() )
             layers = nn.Sequential(*layers)
-            if i<num_blocks-1:
-                output_fc = nn.Linear(hidden_sizes[-1], 3*num_states*num_g )
-            else: 
-                # action output!
-                output_fc = nn.Linear(hidden_sizes[-1], num_actions )
+            #if i<num_blocks-1:
+            output_fc = nn.Linear(hidden_sizes[-1], 3*num_states*num_g )
+            #else: 
+            #    # action output!
+            #    output_fc = nn.Linear(hidden_sizes[-1], num_actions )
 
             self.block_layers.append(layers)
             self.block_outputs.append(output_fc)
@@ -48,34 +49,37 @@ class BackwardModel(nn.Module):
     def forward(self, inp):
         inp = torch.cat(inp, dim=1)
         # embedding
-        out = self.act_fn(self.embedding_layer(inp))
-
-        layer_outs = []
-        for i in range(len(self.block_layers)):
-            out = self.block_layers[i](out)
-            output = self.block_outputs[i](out) 
-            layer_outs.append(output)
-            # concat the previous predictions for the next layer. 
-            # NOTE: may want to explicilty condition final state on the action but it is implicit here. and easier to code up for now. 
-            out = torch.cat((out, output), dim=1)
+        out = self.act_fn()(self.embedding_layer(inp))
 
         gaussian_outs = []
-        for lout in [layer_outs[0], layer_outs[1]]:
+        for i in range(len(self.block_layers)):
+            out = self.block_layers[i](out)
+            lout = self.block_outputs[i](out) 
+
             logpi = lout[:,:self.stride].view(-1, self.num_g, self.num_states)
             mus = lout[:,self.stride:2*self.stride].view(-1, self.num_g, self.num_states)
             logsigmas = lout[:,2*self.stride:3*self.stride].view(-1, self.num_g, self.num_states)
             log_probs = torch.log_softmax(logpi, dim=-2)
             gaussian_outs.append( (mus, logsigmas, log_probs) )
+
+            # concat the previous predictions for the next layer. 
+            # NOTE: may want to explicilty condition final state on the action but it is implicit here. and easier to code up for now. 
+            #out = torch.cat((out, output), dim=1)
+            
         
         # final layer has the action to be taken. 
-        return gaussian_outs + layer_outs[-1]
+        return gaussian_outs #+ layer_outs[-1]
 
-    '''def give_modes(self, reward):
+    def give_modes(self, inp):
         # gives the mode (also mean) of the highest probability gaussian. 
-        mus, logsigmas, log_probs = self.forward(reward)
-        which_g = log_probs.argmax(-2)
-        mus_g, sigmas_g = torch.gather(mus.squeeze(), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(logsigmas.exp().squeeze(), 1, which_g.unsqueeze(1)).squeeze()
-        return mus_g'''
+        gaussian_outs = self.forward(inp)
+        mode_outs = []
+        for go in gaussian_outs:
+            mus, logsigmas, log_probs = go
+            which_g = log_probs.argmax(-2)
+            mus_g, sigmas_g = torch.gather(mus.squeeze(-1), 1, which_g.unsqueeze(1)).squeeze(), torch.gather(logsigmas.exp().squeeze(-1), 1, which_g.unsqueeze(1)).squeeze()
+            mode_outs.append(mus_g)
+        return mode_outs 
 
     def state_probs(self, reward, obs):
         mus, logsigmas, log_probs = self.forward(reward)

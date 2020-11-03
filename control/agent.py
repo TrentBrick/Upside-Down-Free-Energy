@@ -120,16 +120,16 @@ class Agent:
     def get_next_obs_delta(self, obs, current_desires_dict):
 
         # run inference for what is desired next!
-        for_net = [torch.Tensor([ self.desire_dict['state'] ] ), torch.Tensor(obs).unsqueeze(0)]
+        for_net = [ torch.Tensor(obs)]
         if self.hparams['desire_cum_rew']:
-            for_net.append(current_desires_dict['cum_rew'].unsqueeze(1)) 
+            for_net.append(current_desires_dict['cum_rew'].unsqueeze(1))
         else: # use discounted rewards to go!
             for_net.append(current_desires_dict['discounted_rew_to_go'].unsqueeze(1))
         if self.hparams['desire_horizon']:
             for_net.append(current_desires_dict['horizon'].unsqueeze(1))
 
-        next_obs_delta = self.backward_model(for_net)
-        return next_obs_delta
+        backward_outs = self.backward_model.give_modes(for_net)
+        return backward_outs[0], backward_outs[1]
 
     def rollout(self, render=False, display_monitor=None,
             greedy=False):
@@ -175,16 +175,18 @@ class Agent:
             if self.hparams['desire_horizon']:
                 current_desires_dict['horizon'] = torch.Tensor([self.desire_dict['horizon']])
                 
-            if self.hparams['desire_state']:
-                current_desires_dict['state'] = torch.Tensor([ self.desire_dict['state'] ] )
+            #if self.hparams['desire_state']:
+            #    #current_desires_dict['state'] = torch.Tensor([ self.desire_dict['state'] ] )
+            #    current_desires_dict['state'] = torch.Tensor([  ] )
             
+            if self.hparams['desire_next_obs_delta']:
+                final_o, next_o = self.get_next_obs_delta(obs, current_desires_dict)
+                current_desires_dict['state'] =final_o.unsqueeze(0) #torch.Tensor([ final_o ] )
+                current_desires_dict['next_obs_delta'] = next_o.unsqueeze(0)#torch.Tensor([ next_o ] ) 
+                
             if self.hparams['desire_advantage']:
                 current_desires_dict['advantage'] = Normal(self.desire_dict['advantage_dist'][0], 
                                         self.desire_dict['advantage_dist'][1]).sample([1])
-
-            if self.hparams['desire_next_obs_delta']:
-                current_desires_dict['next_obs_delta'] = self.get_next_obs_delta(obs, current_desires_dict)
-
 
         # useful if use an LSTM. 
         #hidden, state, action = self.model.init_hidden_state_action(1)
@@ -321,7 +323,10 @@ class Agent:
                 if self.hparams['desire_next_obs_delta']:
                     # as obs has not yet been updated here!!! 
                     # important this is last as some parameters above are used. 
-                    current_desires_dict['next_obs_delta'] = self.get_next_obs_delta(next_obs, current_desires_dict)
+                    final_o, next_o = self.get_next_obs_delta(obs, current_desires_dict)
+                    current_desires_dict['state'] =final_o.unsqueeze(0) #torch.Tensor([ final_o ] )
+                    current_desires_dict['next_obs_delta'] = next_o.unsqueeze(0)#torch.Tensor([ next_o ] ) 
+                    #current_desires_dict['next_obs_delta'] = self.get_next_obs_delta(next_obs, current_desires_dict)
 
             # save out things.
             # doesnt save out the time so dont need to worry about it here. 
