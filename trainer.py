@@ -29,7 +29,7 @@ from utils import set_seq_and_batch_vals
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 #from pytorch_lightning.utilities.cloud_io import load as pl_load
 from ray import tune
 from ray.tune import CLIReporter
@@ -58,17 +58,17 @@ def main(args):
     #training_rollouts_total//args.num_workers
     config = dict(
         random_action_epochs = 1,
-        val_func_update_iterval = 5, # 200 out of the 1000.
+        val_func_update_iterval = 50, # 200 out of the 1000.
         grad_clip_val = 100, 
         eval_every = 10,
         eval_episodes=10,
         training_rollouts_per_worker = 20, #tune.grid_search( [10, 20, 30, 40]),
-        num_rand_action_rollouts = 5, #50 # increased this by quite a bit!
+        num_rand_action_rollouts = 50, #50 # increased this by quite a bit!
         antithetic = False, # TODO: actually implement this!
         num_val_batches = 2,
         ############ These here are important!
-        use_Levine_desire_sampling=False, 
-        use_Levine_buffer = False, 
+        use_Levine_desire_sampling=True, 
+        use_Levine_buffer = True, 
         use_Levine_model = True, 
         
         use_exp_weight_losses = True,
@@ -77,26 +77,26 @@ def main(args):
         # TODO: ensure lambda TD doesnt get stale. 
         clamp_adv_to_max = False, 
 
-        desire_next_obs_delta = True,
-        desire_discounted_rew_to_go = True, #tune.grid_search( [True, False]),
+        desire_next_obs = False,
+        desire_discounted_rew_to_go = False, #tune.grid_search( [True, False]),
         desire_cum_rew = False, #tune.grid_search( [True, False]), # mutually exclusive to discounted rewards to go. 
         # get these to be swappable and workable. 
         discount_factor = 1.0, 
         # NOTE: if desire rew to go then this should always be 1.0 
         # as this value is annealed. When Schmidhuber desires is on. 
         use_lambda_td = True, 
-        desire_advantage = False, #tune.grid_search( [True, False]),  
+        desire_advantage = True, #tune.grid_search( [True, False]),  
         td_lambda = 0.95,
         desire_horizon = False, #tune.grid_search( [True, False]),
-        desire_state = True, #tune.grid_search( [True, False]),
+        desire_final_state = False, #tune.grid_search( [True, False]),
+        
         delta_state = False,
-
         desire_mu_minus_std = False  
     )
 
     config['desires_official_order'] = ['desire_discounted_rew_to_go',
-    'desire_cum_rew', 'desire_horizon', 'desire_state',
-    'desire_advantage', 'desire_next_obs_delta']
+    'desire_cum_rew', 'desire_horizon', 'desire_final_state',
+    'desire_advantage', 'desire_next_obs']
 
     args_dict = vars(args)
 
@@ -241,7 +241,6 @@ def main(args):
             trainer = Trainer(deterministic=True, logger=logger,
                 default_root_dir=game_dir, max_epochs=epochs, profiler=False,
                 checkpoint_callback = every_checkpoint_callback,
-                log_save_interval=1,
                 callbacks=callback_list, 
                 gradient_clip_val=config['grad_clip_val'], 
                 progress_bar_refresh_rate=0

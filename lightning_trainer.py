@@ -43,7 +43,7 @@ class LightningTemplate(pl.LightningModule):
         for key in self.hparams['desires_official_order']:
         # advantage needs to go last because it is computed on the fly 
         # in the training loop. 
-            if 'state' in key and self.hparams[key] or 'next_obs_delta' in key and self.hparams[key]:
+            if 'final_state' in key and self.hparams[key] or 'next_obs' in key and self.hparams[key]:
                 desires_size += self.hparams['STORED_STATE_SIZE']
             else: 
                 desires_size+= self.hparams[key]
@@ -77,7 +77,7 @@ class LightningTemplate(pl.LightningModule):
         else: 
             self.advantage_model = None 
 
-        if self.hparams['desire_next_obs_delta']:
+        if self.hparams['desire_next_obs']:
             num_gaussians = 2
             hidden_states = [128,128,128]
             # NOTE: formalize these! 
@@ -116,7 +116,7 @@ class LightningTemplate(pl.LightningModule):
         opt_params = list(self.model.parameters())
         if self.hparams['desire_advantage']:
             opt_params = opt_params + list(self.advantage_model.parameters())
-        if self.hparams['desire_next_obs_delta']:
+        if self.hparams['desire_next_obs']:
             opt_params = opt_params + list(self.backward_model.parameters())
 
         opt = torch.optim.Adam(opt_params, lr=self.hparams['lr'])
@@ -127,7 +127,8 @@ class LightningTemplate(pl.LightningModule):
         if self.current_epoch<self.hparams['random_action_epochs']:
             agent = Agent(self.hparams['gamename'], 
                 take_rand_actions=True,
-                hparams=self.hparams
+                hparams=self.hparams,
+                advantage_model=self.advantage_model
                 )
         else:
             agent = Agent(self.hparams['gamename'], 
@@ -167,7 +168,7 @@ class LightningTemplate(pl.LightningModule):
         if not self.hparams['use_Levine_buffer']:
             last_few_mean_returns, last_few_std_returns, desired_horizon, desired_state = self.train_buffer.get_desires(last_few=self.hparams['last_few'])
         
-        if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew'] or self.hparams['desire_next_obs_delta']:
+        if self.hparams['desire_discounted_rew_to_go'] or self.hparams['desire_cum_rew'] or self.hparams['desire_next_obs']:
             # cumulative and reward to go start the same/sampled the same. then RTG is 
             # annealed. 
             if self.hparams['use_Levine_desire_sampling']:
@@ -185,11 +186,11 @@ class LightningTemplate(pl.LightningModule):
                 self.desire_dict['horizon'] = desired_horizon
 
         # now generated on the fly for each agent. 
-        '''if self.hparams['desire_state'] or self.hparams['desire_next_obs_delta']:
+        '''if self.hparams['desire_final_state'] or self.hparams['desire_next_obs']:
             if self.hparams['use_Levine_desire_sampling']:
-                self.desire_dict['state'] = np.unique(self.train_buffer.final_obs, axis=0).mean(axis=0) # take the mean or sample from everything. 
+                self.desire_dict['final_state'] = np.unique(self.train_buffer.final_obs, axis=0).mean(axis=0) # take the mean or sample from everything. 
             else: 
-                self.desire_dict['state'] = desired_state'''
+                self.desire_dict['final_state'] = desired_state'''
         
         if self.hparams['desire_advantage']:
             self.desire_dict['advantage_dist'] = self.desired_advantage_dist
@@ -207,7 +208,7 @@ class LightningTemplate(pl.LightningModule):
             
             to_write = dict()
             for k, v in self.desire_dict.items():
-                if k =='state':
+                if k =='final_state':
                     continue
                 if type(v) is list: 
                     to_write[k] = v[0]  
@@ -242,7 +243,7 @@ class LightningTemplate(pl.LightningModule):
         for key in self.hparams['desires_order']:
             if 'advantage' in key:
                 continue # this is added later down. 
-            if 'state' in key: 
+            if 'final_state' in key: 
                 desires.append( batch['final_obs'] )
             elif 'next_obs' in key: 
                 # want the delta difference!!! 
@@ -256,10 +257,10 @@ class LightningTemplate(pl.LightningModule):
             desires.append( batch['cum_rew'].unsqueeze(1) )
         if self.hparams['desire_horizon']:
             desires.append( batch['horizon'].unsqueeze(1) )
-        if self.hparams['desire_state']:
+        if self.hparams['desire_final_state']:
             desires.append( batch['final_obs'] )'''
 
-        if self.hparams['desire_next_obs_delta']:
+        if self.hparams['desire_next_obs']:
 
             # condition on the final and current state and cum reward. predict the next state seen. 
             #for_net = [batch['final_obs'], obs]
@@ -297,7 +298,7 @@ class LightningTemplate(pl.LightningModule):
             #backward_model_loss = F.mse_loss(pred_backwards_obs, pos_delta, reduction='none').sum(dim=1).mean(dim=0)
 
         ''' RNN based prediction
-        if self.hparams['desire_next_obs_delta']:
+        if self.hparams['desire_next_obs']:
             # want it to update the same number of times as the policy
             num_samples = 5
 
@@ -413,7 +414,7 @@ class LightningTemplate(pl.LightningModule):
             pred_loss += adv_loss 
             logs["advantage_loss"] = adv_loss
 
-        if self.hparams['desire_next_obs_delta']:
+        if self.hparams['desire_next_obs']:
             pred_loss += backward_model_loss
             logs['backward_model_loss'] = backward_model_loss
             
@@ -432,7 +433,7 @@ class LightningTemplate(pl.LightningModule):
         train_dict['log']['policy_val_loss'] = train_dict['log'].pop('policy_loss')
         if self.hparams['desire_advantage']:
             train_dict['log']['advantage_val_loss'] = train_dict['log'].pop('advantage_loss')
-        if self.hparams['desire_next_obs_delta']:
+        if self.hparams['desire_next_obs']:
             train_dict['log']['backward_model_val_loss'] = train_dict['log'].pop('backward_model_loss')
         return train_dict['log'] 
 

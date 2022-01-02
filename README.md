@@ -1,5 +1,13 @@
 # Evolutionary Bootstrapping for Upside Down Active Inference
 
+An exploration into how to better apply the Free Energy Principle to Reinforcement Learning and convergences with the recent rise of "upside down" supervised reinforcement learning. 
+
+See `TrentonBricken_FEP_Upside_Down_RL_Paper.pdf` for a draft write up of the project that also has a summary of the Free Energy Principle. 
+
+I was unable to get the inverse RL agent to ultimately learn useful hierarchical goals and haven't worked on this project for two years so I am open sourcing the codebase. 
+
+This codebase is a more advanced and unweildy version of https://github.com/TrentBrick/RewardConditionedUDRL that was used to replicate two upside down RL papers. 
+
 ## Relevant Scripts: 
 
 * `train.py` - has almost all of the relevant configuration settings for the code. Also starts either ray tune (for hyperparam optimization) or a single model (for debugging). Able to switch between different model and learning types in a modular fashion
@@ -127,7 +135,7 @@ NB. If you are not using Conda be sure either uninstall it or to call `conda dea
 
 ## Acknowledgements
 
-Thanks to Beren Millidge and Alexander Tschantz for their supervision which made this research possible and successful.
+Thanks to [Beren Millidge](https://berenmillidge.github.io/aboutme/) and [Alexander Tschantz](https://alec-tschantz.github.io/) for their supervision which made this research possible and successful.
 
 Thanks to [Ha and Schmidhuber, "World Models", 2018]() and the [open source PyTorch implementation](https://github.com/ctallec/world-models) of their code, which provided a solid starting point for the research performed here. Thanks also to the opensource implementation of Upside Down Reinforcement Learning: https://github.com/jscriptcoder/Upside-Down-Reinforcement-Learning which provided an initial test base. Also to [Reward Conditioned Policies](https://arxiv.org/pdf/1912.13465.pdf) and [Training Agents using Upside-Down Reinforcement Learning](https://arxiv.org/abs/1912.02877) for initial research and results (I just wish both of these papers shared their code...).
 
